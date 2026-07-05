@@ -1,0 +1,16 @@
+{
+  "name": "ledger",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "predev": "node scripts/kill-ports.js",
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "stop": "node scripts/kill-ports.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

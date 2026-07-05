@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import openpyxl\")",
+      "Bash(py --version)",
+      "Bash(python -m pip show openpyxl)",
+      "Bash(mkdir -p /c/Users/basim/AppData/Local/Temp/claude/d--codebase-personal-ledger/d42679fc-b7eb-4659-93a3-552f3df9867f/scratchpad)",
+      "Read(//c/Users/basim/AppData/Local/Temp/claude/d--codebase-personal-ledger/d42679fc-b7eb-4659-93a3-552f3df9867f/scratchpad/**)",
+      "Bash(npm install *)",
+      "Bash(ls \"/c/Users/basim/AppData/Local/Temp/claude/d--codebase-personal-ledger/d42679fc-b7eb-4659-93a3-552f3df9867f/scratchpad/node_modules/xlsx\" 2>&1 | head -5)",
+      "Read(//c/Users/basim/AppData/Local/Temp/claude/d--codebase-personal-ledger/d42679fc-b7eb-4659-93a3-552f3df9867f/scratchpad/node_modules/xlsx/**)",
+      "Bash(node inspect.js)",
+      "Bash(node check_colors.js)",
+      "Bash(npm -v)",
+      "Bash(npm create *)",
+      "Bash(npx tsc *)",
+      "Bash(LEDGER_DB_DIR=\"d:/codebase/personal/ledger/db-test\" PORT=4000 npx tsx src/index.ts)",
+      "Bash(curl -s http://localhost:4000/api/categories)",
+      "Bash(curl -s \"http://localhost:4000/api/months/2026/7\")",
+      "Bash(curl -s \"http://localhost:4000/api/months/2025/1\")",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\(0,'utf8'\\)\\); console.log\\('count:',d.length\\); console.log\\(d.slice\\(0,5\\)\\)\")",
+      "Bash(curl -s -X POST http://localhost:4000/api/entries -H \"Content-Type: application/json\" -d '{\"year\":2026,\"month\":6,\"amount\":150,\"remarks\":\"Test Coffee\",\"category\":\"food\",\"isCard\":false}')",
+      "Bash(curl -s -X POST http://localhost:4000/api/entries -H \"Content-Type: application/json\" -d '{\"year\":2026,\"month\":7,\"amount\":42.5,\"remarks\":\"Test Snacks\",\"category\":\"other\",\"isCard\":true}')",
+      "Bash(curl -s \"http://localhost:4000/api/months/2026/6\")",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\(0,'utf8'\\)\\); console.log\\(d[d.length-1]\\)\")",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\(0,'utf8'\\)\\); console.log\\(d\\)\")"
+    ]
+  }
+}
