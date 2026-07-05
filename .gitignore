@@ -4,3 +4,4 @@ db/.backups/
 *.tmp-*
 .env
 .backups/
+.claude/
