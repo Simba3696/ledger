@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Category, CategoryOption } from "../api";
-import { CATEGORY_SWATCH } from "../categoryColors";
+import { CategoryPicker } from "./CategoryPicker";
+import { PaymentToggle } from "./PaymentToggle";
 
 interface Props {
   categories: CategoryOption[];
@@ -72,40 +73,8 @@ export function AddExpenseForm({ categories, onSubmit }: Props) {
       </div>
 
       <div className="field-row">
-        <div className="category-picker">
-          {categories.map((c) => {
-            const swatch = CATEGORY_SWATCH[c.id];
-            const selected = category === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                className={`category-chip${selected ? " selected" : ""}`}
-                style={{ background: swatch.bg, color: swatch.fg }}
-                onClick={() => setCategory(c.id)}
-              >
-                {c.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="payment-toggle">
-          <button
-            type="button"
-            className={!isCard ? "selected" : ""}
-            onClick={() => setIsCard(false)}
-          >
-            Cash
-          </button>
-          <button
-            type="button"
-            className={isCard ? "selected" : ""}
-            onClick={() => setIsCard(true)}
-          >
-            Credit Card
-          </button>
-        </div>
+        <CategoryPicker categories={categories} value={category} onChange={setCategory} />
+        <PaymentToggle isCard={isCard} onChange={setIsCard} />
       </div>
 
       {error && <p className="error">{error}</p>}

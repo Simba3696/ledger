@@ -97,6 +97,68 @@ function findAmountNumFmt(sheet: ExcelJS.Worksheet): string {
   return found ?? FALLBACK_AMOUNT_NUMFMT;
 }
 
+// Observed border scheme (Amount/Remarks columns form one boxed table: medium
+// left/right edges running the full height, thin borders between rows, and a
+// medium bottom border on whichever row is currently last, closing the box.
+// The CC column is individually boxed — medium top/right/bottom — on every
+// row regardless of position, which is what reads as "thick borders ... for
+// the CC cell").
+const BORDER_FALLBACK = {
+  a: { left: { style: "medium" }, right: { style: "medium" }, top: { style: "thin" }, bottom: { style: "thin" } },
+  b: { left: { style: "medium" }, right: { style: "medium" }, top: { style: "thin" }, bottom: { style: "thin" } },
+  c: { right: { style: "medium" }, top: { style: "medium" }, bottom: { style: "medium" } },
+  closingBottom: { style: "medium", color: { argb: "FF000000" } },
+} satisfies { a: Partial<ExcelJS.Borders>; b: Partial<ExcelJS.Borders>; c: Partial<ExcelJS.Borders>; closingBottom: Partial<ExcelJS.Border> };
+
+interface RowBorderTemplate {
+  a: Partial<ExcelJS.Borders>;
+  b: Partial<ExcelJS.Borders>;
+  c: Partial<ExcelJS.Borders>;
+  closingBottom: Partial<ExcelJS.Border>;
+}
+
+// Amount is right-aligned, Remarks is left-aligned, both vertically centered
+// — every existing data row uses this. Without it, ExcelJS defaults to
+// bottom alignment, which is what caused new rows to look misaligned.
+const AMOUNT_ALIGNMENT: Partial<ExcelJS.Alignment> = { horizontal: "right", vertical: "middle" };
+const REMARKS_ALIGNMENT: Partial<ExcelJS.Alignment> = { horizontal: "left", vertical: "middle" };
+
+function cloneBorder<T>(border: T): T {
+  return structuredClone(border);
+}
+
+/** Border pattern for a "normal" (non-last) row, derived from the sheet's own
+ * existing formatting where possible so any manual tweaks the user made are
+ * respected, falling back to the observed default for a brand-new sheet.
+ * The CC column's border never varies by row position (only by whether that
+ * row is actually a card transaction), so it's always the fixed pattern. */
+function getBorderTemplate(sheet: ExcelJS.Worksheet, previousLastRow: number): RowBorderTemplate {
+  if (previousLastRow < 2) return cloneBorder(BORDER_FALLBACK);
+
+  const lastRow = sheet.getRow(previousLastRow);
+  const a = cloneBorder((lastRow.getCell(1).border ?? {}) as Partial<ExcelJS.Borders>);
+  const b = cloneBorder((lastRow.getCell(2).border ?? {}) as Partial<ExcelJS.Borders>);
+
+  // Strip the closing bottom border — the row we cloned from was last, but won't be anymore.
+  a.bottom = cloneBorder(BORDER_FALLBACK.a.bottom);
+  b.bottom = cloneBorder(BORDER_FALLBACK.b.bottom);
+
+  return { a, b, c: cloneBorder(BORDER_FALLBACK.c), closingBottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
+}
+
+/** The CC cell only ever gets a fill/border when it's an actual card
+ * transaction — a non-card row's CC cell is left completely blank (no
+ * value, no fill, no border), matching the existing sheets exactly. */
+function applyCcCell(cell: ExcelJS.Cell, isCard: boolean, fill: ExcelJS.Fill, border: Partial<ExcelJS.Borders>) {
+  cell.value = null;
+  cell.style = {};
+  if (isCard) {
+    cell.value = "CC";
+    cell.fill = fill;
+    cell.border = border;
+  }
+}
+
 export interface LedgerEntry {
   row: number;
   amount: number; // positive rupee amount
@@ -148,6 +210,50 @@ function backupOnce(filePath: string) {
   backedUpThisRun.add(filePath);
 }
 
+async function saveWorkbook(workbook: ExcelJS.Workbook, filePath: string): Promise<void> {
+  backupOnce(filePath);
+
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await workbook.xlsx.writeFile(tempPath);
+  } catch (err) {
+    fs.rmSync(tempPath, { force: true });
+    throw new LedgerError(`Failed to write ${path.basename(filePath)}: ${(err as Error).message}`, 500);
+  }
+
+  try {
+    fs.renameSync(tempPath, filePath);
+  } catch {
+    fs.rmSync(tempPath, { force: true });
+    throw new LedgerError(
+      `Could not save to ${path.basename(filePath)} — is it open in Excel? Close it and try again.`,
+      409,
+    );
+  }
+}
+
+/** Throws unless `row` is an existing transaction row (a real Amount value), not
+ * the header, a spacer row, or a row past the end of the data. */
+function assertRealEntryRow(sheet: ExcelJS.Worksheet, row: number, year: number, month: number) {
+  if (!Number.isInteger(row) || row < 2 || typeof sheet.getRow(row).getCell(1).value !== "number") {
+    throw new LedgerError(`No entry found at row ${row} in ${monthName(month)} ${year}`, 404);
+  }
+}
+
+/** Re-applies the closing (thick) bottom border to whichever row is now last.
+ * Needed after a delete, since the row that ends up last may not be the one
+ * that used to carry that border. */
+function fixClosingBorder(sheet: ExcelJS.Worksheet) {
+  const last = lastDataRow(sheet);
+  if (last < 2) return;
+  const row = sheet.getRow(last);
+  const a = cloneBorder((row.getCell(1).border ?? {}) as Partial<ExcelJS.Borders>);
+  const b = cloneBorder((row.getCell(2).border ?? {}) as Partial<ExcelJS.Borders>);
+  row.getCell(1).border = { ...a, bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
+  row.getCell(2).border = { ...b, bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
+  row.commit();
+}
+
 export interface AppendEntryInput {
   year: number;
   month: number;
@@ -170,7 +276,9 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   assertWritable(sheet, year, month);
 
   const numFmt = findAmountNumFmt(sheet);
-  const rowNumber = lastDataRow(sheet) + 1;
+  const previousLastRow = lastDataRow(sheet);
+  const rowNumber = previousLastRow + 1;
+  const borders = getBorderTemplate(sheet, previousLastRow);
   const fill: ExcelJS.Fill = {
     type: "pattern",
     pattern: "solid",
@@ -181,33 +289,27 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   row.getCell(1).value = -Math.abs(amount);
   row.getCell(1).numFmt = numFmt;
   row.getCell(1).fill = fill;
+  row.getCell(1).border = { ...borders.a, bottom: borders.closingBottom };
+  row.getCell(1).alignment = AMOUNT_ALIGNMENT;
 
   row.getCell(2).value = remarks.trim();
   row.getCell(2).fill = fill;
+  row.getCell(2).border = { ...borders.b, bottom: borders.closingBottom };
+  row.getCell(2).alignment = REMARKS_ALIGNMENT;
 
-  row.getCell(3).value = isCard ? "CC" : "";
-  row.getCell(3).fill = fill;
+  applyCcCell(row.getCell(3), isCard, fill, borders.c);
   row.commit();
 
-  backupOnce(filePath);
-
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    await workbook.xlsx.writeFile(tempPath);
-  } catch (err) {
-    fs.rmSync(tempPath, { force: true });
-    throw new LedgerError(`Failed to write ${path.basename(filePath)}: ${(err as Error).message}`, 500);
+  // The row we just displaced as "last" needs its closing bottom border
+  // demoted back to the normal interior pattern.
+  if (previousLastRow >= 2) {
+    const oldLastRow = sheet.getRow(previousLastRow);
+    oldLastRow.getCell(1).border = borders.a;
+    oldLastRow.getCell(2).border = borders.b;
+    oldLastRow.commit();
   }
 
-  try {
-    fs.renameSync(tempPath, filePath);
-  } catch (err) {
-    fs.rmSync(tempPath, { force: true });
-    throw new LedgerError(
-      `Could not save to ${path.basename(filePath)} — is it open in Excel? Close it and try again.`,
-      409,
-    );
-  }
+  await saveWorkbook(workbook, filePath);
 
   return {
     row: rowNumber,
@@ -217,4 +319,160 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
     cardNote: isCard ? "CC" : null,
     category,
   };
+}
+
+export interface UpdateEntryInput {
+  year: number;
+  month: number;
+  row: number;
+  amount: number;
+  remarks: string;
+  category: Category;
+  isCard: boolean;
+}
+
+export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry> {
+  const { year, month, row: rowNumber, amount, remarks, category, isCard } = input;
+
+  if (!(amount > 0)) throw new LedgerError("Amount must be a positive number", 400);
+  if (!remarks || !remarks.trim()) throw new LedgerError("Remarks are required", 400);
+  if (!CATEGORY_COLORS[category]) throw new LedgerError(`Unknown category: ${category}`, 400);
+
+  const filePath = workbookPath(year);
+  const workbook = await loadWorkbook(year);
+  const sheet = getSheet(workbook, year, month);
+  assertWritable(sheet, year, month);
+  assertRealEntryRow(sheet, rowNumber, year, month);
+
+  const fill: ExcelJS.Fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: CATEGORY_COLORS[category] },
+  };
+
+  // Editing never changes position, so the Amount/Remarks borders are left
+  // untouched. The CC cell's border is tied to isCard rather than position
+  // though, so it still needs to be (re)applied or cleared via applyCcCell.
+  const row = sheet.getRow(rowNumber);
+  row.getCell(1).value = -Math.abs(amount);
+  row.getCell(1).fill = fill;
+  row.getCell(1).alignment = AMOUNT_ALIGNMENT;
+  row.getCell(2).value = remarks.trim();
+  row.getCell(2).fill = fill;
+  row.getCell(2).alignment = REMARKS_ALIGNMENT;
+  applyCcCell(row.getCell(3), isCard, fill, cloneBorder(BORDER_FALLBACK.c));
+  row.commit();
+
+  await saveWorkbook(workbook, filePath);
+
+  return {
+    row: rowNumber,
+    amount: Math.abs(amount),
+    remarks: remarks.trim(),
+    isCard,
+    cardNote: isCard ? "CC" : null,
+    category,
+  };
+}
+
+export interface DeleteEntryInput {
+  year: number;
+  month: number;
+  row: number;
+}
+
+export async function deleteEntry(input: DeleteEntryInput): Promise<void> {
+  const { year, month, row: rowNumber } = input;
+
+  const filePath = workbookPath(year);
+  const workbook = await loadWorkbook(year);
+  const sheet = getSheet(workbook, year, month);
+  assertWritable(sheet, year, month);
+  assertRealEntryRow(sheet, rowNumber, year, month);
+
+  sheet.spliceRows(rowNumber, 1); // shifts every row below up by one, carrying its formatting with it
+  fixClosingBorder(sheet);
+
+  await saveWorkbook(workbook, filePath);
+}
+
+export interface MoveEntryInput {
+  year: number;
+  month: number;
+  fromRow: number;
+  toRow: number;
+}
+
+interface RowSnapshot {
+  amount: number;
+  remarks: string;
+  ccValue: string | null;
+  fill?: ExcelJS.Fill;
+  numFmt: string;
+}
+
+/** Moves an entry to a different position within the same month (drag-to-reorder).
+ * Rather than juggle splice/insert index math, this snapshots every data row's
+ * content in order, reorders that array in memory, then rewrites rows 2..last
+ * from it — simpler to get right, and the row count here is always small. */
+export async function moveEntry(input: MoveEntryInput): Promise<void> {
+  const { year, month, fromRow, toRow } = input;
+
+  const filePath = workbookPath(year);
+  const workbook = await loadWorkbook(year);
+  const sheet = getSheet(workbook, year, month);
+  assertWritable(sheet, year, month);
+  assertRealEntryRow(sheet, fromRow, year, month);
+
+  const last = lastDataRow(sheet);
+  if (!Number.isInteger(toRow) || toRow < 2 || toRow > last) {
+    throw new LedgerError(`Invalid target row: ${toRow}`, 400);
+  }
+  if (fromRow === toRow) return;
+
+  const snapshots: RowSnapshot[] = [];
+  for (let r = 2; r <= last; r++) {
+    const row = sheet.getRow(r);
+    const amount = row.getCell(1).value;
+    if (typeof amount !== "number") {
+      throw new LedgerError(`Unexpected non-entry row at ${r}; reordering aborted`, 500);
+    }
+    const remarksValue = row.getCell(2).value;
+    const ccValue = row.getCell(3).value;
+    snapshots.push({
+      amount,
+      remarks: typeof remarksValue === "string" ? remarksValue : String(remarksValue ?? ""),
+      ccValue: typeof ccValue === "string" && ccValue.trim() ? ccValue : null,
+      fill: row.getCell(1).fill,
+      numFmt: row.getCell(1).numFmt ?? FALLBACK_AMOUNT_NUMFMT,
+    });
+  }
+
+  const [moved] = snapshots.splice(fromRow - 2, 1);
+  snapshots.splice(toRow - 2, 0, moved);
+
+  snapshots.forEach((snap, i) => {
+    const row = sheet.getRow(i + 2);
+    const fill: ExcelJS.Fill = snap.fill ?? { type: "pattern", pattern: "none" };
+
+    row.getCell(1).value = snap.amount;
+    row.getCell(1).numFmt = snap.numFmt;
+    row.getCell(1).fill = fill;
+    row.getCell(1).alignment = AMOUNT_ALIGNMENT;
+    row.getCell(1).border = cloneBorder(BORDER_FALLBACK.a);
+
+    row.getCell(2).value = snap.remarks;
+    row.getCell(2).fill = fill;
+    row.getCell(2).alignment = REMARKS_ALIGNMENT;
+    row.getCell(2).border = cloneBorder(BORDER_FALLBACK.b);
+
+    applyCcCell(row.getCell(3), !!snap.ccValue, fill, cloneBorder(BORDER_FALLBACK.c));
+    if (snap.ccValue) row.getCell(3).value = snap.ccValue; // preserve notes like "CC (200)"
+
+    row.commit();
+  });
+
+  fixClosingBorder(sheet);
+
+  await saveWorkbook(workbook, filePath);
 }
