@@ -21,6 +21,18 @@ header h1 {
   margin: 0;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
 .month-picker select {
   font-size: 15px;
   padding: 6px 8px;
@@ -171,6 +183,20 @@ header h1 {
   background: var(--card-bg);
 }
 
+.entry-row.drag-over {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.drag-handle {
+  cursor: grab;
+  color: var(--text);
+  opacity: 0.5;
+  font-size: 16px;
+  line-height: 1;
+  user-select: none;
+}
+
 .entry-category {
   font-size: 11px;
   font-weight: 700;
@@ -197,4 +223,69 @@ header h1 {
   font-weight: 600;
   color: var(--text-h);
   white-space: nowrap;
+}
+
+.entry-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.entry-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.entry-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.entry-row-editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.edit-fields input[type="number"] {
+  width: 110px;
+}
+
+.edit-fields input {
+  font-size: 15px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.edit-fields input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-actions button:not(.submit-btn) {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
 }

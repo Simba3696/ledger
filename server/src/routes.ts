@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { appendEntry, LedgerError, listMonth } from "./excel/ledger.js";
+import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry } from "./excel/ledger.js";
 import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 
 export const router = Router();
@@ -31,6 +31,52 @@ router.post("/entries", async (req, res, next) => {
       isCard: Boolean(isCard),
     });
     res.status(201).json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/entries/:year/:month/:row", async (req, res, next) => {
+  try {
+    const { amount, remarks, category, isCard } = req.body ?? {};
+    const entry = await updateEntry({
+      year: Number(req.params.year),
+      month: Number(req.params.month),
+      row: Number(req.params.row),
+      amount: Number(amount),
+      remarks: String(remarks ?? ""),
+      category,
+      isCard: Boolean(isCard),
+    });
+    res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/entries/:year/:month/:row", async (req, res, next) => {
+  try {
+    await deleteEntry({
+      year: Number(req.params.year),
+      month: Number(req.params.month),
+      row: Number(req.params.row),
+    });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/entries/:year/:month/:row/move", async (req, res, next) => {
+  try {
+    const { toRow } = req.body ?? {};
+    await moveEntry({
+      year: Number(req.params.year),
+      month: Number(req.params.month),
+      fromRow: Number(req.params.row),
+      toRow: Number(toRow),
+    });
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

@@ -3,13 +3,8 @@ import "./App.css";
 import { addEntry, getCategories, getMonth, type CategoryOption, type LedgerEntry } from "./api";
 import { AddExpenseForm } from "./components/AddExpenseForm";
 import { RecentEntries } from "./components/RecentEntries";
-
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
-
-const EARLIEST_YEAR = 2018;
+import { MonthYearPicker } from "./components/MonthYearPicker";
+import logoIcon from "./assets/logo-icon.png";
 
 function App() {
   const now = new Date();
@@ -21,7 +16,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const years = Array.from({ length: now.getFullYear() - EARLIEST_YEAR + 1 }, (_, i) => EARLIEST_YEAR + i);
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -47,19 +42,11 @@ function App() {
   return (
     <div className="app">
       <header>
-        <h1>Ledger</h1>
-        <div className="month-picker">
-          <select value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-            {MONTH_NAMES.map((name, idx) => (
-              <option key={name} value={idx + 1}>{name}</option>
-            ))}
-          </select>
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
-            {years.map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
+        <div className="brand">
+          <img src={logoIcon} alt="" className="brand-logo" />
+          <h1>Ledger</h1>
         </div>
+        <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
       </header>
 
       <AddExpenseForm
@@ -73,7 +60,15 @@ function App() {
       />
 
       {loadError && <p className="error">{loadError}</p>}
-      <RecentEntries entries={entries} categories={categories} loading={loading} />
+      <RecentEntries
+        entries={entries}
+        categories={categories}
+        loading={loading}
+        year={year}
+        month={month}
+        editable={isCurrentMonth}
+        onChanged={refresh}
+      />
     </div>
   );
 }

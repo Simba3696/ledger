@@ -21,6 +21,21 @@ them in place.
   New entries append to the bottom of the target month's sheet.
 - The app only ever touches columns A–C. Anything else on a sheet (e.g. old
   odometer/mileage tracking columns) is left completely alone.
+- Borders are preserved: the Amount/Remarks columns keep a thick outer box
+  whose bottom edge always tracks whichever row is currently last, and the CC
+  column keeps its own individually-boxed border on every row — but only on
+  rows that are actually card transactions; a cash row's CC cell is left
+  completely blank (no fill, no border), matching the sheets exactly.
+  New/edited/deleted/reordered rows are formatted to match automatically.
+- Amount is right-aligned and Remarks is left-aligned, both vertically
+  centered, matching every existing row (ExcelJS otherwise defaults to bottom
+  alignment for cells with no explicit alignment set).
+- Editing, deleting, and reordering are only available for the **current
+  calendar month** in the UI (and blocked server-side for any protected sheet
+  regardless). Deleting actually removes the row and shifts everything below
+  it up, rather than just blanking it, so row numbers stay meaningful.
+  Reordering (drag the ⠿ handle) similarly moves the row for real rather than
+  just changing how it displays.
 - `Expense Summary.xlsm` and the yearly template (`Expenses (202X).xlsx`) are
   not read or written by the app — those stay manual.
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
@@ -83,8 +98,9 @@ npm run stop
 
 ## Roadmap (not built yet)
 
-- Edit/delete an existing entry.
 - A summary/dashboard view (aggregated from the yearly files, without touching
   `Expense Summary.xlsm`).
 - Possibly read-only views into the Summary workbook's other sheets (Credit
   Card Bills, Debts, EMI, Subscriptions).
+- Light/dark theme, following the OS/browser's `prefers-color-scheme` (no
+  manual toggle planned).
