@@ -146,12 +146,28 @@ function getBorderTemplate(sheet: ExcelJS.Worksheet, previousLastRow: number): R
   return { a, b, c: cloneBorder(BORDER_FALLBACK.c), closingBottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
 }
 
+// ExcelJS caches ONE shared style object per style index when reading a file
+// and hands out that SAME reference to every cell that already has an
+// identical combined style (normal XLSX-format deduplication — lots of cells
+// legitimately share a style index). But `cell.fill =`, `.border =`, etc. all
+// mutate that object IN PLACE (`this.style.fill = value`) rather than
+// replacing it. Without detaching first, editing one cell silently corrupts
+// every other cell that happened to share its style — which is exactly what
+// caused categories to cascade across unrelated rows. Cloning (not resetting)
+// preserves whatever the cell already had while breaking the shared reference,
+// so every cell this module writes to must be detached first.
+function detachStyle(cell: ExcelJS.Cell) {
+  cell.style = structuredClone(cell.style ?? {});
+}
+
 /** The CC cell only ever gets a fill/border when it's an actual card
  * transaction — a non-card row's CC cell is left completely blank (no
  * value, no fill, no border), matching the existing sheets exactly. */
 function applyCcCell(cell: ExcelJS.Cell, isCard: boolean, fill: ExcelJS.Fill, border: Partial<ExcelJS.Borders>) {
-  cell.value = null;
+  // A full reset (not detachStyle's preserve-and-clone) since a non-card cell
+  // must end up with no fill/border at all, not whatever it had before.
   cell.style = {};
+  cell.value = null;
   if (isCard) {
     cell.value = "CC";
     cell.fill = fill;
@@ -247,10 +263,12 @@ function fixClosingBorder(sheet: ExcelJS.Worksheet) {
   const last = lastDataRow(sheet);
   if (last < 2) return;
   const row = sheet.getRow(last);
-  const a = cloneBorder((row.getCell(1).border ?? {}) as Partial<ExcelJS.Borders>);
-  const b = cloneBorder((row.getCell(2).border ?? {}) as Partial<ExcelJS.Borders>);
-  row.getCell(1).border = { ...a, bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
-  row.getCell(2).border = { ...b, bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
+  const cell1 = row.getCell(1);
+  const cell2 = row.getCell(2);
+  detachStyle(cell1);
+  detachStyle(cell2);
+  cell1.border = { ...cloneBorder((cell1.border ?? {}) as Partial<ExcelJS.Borders>), bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
+  cell2.border = { ...cloneBorder((cell2.border ?? {}) as Partial<ExcelJS.Borders>), bottom: cloneBorder(BORDER_FALLBACK.closingBottom) };
   row.commit();
 }
 
@@ -279,33 +297,35 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   const previousLastRow = lastDataRow(sheet);
   const rowNumber = previousLastRow + 1;
   const borders = getBorderTemplate(sheet, previousLastRow);
-  const fill: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: CATEGORY_COLORS[category] },
-  };
-
   const row = sheet.getRow(rowNumber);
-  row.getCell(1).value = -Math.abs(amount);
-  row.getCell(1).numFmt = numFmt;
-  row.getCell(1).fill = fill;
-  row.getCell(1).border = { ...borders.a, bottom: borders.closingBottom };
-  row.getCell(1).alignment = AMOUNT_ALIGNMENT;
+  const cell1 = row.getCell(1);
+  detachStyle(cell1);
+  cell1.value = -Math.abs(amount);
+  cell1.numFmt = numFmt;
+  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell1.border = { ...borders.a, bottom: borders.closingBottom };
+  cell1.alignment = AMOUNT_ALIGNMENT;
 
-  row.getCell(2).value = remarks.trim();
-  row.getCell(2).fill = fill;
-  row.getCell(2).border = { ...borders.b, bottom: borders.closingBottom };
-  row.getCell(2).alignment = REMARKS_ALIGNMENT;
+  const cell2 = row.getCell(2);
+  detachStyle(cell2);
+  cell2.value = remarks.trim();
+  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell2.border = { ...borders.b, bottom: borders.closingBottom };
+  cell2.alignment = REMARKS_ALIGNMENT;
 
-  applyCcCell(row.getCell(3), isCard, fill, borders.c);
+  applyCcCell(row.getCell(3), isCard, { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } }, borders.c);
   row.commit();
 
   // The row we just displaced as "last" needs its closing bottom border
   // demoted back to the normal interior pattern.
   if (previousLastRow >= 2) {
     const oldLastRow = sheet.getRow(previousLastRow);
-    oldLastRow.getCell(1).border = borders.a;
-    oldLastRow.getCell(2).border = borders.b;
+    const oldCell1 = oldLastRow.getCell(1);
+    const oldCell2 = oldLastRow.getCell(2);
+    detachStyle(oldCell1);
+    detachStyle(oldCell2);
+    oldCell1.border = borders.a;
+    oldCell2.border = borders.b;
     oldLastRow.commit();
   }
 
@@ -344,23 +364,25 @@ export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry>
   assertWritable(sheet, year, month);
   assertRealEntryRow(sheet, rowNumber, year, month);
 
-  const fill: ExcelJS.Fill = {
-    type: "pattern",
-    pattern: "solid",
-    fgColor: { argb: CATEGORY_COLORS[category] },
-  };
-
   // Editing never changes position, so the Amount/Remarks borders are left
   // untouched. The CC cell's border is tied to isCard rather than position
   // though, so it still needs to be (re)applied or cleared via applyCcCell.
   const row = sheet.getRow(rowNumber);
-  row.getCell(1).value = -Math.abs(amount);
-  row.getCell(1).fill = fill;
-  row.getCell(1).alignment = AMOUNT_ALIGNMENT;
-  row.getCell(2).value = remarks.trim();
-  row.getCell(2).fill = fill;
-  row.getCell(2).alignment = REMARKS_ALIGNMENT;
-  applyCcCell(row.getCell(3), isCard, fill, cloneBorder(BORDER_FALLBACK.c));
+
+  const cell1 = row.getCell(1);
+  detachStyle(cell1); // preserves cell1's existing border (untouched by design) while breaking any shared reference
+  cell1.value = -Math.abs(amount);
+  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell1.alignment = AMOUNT_ALIGNMENT;
+
+  const cell2 = row.getCell(2);
+  detachStyle(cell2);
+  cell2.value = remarks.trim();
+  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell2.alignment = REMARKS_ALIGNMENT;
+
+  const cell3 = row.getCell(3);
+  applyCcCell(cell3, isCard, { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } }, cloneBorder(BORDER_FALLBACK.c));
   row.commit();
 
   await saveWorkbook(workbook, filePath);
@@ -443,7 +465,7 @@ export async function moveEntry(input: MoveEntryInput): Promise<void> {
       amount,
       remarks: typeof remarksValue === "string" ? remarksValue : String(remarksValue ?? ""),
       ccValue: typeof ccValue === "string" && ccValue.trim() ? ccValue : null,
-      fill: row.getCell(1).fill,
+      fill: cloneBorder(row.getCell(1).fill),
       numFmt: row.getCell(1).numFmt ?? FALLBACK_AMOUNT_NUMFMT,
     });
   }
@@ -453,18 +475,25 @@ export async function moveEntry(input: MoveEntryInput): Promise<void> {
 
   snapshots.forEach((snap, i) => {
     const row = sheet.getRow(i + 2);
-    const fill: ExcelJS.Fill = snap.fill ?? { type: "pattern", pattern: "none" };
+    const fill = snap.fill ?? { type: "pattern", pattern: "none" };
 
-    row.getCell(1).value = snap.amount;
-    row.getCell(1).numFmt = snap.numFmt;
-    row.getCell(1).fill = fill;
-    row.getCell(1).alignment = AMOUNT_ALIGNMENT;
-    row.getCell(1).border = cloneBorder(BORDER_FALLBACK.a);
+    // Every property is rewritten from the snapshot regardless of what this
+    // row position previously held, so a full style reset (rather than
+    // detachStyle's preserve-and-clone) is correct here.
+    const cell1 = row.getCell(1);
+    cell1.style = {};
+    cell1.value = snap.amount;
+    cell1.numFmt = snap.numFmt;
+    cell1.fill = fill;
+    cell1.alignment = AMOUNT_ALIGNMENT;
+    cell1.border = cloneBorder(BORDER_FALLBACK.a);
 
-    row.getCell(2).value = snap.remarks;
-    row.getCell(2).fill = fill;
-    row.getCell(2).alignment = REMARKS_ALIGNMENT;
-    row.getCell(2).border = cloneBorder(BORDER_FALLBACK.b);
+    const cell2 = row.getCell(2);
+    cell2.style = {};
+    cell2.value = snap.remarks;
+    cell2.fill = fill;
+    cell2.alignment = REMARKS_ALIGNMENT;
+    cell2.border = cloneBorder(BORDER_FALLBACK.b);
 
     applyCcCell(row.getCell(3), !!snap.ccValue, fill, cloneBorder(BORDER_FALLBACK.c));
     if (snap.ccValue) row.getCell(3).value = snap.ccValue; // preserve notes like "CC (200)"
