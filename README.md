@@ -95,6 +95,12 @@ npm run stop
 - Adding an entry for a year that doesn't have a workbook yet (e.g. next
   January) isn't supported — create that year's file from the template first,
   the same way as always.
+- ExcelJS shares one JS style object across every cell that happens to have
+  the same style index (normal XLSX dedup — see `getStyleModel()` in its
+  source), and its `.fill`/`.border`/etc setters mutate that object in place.
+  Every cell this app writes to is detached (`ledger.ts`'s `detachStyle()`)
+  before any property is touched, specifically to prevent a write to one
+  entry from silently changing others that happened to share a style.
 
 ## Roadmap (not built yet)
 
