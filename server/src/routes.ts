@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry } from "./excel/ledger.js";
+import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry, yearSummary } from "./excel/ledger.js";
 import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 
 export const router = Router();
@@ -14,6 +14,16 @@ router.get("/months/:year/:month", async (req, res, next) => {
     const month = Number(req.params.month);
     const entries = await listMonth(year, month);
     res.json(entries);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/summary/:year", async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const summary = await yearSummary(year);
+    res.json(summary);
   } catch (err) {
     next(err);
   }

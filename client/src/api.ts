@@ -30,6 +30,15 @@ export interface EntryEdits {
   isCard: boolean;
 }
 
+export interface MonthSummary {
+  month: number; // 1-12
+  food: number;
+  transportation: number;
+  rent: number;
+  other: number;
+  total: number;
+}
+
 const BASE = "/api";
 
 async function handle<T>(res: Response): Promise<T> {
@@ -80,4 +89,8 @@ export function moveEntry(year: number, month: number, fromRow: number, toRow: n
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ toRow }),
   }).then((r) => handle(r));
+}
+
+export function getYearSummary(year: number): Promise<MonthSummary[]> {
+  return fetch(`${BASE}/summary/${year}`).then((r) => handle(r));
 }

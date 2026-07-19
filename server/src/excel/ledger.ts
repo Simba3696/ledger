@@ -215,6 +215,44 @@ export async function listMonth(year: number, month: number): Promise<LedgerEntr
   return entries;
 }
 
+export interface MonthSummary {
+  month: number; // 1-12
+  food: number;
+  transportation: number;
+  rent: number;
+  other: number;
+  total: number;
+}
+
+/** Category totals for every month of a year, for the dashboard. Reuses
+ * listMonth rather than re-reading the sheet directly, so it stays in sync
+ * with whatever listMonth considers a real entry. A missing month sheet
+ * (e.g. 2018 only has Sep-Dec) degrades to a zero row instead of failing
+ * the whole year. */
+export async function yearSummary(year: number): Promise<MonthSummary[]> {
+  const months: MonthSummary[] = [];
+
+  for (let month = 1; month <= 12; month++) {
+    const summary: MonthSummary = { month, food: 0, transportation: 0, rent: 0, other: 0, total: 0 };
+
+    let entries: LedgerEntry[];
+    try {
+      entries = await listMonth(year, month);
+    } catch {
+      months.push(summary);
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.category) summary[entry.category] += entry.amount;
+      summary.total += entry.amount;
+    }
+    months.push(summary);
+  }
+
+  return months;
+}
+
 let backedUpThisRun = new Set<string>();
 
 function backupOnce(filePath: string) {

@@ -8,9 +8,13 @@
   "scripts": {
     "predev": "node scripts/kill-ports.js",
     "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
-    "stop": "node scripts/kill-ports.js"
+    "stop": "node scripts/kill-ports.js",
+    "test": "npm run test -w server",
+    "test:e2e": "tsx e2e/regression.ts"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0"
+    "concurrently": "^9.1.0",
+    "playwright": "^1.61.1",
+    "tsx": "^4.23.1"
   }
 }

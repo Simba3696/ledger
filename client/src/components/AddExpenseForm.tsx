@@ -2,11 +2,11 @@ import { useState } from "react";
 import type { Category, CategoryOption } from "../api";
 import { CategoryPicker } from "./CategoryPicker";
 import { PaymentToggle } from "./PaymentToggle";
+import { useExpenseFields } from "../hooks/useExpenseFields";
+import "./AddExpenseForm.css";
 
 interface Props {
   categories: CategoryOption[];
-  year: number;
-  month: number;
   onSubmit: (input: {
     amount: number;
     remarks: string;
@@ -16,27 +16,25 @@ interface Props {
 }
 
 export function AddExpenseForm({ categories, onSubmit }: Props) {
-  const [amount, setAmount] = useState("");
-  const [remarks, setRemarks] = useState("");
-  const [category, setCategory] = useState<Category | null>(null);
-  const [isCard, setIsCard] = useState(false);
+  const fields = useExpenseFields();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSubmit =
-    Number(amount) > 0 && remarks.trim().length > 0 && category !== null && !submitting;
+  const canSubmit = fields.isValid && !submitting;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit || category === null) return;
+    if (!canSubmit || fields.category === null) return;
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit({ amount: Number(amount), remarks: remarks.trim(), category, isCard });
-      setAmount("");
-      setRemarks("");
-      setCategory(null);
-      setIsCard(false);
+      await onSubmit({
+        amount: Number(fields.amount),
+        remarks: fields.remarks.trim(),
+        category: fields.category,
+        isCard: fields.isCard,
+      });
+      fields.reset();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -54,8 +52,8 @@ export function AddExpenseForm({ categories, onSubmit }: Props) {
             inputMode="decimal"
             min="0"
             step="0.01"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            value={fields.amount}
+            onChange={(e) => fields.setAmount(e.target.value)}
             placeholder="0.00"
             required
           />
@@ -64,8 +62,8 @@ export function AddExpenseForm({ categories, onSubmit }: Props) {
           Remarks
           <input
             type="text"
-            value={remarks}
-            onChange={(e) => setRemarks(e.target.value)}
+            value={fields.remarks}
+            onChange={(e) => fields.setRemarks(e.target.value)}
             placeholder="What was this for?"
             required
           />
@@ -73,8 +71,8 @@ export function AddExpenseForm({ categories, onSubmit }: Props) {
       </div>
 
       <div className="field-row">
-        <CategoryPicker categories={categories} value={category} onChange={setCategory} />
-        <PaymentToggle isCard={isCard} onChange={setIsCard} />
+        <CategoryPicker categories={categories} value={fields.category} onChange={fields.setCategory} />
+        <PaymentToggle isCard={fields.isCard} onChange={fields.setIsCard} />
       </div>
 
       {error && <p className="error">{error}</p>}

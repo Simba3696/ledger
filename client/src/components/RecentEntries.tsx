@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { LedgerEntry, CategoryOption } from "../api";
 import { deleteEntry, moveEntry } from "../api";
-import { CATEGORY_SWATCH } from "../categoryColors";
 import { EditEntryRow } from "./EditEntryRow";
+import { EntryRow } from "./EntryRow";
+import "./RecentEntries.css";
 
 interface Props {
   entries: LedgerEntry[];
@@ -79,31 +80,30 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
       {error && <p className="error">{error}</p>}
 
       <ul>
-        {[...entries].reverse().map((entry) => {
-          if (editingRow === entry.row) {
-            return (
-              <EditEntryRow
-                key={entry.row}
-                entry={entry}
-                categories={categories}
-                year={year}
-                month={month}
-                onCancel={() => setEditingRow(null)}
-                onSaved={async () => {
-                  setEditingRow(null);
-                  await onChanged();
-                }}
-              />
-            );
-          }
-
-          const swatch = entry.category ? CATEGORY_SWATCH[entry.category] : null;
-          const busy = busyRow === entry.row;
-          return (
-            <li
+        {[...entries].reverse().map((entry) =>
+          editingRow === entry.row ? (
+            <EditEntryRow
               key={entry.row}
-              className={`entry-row${dragOverRow === entry.row ? " drag-over" : ""}`}
-              draggable={canDrag}
+              entry={entry}
+              categories={categories}
+              year={year}
+              month={month}
+              onCancel={() => setEditingRow(null)}
+              onSaved={async () => {
+                setEditingRow(null);
+                await onChanged();
+              }}
+            />
+          ) : (
+            <EntryRow
+              key={entry.row}
+              entry={entry}
+              label={labelFor(entry.category)}
+              amountText={rupee.format(entry.amount)}
+              editable={editable}
+              busy={busyRow === entry.row}
+              isDragOver={dragOverRow === entry.row}
+              canDrag={canDrag}
               onDragStart={() => setDraggedRow(entry.row)}
               onDragOver={(e) => {
                 if (!canDrag) return;
@@ -119,34 +119,11 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
                 setDraggedRow(null);
                 setDragOverRow(null);
               }}
-            >
-              {editable && (
-                <span className="drag-handle" aria-hidden="true" title="Drag to reorder">
-                  ⠿
-                </span>
-              )}
-              <span
-                className="entry-category"
-                style={swatch ? { background: swatch.bg, color: swatch.fg } : undefined}
-              >
-                {labelFor(entry.category)}
-              </span>
-              <span className="entry-remarks">{entry.remarks}</span>
-              {entry.isCard && <span className="entry-cc">CC</span>}
-              <span className="entry-amount">{rupee.format(entry.amount)}</span>
-              {editable && (
-                <span className="entry-actions">
-                  <button type="button" onClick={() => setEditingRow(entry.row)} disabled={busy}>
-                    Edit
-                  </button>
-                  <button type="button" onClick={() => handleDelete(entry.row)} disabled={busy}>
-                    {busy ? "…" : "Delete"}
-                  </button>
-                </span>
-              )}
-            </li>
-          );
-        })}
+              onEdit={() => setEditingRow(entry.row)}
+              onDelete={() => handleDelete(entry.row)}
+            />
+          )
+        )}
       </ul>
     </div>
   );

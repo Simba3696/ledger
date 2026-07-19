@@ -1,0 +1,133 @@
+.recent-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.recent-header .total {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.recent-entries ul {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.entry-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-h);
+}
+
+.entry-row.drag-over {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+.drag-handle {
+  cursor: grab;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  user-select: none;
+}
+
+.entry-remarks {
+  flex: 1;
+  color: inherit;
+}
+
+.entry-cc {
+  font-size: 11px;
+  font-weight: 700;
+  color: inherit;
+  border: 1px solid currentColor;
+  opacity: 0.85;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.entry-amount {
+  font-weight: 600;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.entry-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.entry-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.entry-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Edit-mode row (rendered by EditEntryRow, sharing .entry-row as its base) */
+
+.entry-row-editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.edit-fields input[type="number"] {
+  width: 110px;
+}
+
+.edit-fields input {
+  font-size: 15px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.edit-fields input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-actions button:not(.submit-btn) {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
