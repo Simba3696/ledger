@@ -67,11 +67,11 @@ function App() {
       </header>
 
       <nav className="tabs">
-        <button type="button" className={tab === "ledger" ? "selected" : ""} onClick={() => setTab("ledger")}>
-          Ledger
-        </button>
         <button type="button" className={tab === "dashboard" ? "selected" : ""} onClick={() => setTab("dashboard")}>
           Dashboard
+        </button>
+        <button type="button" className={tab === "ledger" ? "selected" : ""} onClick={() => setTab("ledger")}>
+          Ledger
         </button>
       </nav>
 
