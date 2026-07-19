@@ -5,3 +5,5 @@ db/.backups/
 .env
 .backups/
 .claude/
+Ledger.bat
+Ledger.ico
