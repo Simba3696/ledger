@@ -89,11 +89,22 @@ npm run dev
 ```
 
 Starts the API on `http://localhost:4000` and the frontend on
-`http://localhost:5173`. `predev` automatically clears anything left
-listening on those two ports from a previous, uncleanly-stopped run, so this
-is always safe to re-run.
+`http://localhost:5173`, both with hot-reload — this is the mode for actually
+working on the code.
 
-To stop everything:
+For everyday use where you're not making changes, `npm start` instead:
+
+```
+npm start
+```
+
+Builds the client and server once, then serves the whole app — client
+included — from a single process on `http://localhost:4000`. No hot-reload
+or file-watching, so it starts faster and uses less memory than `npm run dev`.
+Re-run it after pulling in code changes to pick them up (it always rebuilds
+first).
+
+Either way, to stop everything:
 
 ```
 npm run stop

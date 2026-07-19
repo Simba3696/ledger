@@ -10,7 +10,10 @@
     "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "stop": "node scripts/kill-ports.js",
     "test": "npm run test -w server",
-    "test:e2e": "tsx e2e/regression.ts"
+    "test:e2e": "tsx e2e/regression.ts",
+    "build": "npm run build -w client && npm run build -w server",
+    "prestart": "node scripts/kill-ports.js",
+    "start": "npm run build && npm run start -w server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
