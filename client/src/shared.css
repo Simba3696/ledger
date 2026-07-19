@@ -1,0 +1,39 @@
+/* Generic classes reused by more than one component — kept together here
+   rather than co-located, since no single component "owns" them. */
+
+.select {
+  font-size: 15px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-h);
+}
+
+.submit-btn {
+  align-self: flex-start;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: #ef4444;
+  font-size: 14px;
+  margin: 0;
+}
+
+.empty {
+  color: var(--text);
+  opacity: 0.6;
+}

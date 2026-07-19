@@ -1,3 +1,5 @@
+import "./PaymentToggle.css";
+
 interface Props {
   isCard: boolean;
   onChange: (isCard: boolean) => void;

@@ -36,6 +36,15 @@ them in place.
   it up, rather than just blanking it, so row numbers stay meaningful.
   Reordering (drag the ⠿ handle) similarly moves the row for real rather than
   just changing how it displays.
+- The app opens on the **Dashboard** tab by default. It shows a stacked bar
+  chart of category totals per month for a selected year, computed live from
+  the same ledger data (no separate storage) — a year selector independent of
+  the Ledger tab's month/year. Clicking any month's bar (even an empty one)
+  jumps to the Ledger tab with that month/year selected, so you can view an
+  existing month or drop straight into adding a new entry.
+- Light/dark theme: a sun/moon slider toggle in the header (top right). The
+  choice is saved to `localStorage` and wins over the OS preference once set;
+  before any explicit choice, it follows `prefers-color-scheme`.
 - `Expense Summary.xlsm` and the yearly template (`Expenses (202X).xlsx`) are
   not read or written by the app — those stay manual.
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
@@ -49,7 +58,10 @@ them in place.
 server/   Express API (TypeScript). All Excel reading/writing lives in
           server/src/excel/ — categoryColors.ts (the color↔category map) and
           ledger.ts (read/append logic, safety checks).
-client/   React + Vite frontend. Add Expense form + current month's entry list.
+          server/test/ — vitest suite + the synthetic-fixture builder.
+client/   React + Vite frontend. Add Expense form + current month's entry list,
+          plus a Dashboard tab (category chart) — see src/components/.
+e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand.
 ```
 
@@ -87,6 +99,35 @@ To stop everything:
 npm run stop
 ```
 
+## Testing
+
+Two suites, covering different layers:
+
+- **`npm test`** — `server/test/ledger.test.ts` (vitest). Backend logic tests
+  against synthetic `.xlsx` fixtures built at run time by
+  `server/test/fixtures.ts` (never real data — nothing sensitive is committed).
+  Covers `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary`,
+  including a couple of specific regression tests for the shared-style-object
+  bug described above: they seed two entries with *deliberately identical*
+  style (same category, both non-last rows) so ExcelJS's normal dedup gives
+  them a shared style object on read, then assert that editing/deleting one
+  doesn't cascade into the other. Fast (a few seconds), no browser or dev
+  server needed — this is the one to run after any change to `ledger.ts`.
+- **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
+  the `@playwright/test` runner). Builds a scratch data directory seeded with
+  a full year (so switching months never legitimately 404s), starts the real
+  dev server against it, and drives an actual browser through the full app:
+  Dashboard-is-default, chart click-through navigation, month/year selects,
+  add (cash + card), edit, drag-reorder, delete, and theme toggle + persistence
+  — failing loudly on both failed assertions and any browser console error.
+  Seeds the *real current* month/year (not a hardcoded one), since edit/
+  delete/reorder are only enabled in the UI for the actual current month.
+  Slower (~15–20s) and needs the dev ports free — this is the one to run
+  after any client-side change, or before considering a session's changes done.
+
+Both suites are self-contained: they create their own temp data directories
+and never touch the real `Expenses` folder.
+
 ## Notes / gotchas
 
 - The target `.xlsx` file must be closed in Excel while adding entries through
@@ -104,9 +145,16 @@ npm run stop
 
 ## Roadmap (not built yet)
 
-- A summary/dashboard view (aggregated from the yearly files, without touching
-  `Expense Summary.xlsm`).
-- Possibly read-only views into the Summary workbook's other sheets (Credit
-  Card Bills, Debts, EMI, Subscriptions).
-- Light/dark theme, following the OS/browser's `prefers-color-scheme` (no
-  manual toggle planned).
+Read-only views into `Expense Summary.xlsm`'s other data, one phase at a time:
+
+- Salary/Balance/Cumulative/Minimum Savings/Money Earned/Spent/Current Savings,
+  from the `Summary` sheet (the category totals on that same sheet are
+  redundant with the Dashboard tab, which is preferred since it's guaranteed
+  to match actual ledger entries).
+- Credit Card Bills — due/paid/due-date per month, one table per year.
+- Debts — who owes whom.
+- EMI schedules and Subscriptions.
+
+Each of the above is manually-maintained data with no connection to the
+per-year ledger files, and `.xlsm` is macro-enabled, so these will stay
+strictly **read-only** unless/until explicitly decided otherwise.

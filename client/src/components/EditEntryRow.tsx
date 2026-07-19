@@ -1,8 +1,9 @@
 import { useState } from "react";
-import type { Category, CategoryOption, LedgerEntry } from "../api";
+import type { CategoryOption, LedgerEntry } from "../api";
 import { updateEntry } from "../api";
 import { CategoryPicker } from "./CategoryPicker";
 import { PaymentToggle } from "./PaymentToggle";
+import { useExpenseFields } from "../hooks/useExpenseFields";
 
 interface Props {
   entry: LedgerEntry;
@@ -14,25 +15,27 @@ interface Props {
 }
 
 export function EditEntryRow({ entry, categories, year, month, onCancel, onSaved }: Props) {
-  const [amount, setAmount] = useState(String(entry.amount));
-  const [remarks, setRemarks] = useState(entry.remarks);
-  const [category, setCategory] = useState<Category>(entry.category ?? "other");
-  const [isCard, setIsCard] = useState(entry.isCard);
+  const fields = useExpenseFields({
+    amount: entry.amount,
+    remarks: entry.remarks,
+    category: entry.category ?? "other",
+    isCard: entry.isCard,
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSave = Number(amount) > 0 && remarks.trim().length > 0 && !saving;
+  const canSave = fields.isValid && !saving;
 
   async function handleSave() {
-    if (!canSave) return;
+    if (!canSave || fields.category === null) return;
     setSaving(true);
     setError(null);
     try {
       await updateEntry(year, month, entry.row, {
-        amount: Number(amount),
-        remarks: remarks.trim(),
-        category,
-        isCard,
+        amount: Number(fields.amount),
+        remarks: fields.remarks.trim(),
+        category: fields.category,
+        isCard: fields.isCard,
       });
       await onSaved();
     } catch (err) {
@@ -49,12 +52,12 @@ export function EditEntryRow({ entry, categories, year, month, onCancel, onSaved
           inputMode="decimal"
           min="0"
           step="0.01"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
+          value={fields.amount}
+          onChange={(e) => fields.setAmount(e.target.value)}
         />
-        <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
-        <CategoryPicker categories={categories} value={category} onChange={setCategory} />
-        <PaymentToggle isCard={isCard} onChange={setIsCard} />
+        <input type="text" value={fields.remarks} onChange={(e) => fields.setRemarks(e.target.value)} />
+        <CategoryPicker categories={categories} value={fields.category} onChange={fields.setCategory} />
+        <PaymentToggle isCard={fields.isCard} onChange={fields.setIsCard} />
       </div>
 
       {error && <p className="error">{error}</p>}

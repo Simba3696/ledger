@@ -1,5 +1,6 @@
 import type { Category, CategoryOption } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
+import "./CategoryPicker.css";
 
 interface Props {
   categories: CategoryOption[];
