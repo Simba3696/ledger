@@ -1,6 +1,7 @@
 import type { DragEvent } from "react";
 import type { LedgerEntry } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
+import { OverflowMenu } from "./OverflowMenu";
 
 interface Props {
   entry: LedgerEntry;
@@ -15,6 +16,7 @@ interface Props {
   onDragLeave: () => void;
   onDrop: (e: DragEvent<HTMLLIElement>) => void;
   onDragEnd: () => void;
+  onCopy: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }
@@ -32,6 +34,7 @@ export function EntryRow({
   onDragLeave,
   onDrop,
   onDragEnd,
+  onCopy,
   onEdit,
   onDelete,
 }: Props) {
@@ -58,14 +61,14 @@ export function EntryRow({
       {entry.isCard && <span className="entry-cc">CC</span>}
       <span className="entry-amount">{amountText}</span>
       {editable && (
-        <span className="entry-actions">
-          <button type="button" onClick={onEdit} disabled={busy}>
-            Edit
-          </button>
-          <button type="button" onClick={onDelete} disabled={busy}>
-            {busy ? "…" : "Delete"}
-          </button>
-        </span>
+        <OverflowMenu
+          disabled={busy}
+          items={[
+            { label: "Copy", icon: "📋", onClick: onCopy },
+            { label: "Edit", icon: "✏️", onClick: onEdit },
+            { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
+          ]}
+        />
       )}
     </li>
   );

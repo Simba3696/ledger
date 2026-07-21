@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { LedgerEntry, CategoryOption } from "../api";
-import { deleteEntry, moveEntry } from "../api";
+import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
 import { EntryRow } from "./EntryRow";
 import "./RecentEntries.css";
@@ -33,6 +33,33 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
 
   const total = entries.reduce((sum, e) => sum + e.amount, 0);
   const canDrag = editable && busyRow === null;
+
+  async function handleCopy(entry: LedgerEntry) {
+    if (!entry.category) {
+      setError("Can't copy this entry — its category color isn't recognized.");
+      return;
+    }
+    setBusyRow(entry.row);
+    setError(null);
+    try {
+      // A "copy" is just a fresh append with the same values — it lands at
+      // the end of the list as its own independent entry, never linked back
+      // to the original, ready to tweak (e.g. a slightly different price).
+      await addEntry({
+        year,
+        month,
+        amount: entry.amount,
+        remarks: entry.remarks,
+        category: entry.category,
+        isCard: entry.isCard,
+      });
+      await onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyRow(null);
+    }
+  }
 
   async function handleDelete(row: number) {
     if (!window.confirm("Delete this entry? This edits the Excel file directly and can't be undone from here.")) {
@@ -119,6 +146,7 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
                 setDraggedRow(null);
                 setDragOverRow(null);
               }}
+              onCopy={() => handleCopy(entry)}
               onEdit={() => setEditingRow(entry.row)}
               onDelete={() => handleDelete(entry.row)}
             />
