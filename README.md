@@ -30,12 +30,16 @@ them in place.
 - Amount is right-aligned and Remarks is left-aligned, both vertically
   centered, matching every existing row (ExcelJS otherwise defaults to bottom
   alignment for cells with no explicit alignment set).
-- Editing, deleting, and reordering are only available for the **current
-  calendar month** in the UI (and blocked server-side for any protected sheet
-  regardless). Deleting actually removes the row and shifts everything below
-  it up, rather than just blanking it, so row numbers stay meaningful.
-  Reordering (drag the ⠿ handle) similarly moves the row for real rather than
-  just changing how it displays.
+- Copying, editing, deleting, and reordering are only available for the
+  **current calendar month** in the UI (and blocked server-side for any
+  protected sheet regardless). Copy/Edit/Delete live under a "⋮" menu on each
+  entry. Deleting actually removes the row and shifts everything below it up,
+  rather than just blanking it, so row numbers stay meaningful. Reordering
+  (drag the ⠿ handle) similarly moves the row for real rather than just
+  changing how it displays. Copy adds a brand new entry with the same
+  amount/remarks/category/card-status, appended at the end like any other new
+  entry — never linked back to the original — so editing one afterward never
+  touches the other.
 - The app opens on the **Dashboard** tab by default. It shows a stacked bar
   chart of category totals per month for a selected year, computed live from
   the same ledger data (no separate storage) — a year selector independent of

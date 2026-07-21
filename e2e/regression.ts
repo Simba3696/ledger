@@ -161,8 +161,36 @@ async function main() {
       (await page.locator('.entry-row:has-text("E2E Card Entry") .entry-cc').count()) === 1,
     );
 
-    // --- Edit the cash entry ---
-    await page.click('.entry-row:has-text("E2E Cash Entry") button:has-text("Edit")');
+    // --- Overflow menu (three-dot) helper — takes an already-resolved
+    // single-row locator, since callers need different ways of pinning down
+    // exactly one row (by exact remarks text, or positionally via .first()).
+    async function clickMenuItem(row: ReturnType<typeof page.locator>, itemLabel: string) {
+      await row.locator(".overflow-menu-trigger").click();
+      await row.locator(".overflow-menu-list").getByRole("menuitem", { name: itemLabel }).click();
+    }
+    // Playwright's `hasText` is a substring match, so once the copy gets
+    // renamed to "...Edited" below, plain `hasText: "E2E Cash Entry"` would
+    // ambiguously match both rows — filter it back out to stay exact.
+    const cashEntryRow = () =>
+      page.locator(".entry-row", { hasText: "E2E Cash Entry" }).filter({ hasNotText: "Edited" });
+
+    // --- Copy the cash entry ---
+    const beforeCopyCount = await page.locator(".entry-row").count();
+    await clickMenuItem(cashEntryRow(), "Copy");
+    await page.waitForTimeout(400);
+    check("Copy added a new row", (await page.locator(".entry-row").count()) === beforeCopyCount + 1);
+    check(
+      "Copy produced two independent rows with the same remarks",
+      (await page.locator(".entry-row", { hasText: "E2E Cash Entry" }).count()) === 2,
+    );
+    check(
+      "Copy lands at the end of the list (shown first, newest-first)",
+      (await page.locator(".entry-row").first().locator(".entry-remarks").innerText()) === "E2E Cash Entry",
+    );
+
+    // --- Edit the copy (the newest row) — proves it's independently editable,
+    // not a linked clone, and that the original is left untouched ---
+    await clickMenuItem(page.locator(".entry-row").first(), "Edit");
     await page.waitForSelector(".entry-row-editing");
     const editInputs = page.locator(".entry-row-editing .edit-fields input");
     await editInputs.nth(0).fill("99");
@@ -172,6 +200,7 @@ async function main() {
     await page.waitForSelector("text=E2E Cash Entry Edited");
     const editedRowText = await page.locator('.entry-row:has-text("E2E Cash Entry Edited")').innerText();
     check("Edit updated the amount", editedRowText.includes("99.00"));
+    check("Editing the copy left the original untouched", (await cashEntryRow().count()) === 1);
 
     // --- Drag reorder ---
     const src = page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" });
@@ -184,12 +213,14 @@ async function main() {
       namesAfterDrag.indexOf("E2E Cash Entry Edited") !== -1 && namesAfterDrag.indexOf("E2E Card Entry") !== -1,
     );
 
-    // --- Delete both test entries (cleanup + verifies delete) ---
-    await page.click('.entry-row:has-text("E2E Cash Entry Edited") button:has-text("Delete")');
+    // --- Delete all three test entries (cleanup + verifies delete) ---
+    await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" }), "Delete");
     await page.waitForTimeout(400);
-    await page.click('.entry-row:has-text("E2E Card Entry") button:has-text("Delete")');
+    await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Card Entry" }), "Delete");
     await page.waitForTimeout(400);
-    check("Both test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
+    await clickMenuItem(cashEntryRow(), "Delete");
+    await page.waitForTimeout(400);
+    check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
     // --- Theme toggle ---
     await page.click(".theme-toggle");
