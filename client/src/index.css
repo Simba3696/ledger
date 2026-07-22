@@ -1,15 +1,45 @@
 :root {
-  --text: #2c2c2c;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --card-bg: #f9f9fa;
-  --accent: #3b82f6;
+  /* ---- Theme palette — the ONLY place to edit colors ---- */
+  --light-text: #2c2c2c;
+  --light-text-h: #08060d;
+  --light-bg: #f7fda1;
+  --light-border: #e5e4e7;
+  --light-card-bg: #b2c7c7;
+  --light-accent: #3b82f6;
+
+  --dark-text: #d1d5db;
+  --dark-text-h: #f3f4f6;
+  --dark-bg: #16171d;
+  --dark-border: #2e303a;
+  --dark-card-bg: #1f2028;
+  --dark-accent: #60a5fa;
+  /* -------------------------------------------------------- */
+
+  /* Active theme — defaults to light; overridden below by either the OS
+     preference or an explicit user choice. Every block from here on just
+     references the light/dark variables above rather than repeating
+     literal colors, so each color only ever needs editing in one place. */
+  --text: var(--light-text);
+  --text-h: var(--light-text-h);
+  --bg: var(--light-bg);
+  --border: var(--light-border);
+  --card-bg: var(--light-card-bg);
+  --accent: var(--light-accent);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
-  font: 16px/145% var(--sans);
+  /* Font-size scale — reused by size role rather than repeating a literal
+     px value everywhere it happens to apply. One-off sizes that only ever
+     belong to a single element (a page heading, a tiny badge) are left as
+     plain literals in their own component's CSS — there's no shared
+     "correct" value to keep in sync for those. */
+  --font-size-base: 16px;    /* body text, form inputs */
+  --font-size-control: 15px; /* buttons, selects, edit-mode inputs */
+  --font-size-sm: 14px;      /* secondary text: chips, toggles, errors */
+  --font-size-xs: 13px;      /* captions, hints, menu items */
+
+  font: var(--font-size-base)/145% var(--sans);
   color-scheme: light dark;
   color: var(--text);
   background: var(--bg);
@@ -21,12 +51,12 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #d1d5db;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --card-bg: #1f2028;
-    --accent: #60a5fa;
+    --text: var(--dark-text);
+    --text-h: var(--dark-text-h);
+    --bg: var(--dark-bg);
+    --border: var(--dark-border);
+    --card-bg: var(--dark-card-bg);
+    --accent: var(--dark-accent);
   }
 }
 
@@ -34,22 +64,22 @@
    above (attribute selector adds weight), so it wins in both directions
    regardless of the OS setting once the user picks one explicitly. */
 :root[data-theme="light"] {
-  --text: #2c2c2c;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --card-bg: #f9f9fa;
-  --accent: #3b82f6;
+  --text: var(--light-text);
+  --text-h: var(--light-text-h);
+  --bg: var(--light-bg);
+  --border: var(--light-border);
+  --card-bg: var(--light-card-bg);
+  --accent: var(--light-accent);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --text: #d1d5db;
-  --text-h: #f3f4f6;
-  --bg: #16171d;
-  --border: #2e303a;
-  --card-bg: #1f2028;
-  --accent: #60a5fa;
+  --text: var(--dark-text);
+  --text-h: var(--dark-text-h);
+  --bg: var(--dark-bg);
+  --border: var(--dark-border);
+  --card-bg: var(--dark-card-bg);
+  --accent: var(--dark-accent);
   color-scheme: dark;
 }
 

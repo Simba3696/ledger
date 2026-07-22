@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type ErrorRequestHandler } from "express";
 import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry, yearSummary } from "./excel/ledger.js";
 import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 
@@ -92,12 +92,13 @@ router.patch("/entries/:year/:month/:row/move", async (req, res, next) => {
   }
 });
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-router.use((err: unknown, _req: any, res: any, _next: any) => {
+const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof LedgerError) {
     res.status(err.status).json({ error: err.message });
     return;
   }
   console.error(err);
   res.status(500).json({ error: "Internal server error" });
-});
+};
+
+router.use(errorHandler);

@@ -85,7 +85,7 @@
 }
 
 .edit-fields input {
-  font-size: 15px;
+  font-size: var(--font-size-control);
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);

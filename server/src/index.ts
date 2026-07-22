@@ -3,7 +3,6 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import cors from "cors";
 import { router } from "./routes.js";
 import { DB_DIR } from "./excel/ledger.js";
 
@@ -11,7 +10,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = path.resolve(__dirname, "../../client/dist");
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 app.use("/api", router);
 
