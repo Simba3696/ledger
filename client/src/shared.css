@@ -2,7 +2,7 @@
    rather than co-located, since no single component "owns" them. */
 
 .select {
-  font-size: 15px;
+  font-size: var(--font-size-control);
   padding: 6px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -17,7 +17,7 @@
   border: none;
   border-radius: 8px;
   padding: 12px 24px;
-  font-size: 15px;
+  font-size: var(--font-size-control);
   font-weight: 600;
   cursor: pointer;
 }
@@ -29,7 +29,7 @@
 
 .error {
   color: #ef4444;
-  font-size: 14px;
+  font-size: var(--font-size-sm);
   margin: 0;
 }
 

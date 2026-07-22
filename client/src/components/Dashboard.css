@@ -43,7 +43,7 @@
 .dashboard-hint {
   color: var(--text);
   opacity: 0.6;
-  font-size: 13px;
+  font-size: var(--font-size-xs);
   text-align: center;
   margin: 10px 0 0;
 }

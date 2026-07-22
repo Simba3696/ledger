@@ -43,7 +43,7 @@
   gap: 8px;
   width: 100%;
   text-align: left;
-  font-size: 13px;
+  font-size: var(--font-size-xs);
   padding: 6px 10px;
   border-radius: 5px;
   border: none;
@@ -53,7 +53,7 @@
 }
 
 .overflow-menu-item-icon {
-  font-size: 13px;
+  font-size: var(--font-size-xs);
   line-height: 1;
 }
 
