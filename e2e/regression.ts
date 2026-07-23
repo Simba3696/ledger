@@ -115,7 +115,7 @@ async function main() {
       await page.waitForTimeout(400);
     }
     await clickChartMonth(monthIndex);
-    check("Click-through navigated to Ledger", (await page.locator(".tabs button.selected").innerText()) === "Ledger");
+    check("Click-through navigated to Expenses", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
     check(
       "Click-through selected the clicked month",
       (await page.locator(".month-picker select").first().inputValue()) === String(monthIndex + 1),
