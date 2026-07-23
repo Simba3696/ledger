@@ -43,8 +43,8 @@ them in place.
 - The app opens on the **Dashboard** tab by default. It shows a stacked bar
   chart of category totals per month for a selected year, computed live from
   the same ledger data (no separate storage) — a year selector independent of
-  the Ledger tab's month/year. Clicking any month's bar (even an empty one)
-  jumps to the Ledger tab with that month/year selected, so you can view an
+  the Expenses tab's month/year. Clicking any month's bar (even an empty one)
+  jumps to the Expenses tab with that month/year selected, so you can view an
   existing month or drop straight into adding a new entry.
 - Light/dark theme: a sun/moon slider toggle in the header (top right). The
   choice is saved to `localStorage` and wins over the OS preference once set;

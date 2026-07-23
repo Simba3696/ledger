@@ -9,7 +9,7 @@ import { Dashboard } from "./components/Dashboard";
 import { ThemeToggle } from "./components/ThemeToggle";
 import logoIcon from "./assets/logo-icon.png";
 
-type Tab = "ledger" | "dashboard";
+type Tab = "expenses" | "dashboard";
 
 function App() {
   const now = new Date();
@@ -48,7 +48,7 @@ function App() {
   function goToMonth(y: number, m: number) {
     setYear(y);
     setMonth(m);
-    setTab("ledger");
+    setTab("expenses");
   }
 
   return (
@@ -59,7 +59,7 @@ function App() {
           <h1>Ledger</h1>
         </div>
         <div className="header-right">
-          {tab === "ledger" && (
+          {tab === "expenses" && (
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
@@ -70,12 +70,12 @@ function App() {
         <button type="button" className={tab === "dashboard" ? "selected" : ""} onClick={() => setTab("dashboard")}>
           Dashboard
         </button>
-        <button type="button" className={tab === "ledger" ? "selected" : ""} onClick={() => setTab("ledger")}>
-          Ledger
+        <button type="button" className={tab === "expenses" ? "selected" : ""} onClick={() => setTab("expenses")}>
+          Expenses
         </button>
       </nav>
 
-      {tab === "ledger" ? (
+      {tab === "expenses" ? (
         <>
           <AddExpenseForm
             categories={categories}
