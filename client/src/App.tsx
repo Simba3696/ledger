@@ -32,6 +32,10 @@ function App() {
       const data = await getMonth(year, month);
       setEntries(data);
     } catch (err) {
+      // Clear stale entries too — otherwise switching to a month/year that
+      // fails to load (e.g. a not-yet-created year) leaves the previous
+      // month's entries on screen underneath the error message.
+      setEntries([]);
       setLoadError((err as Error).message);
     } finally {
       setLoading(false);

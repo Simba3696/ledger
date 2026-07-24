@@ -56,6 +56,40 @@ describe("listMonth", () => {
   });
 });
 
+describe("appendEntry auto-creates a missing year's workbook", () => {
+  const YEAR = 2097;
+
+  it("creates all 12 month sheets and adds the entry, on a year with no file at all", async () => {
+    expect(fs.existsSync(workbookPath(YEAR))).toBe(false);
+
+    const result = await ledger.appendEntry({
+      year: YEAR,
+      month: 3,
+      amount: 500,
+      remarks: "First entry of a brand-new year",
+      category: "rent",
+      isCard: false,
+    });
+    expect(result).toMatchObject({ row: 2, amount: 500 });
+    expect(fs.existsSync(workbookPath(YEAR))).toBe(true);
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(workbookPath(YEAR));
+    expect(workbook.worksheets.map((s) => s.name)).toEqual(ledger.MONTH_NAMES);
+
+    // An untouched month sheet is still just the blank header row.
+    const decemberRow1 = workbook.getWorksheet("December")!.getRow(1);
+    expect(decemberRow1.getCell(1).value).toBe("Amount");
+    expect(decemberRow1.getCell(2).value).toBe("Remarks");
+    expect(workbook.getWorksheet("December")!.rowCount).toBe(1);
+  });
+
+  it("does not throw for other years that still genuinely have no workbook", async () => {
+    // listMonth/updateEntry/etc. are unaffected — only appendEntry auto-creates.
+    await expect(ledger.listMonth(2098, 1)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
 describe("appendEntry", () => {
   const YEAR = 2092;
 

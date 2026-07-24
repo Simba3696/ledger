@@ -114,6 +114,16 @@ async function main() {
       await page.mouse.up();
       await page.waitForTimeout(400);
     }
+    // --- Cross-chart hover sync (syncId) ---
+    const hoverTickBox = await ticks.nth(monthIndex).boundingBox();
+    if (!hoverTickBox || !svgBox) throw new Error("Could not locate chart elements for hover-sync check");
+    await page.mouse.move(hoverTickBox.x + hoverTickBox.width / 2, svgBox.y + svgBox.height * 0.5, { steps: 8 });
+    await page.waitForTimeout(300);
+    check(
+      "Hovering the main chart highlights the same month in the category mini-charts",
+      (await page.locator(".category-chart", { hasText: "Food :" }).count()) > 0,
+    );
+
     await clickChartMonth(monthIndex);
     check("Click-through navigated to Expenses", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
     check(
@@ -222,6 +232,36 @@ async function main() {
     await page.waitForTimeout(400);
     check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
+    // --- Auto-create next year's workbook on first entry ---
+    // The scratch dir only seeded the current year, so next year genuinely
+    // has no file yet — this exercises appendEntry's auto-create path (and
+    // confirms YearSelect actually offers a year beyond the current one).
+    const nextYear = String(year + 1);
+    await page.selectOption(".month-picker select >> nth=1", nextYear);
+    await page.waitForTimeout(300);
+    check("Selecting next year shows no entries yet (no file, no crash)", (await page.locator(".entry-row").count()) === 0);
+    // That 404 is expected (confirming the file doesn't exist yet before we
+    // auto-create it below) — the browser logs it as a console error
+    // regardless of the app handling it gracefully, so filter this one
+    // known-expected occurrence out rather than let it fail the "no console
+    // errors" check at the end.
+    const expected404 = consoleErrors.findIndex((e) => e.includes("404"));
+    if (expected404 !== -1) consoleErrors.splice(expected404, 1);
+
+    await page.fill('input[type="number"]', "999");
+    await page.fill('input[type="text"]', "First entry of a new year");
+    await page.click('button.category-chip:has-text("Food")');
+    await page.click('button.submit-btn:has-text("Add Expense")');
+    await page.waitForSelector("text=First entry of a new year");
+    check(
+      "Adding an entry to an unset year auto-creates its workbook",
+      (await page.locator(".entry-row").count()) === 1,
+    );
+
+    // Switch back — the Finances checks below assume the original seeded year.
+    await page.selectOption(".month-picker select >> nth=1", String(year));
+    await page.waitForTimeout(300);
+
     // --- Finances tab (salary/balance/savings) ---
     await page.click('.tabs button:has-text("Finances")');
     check("Finances tab selected", (await page.locator(".tabs button.selected").innerText()) === "Finances");
@@ -229,7 +269,21 @@ async function main() {
     const incomeInputs = page.locator('.income-form input[type="number"]');
     await incomeInputs.nth(0).fill("50000"); // Salary
     await incomeInputs.nth(1).fill("5000"); // Other Income
-    await incomeInputs.nth(2).fill("200000"); // Current Savings
+
+    // Current Savings: a dynamic list of named scheme balances, summed
+    // automatically rather than one manual total.
+    await page.click(".savings-add");
+    await page.click(".savings-add");
+    const savingsRows = page.locator(".savings-row");
+    await savingsRows.nth(0).locator('input[type="text"]').fill("PPF");
+    await savingsRows.nth(0).locator('input[type="number"]').fill("120000");
+    await savingsRows.nth(1).locator('input[type="text"]').fill("NPS");
+    await savingsRows.nth(1).locator('input[type="number"]').fill("80000");
+    check(
+      "Finance: savings editor shows a live total as rows are filled",
+      (await page.locator(".savings-editor-total").innerText()).includes("2,00,000"),
+    );
+
     await page.click(".income-form button.submit-btn");
     await page.waitForSelector(".finance-stats");
     await page.waitForTimeout(300);
@@ -239,7 +293,7 @@ async function main() {
     }
     check("Finance: Money Earned reflects salary + other income", (await financeStat("Money Earned")).includes("55,000"));
     check("Finance: Minimum Savings is ceil(15% of income)", (await financeStat("Minimum Savings")).includes("8,250"));
-    check("Finance: Current Savings reflects the manual entry", (await financeStat("Current Savings")).includes("2,00,000"));
+    check("Finance: Current Savings sums both scheme entries", (await financeStat("Current Savings")).includes("2,00,000"));
 
     // No prior month has a salary on record, so it's treated as zero income —
     // this month's balance is a plain deficit equal to its own expenses (the
@@ -262,6 +316,7 @@ async function main() {
     await page.click('.tabs button:has-text("Finances")');
     await page.waitForSelector(".finance-stats");
     check("Finance entry persisted across reload", (await incomeInputs.nth(0).inputValue()) === "50000");
+    check("Finance: savings breakdown persisted across reload", (await page.locator(".savings-row").count()) === 2);
 
     // --- Theme toggle ---
     await page.click(".theme-toggle");

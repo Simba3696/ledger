@@ -39,6 +39,35 @@ async function loadWorkbook(year: number): Promise<ExcelJS.Workbook> {
   return workbook;
 }
 
+/** A brand-new year's workbook, matching the user's own blank template
+ * exactly: 12 month sheets, each with just the Amount/Remarks header row —
+ * no CC column (added transparently on the first card entry), no formulas,
+ * no protection. Every actual row's formatting (number format, borders,
+ * alignment) is handled by appendEntry's own fallbacks the same way it
+ * already is for the first entry on any sheet, so there's nothing else to
+ * seed here. */
+function buildBlankYearWorkbook(): ExcelJS.Workbook {
+  const workbook = new ExcelJS.Workbook();
+  for (const name of MONTH_NAMES) {
+    const sheet = workbook.addWorksheet(name);
+    sheet.getRow(1).getCell(1).value = "Amount";
+    sheet.getRow(1).getCell(2).value = "Remarks";
+  }
+  return workbook;
+}
+
+/** Like loadWorkbook, but returns a fresh in-memory year's workbook if one
+ * doesn't exist on disk yet, rather than failing — used only by appendEntry,
+ * since that's the one operation where "the year hasn't been set up yet" has
+ * an obvious, safe fix rather than being a real error. Not saved here; the
+ * caller's own save (after adding the actual entry) is what persists it, so
+ * a brand-new year never gets written to disk empty. */
+async function loadOrCreateWorkbook(year: number): Promise<ExcelJS.Workbook> {
+  const filePath = workbookPath(year);
+  if (fs.existsSync(filePath)) return loadWorkbook(year);
+  return buildBlankYearWorkbook();
+}
+
 function getSheet(workbook: ExcelJS.Workbook, year: number, month: number): ExcelJS.Worksheet {
   const name = monthName(month);
   const sheet = workbook.getWorksheet(name);
@@ -316,7 +345,7 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   if (!CATEGORY_COLORS[category]) throw new LedgerError(`Unknown category: ${category}`, 400);
 
   const filePath = workbookPath(year);
-  const workbook = await loadWorkbook(year);
+  const workbook = await loadOrCreateWorkbook(year);
   const sheet = getSheet(workbook, year, month);
   assertWritable(sheet, year, month);
 

@@ -8,7 +8,12 @@ export const EARLIEST_YEAR = 2018;
 
 const FINANCES_PATH = path.join(DB_DIR, "Finances.xlsx");
 const SHEET_NAME = "Income";
-const HEADERS = ["Year", "Month", "Salary", "Other Income", "Current Savings"];
+const HEADERS = ["Year", "Month", "Salary", "Other Income", "Current Savings Breakdown"];
+
+export interface SavingsEntry {
+  name: string; // e.g. "PPF", "NPS", "APY"
+  amount: number;
+}
 
 function numberOrNull(value: ExcelJS.CellValue): number | null {
   if (typeof value === "number") return value;
@@ -21,6 +26,33 @@ function numberOrNull(value: ExcelJS.CellValue): number | null {
   return null;
 }
 
+/** Current Savings is stored as a JSON array of named scheme balances (PPF,
+ * NPS, APY, ...) in one cell, rather than a single number, since the set of
+ * schemes changes over time (a scheme can be added or exited) and the total
+ * is just their sum. A bare number is also accepted on read as a legacy
+ * single-entry breakdown, in case a cell was ever set that way directly. */
+function parseSavingsCell(value: ExcelJS.CellValue): SavingsEntry[] {
+  if (typeof value === "number") return [{ name: "Total", amount: value }];
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(
+          (e): e is SavingsEntry =>
+            e && typeof e === "object" && typeof e.name === "string" && typeof e.amount === "number",
+        );
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function sumSavings(savings: SavingsEntry[]): number {
+  return savings.reduce((sum, s) => sum + s.amount, 0);
+}
+
 function validateYearMonth(year: number, month: number) {
   if (!Number.isInteger(year) || year < EARLIEST_YEAR) throw new LedgerError(`Invalid year: ${year}`, 400);
   if (!Number.isInteger(month) || month < 1 || month > 12) throw new LedgerError(`Invalid month: ${month}`, 400);
@@ -29,6 +61,13 @@ function validateYearMonth(year: number, month: number) {
 function validateAmount(value: number | null, label: string) {
   if (value === null) return;
   if (!Number.isFinite(value)) throw new LedgerError(`${label} must be a number`, 400);
+}
+
+function validateSavings(savings: SavingsEntry[]) {
+  for (const entry of savings) {
+    if (!entry.name || !entry.name.trim()) throw new LedgerError("Each savings entry needs a name", 400);
+    if (!Number.isFinite(entry.amount)) throw new LedgerError(`Savings amount for "${entry.name}" must be a number`, 400);
+  }
 }
 
 async function loadOrCreateFinancesWorkbook(): Promise<ExcelJS.Workbook> {
@@ -61,7 +100,7 @@ export interface MonthIncome {
   month: number;
   salary: number | null;
   otherIncome: number | null;
-  currentSavings: number | null;
+  savings: SavingsEntry[];
 }
 
 export async function getMonthIncome(year: number, month: number): Promise<MonthIncome> {
@@ -74,7 +113,7 @@ export async function getMonthIncome(year: number, month: number): Promise<Month
     month,
     salary: row ? numberOrNull(row.getCell(3).value) : null,
     otherIncome: row ? numberOrNull(row.getCell(4).value) : null,
-    currentSavings: row ? numberOrNull(row.getCell(5).value) : null,
+    savings: row ? parseSavingsCell(row.getCell(5).value) : [],
   };
 }
 
@@ -83,15 +122,15 @@ export interface SetMonthIncomeInput {
   month: number;
   salary: number | null;
   otherIncome: number | null;
-  currentSavings: number | null;
+  savings: SavingsEntry[];
 }
 
 export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthIncome> {
-  const { year, month, salary, otherIncome, currentSavings } = input;
+  const { year, month, salary, otherIncome, savings } = input;
   validateYearMonth(year, month);
   validateAmount(salary, "Salary");
   validateAmount(otherIncome, "Other income");
-  validateAmount(currentSavings, "Current savings");
+  validateSavings(savings);
 
   const workbook = await loadOrCreateFinancesWorkbook();
   const sheet = getFinancesSheet(workbook);
@@ -103,12 +142,12 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
   }
   row.getCell(3).value = salary;
   row.getCell(4).value = otherIncome;
-  row.getCell(5).value = currentSavings;
+  row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
   row.commit();
 
   await saveWorkbook(workbook, FINANCES_PATH);
 
-  return { year, month, salary, otherIncome, currentSavings };
+  return { year, month, salary, otherIncome, savings };
 }
 
 export interface MonthFinanceSummary {
@@ -129,10 +168,13 @@ export interface MonthFinanceSummary {
   moneyEarned: number;
   /** Running sum of expenses from EARLIEST_YEAR through this month. */
   moneySpent: number;
-  /** Most recently entered savings snapshot, carried forward through months
-   * where it wasn't re-entered (it's an occasional manual check-in, not a
-   * monthly ritual). Null until first ever entered. */
+  /** Sum of currentSavingsBreakdown. Most recently entered snapshot, carried
+   * forward through months where it wasn't re-entered (it's an occasional
+   * manual check-in, not a monthly ritual). Null until first ever entered. */
   currentSavings: number | null;
+  /** The named scheme balances (PPF, NPS, APY, ...) behind currentSavings,
+   * carried forward the same way. Empty until first ever entered. */
+  currentSavingsBreakdown: SavingsEntry[];
 }
 
 function monthsFromEarliestThrough(year: number, month: number): Array<{ year: number; month: number }> {
@@ -153,7 +195,7 @@ export async function financeSummary(uptoYear: number, uptoMonth: number): Promi
 
   const workbook = await loadOrCreateFinancesWorkbook();
   const sheet = getFinancesSheet(workbook);
-  const incomeByKey = new Map<string, { salary: number | null; otherIncome: number | null; currentSavings: number | null }>();
+  const incomeByKey = new Map<string, { salary: number | null; otherIncome: number | null; savings: SavingsEntry[] }>();
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
     const y = row.getCell(1).value;
@@ -162,7 +204,7 @@ export async function financeSummary(uptoYear: number, uptoMonth: number): Promi
     incomeByKey.set(`${y}-${m}`, {
       salary: numberOrNull(row.getCell(3).value),
       otherIncome: numberOrNull(row.getCell(4).value),
-      currentSavings: numberOrNull(row.getCell(5).value),
+      savings: parseSavingsCell(row.getCell(5).value),
     });
   });
 
@@ -177,10 +219,10 @@ export async function financeSummary(uptoYear: number, uptoMonth: number): Promi
   let moneyEarned = 0;
   let moneySpent = 0;
   let lastIncome = 0;
-  let lastKnownSavings: number | null = null;
+  let lastKnownSavings: SavingsEntry[] = [];
 
   for (const { year, month } of monthsFromEarliestThrough(uptoYear, uptoMonth)) {
-    const income = incomeByKey.get(`${year}-${month}`) ?? { salary: null, otherIncome: null, currentSavings: null };
+    const income = incomeByKey.get(`${year}-${month}`) ?? { salary: null, otherIncome: null, savings: [] };
     const expenses = await expensesFor(year, month);
 
     const balance = lastIncome - expenses;
@@ -193,7 +235,7 @@ export async function financeSummary(uptoYear: number, uptoMonth: number): Promi
 
     moneyEarned += (income.salary ?? 0) + (income.otherIncome ?? 0);
     moneySpent += expenses;
-    if (income.currentSavings !== null) lastKnownSavings = income.currentSavings;
+    if (income.savings.length > 0) lastKnownSavings = income.savings;
 
     results.push({
       year,
@@ -206,7 +248,8 @@ export async function financeSummary(uptoYear: number, uptoMonth: number): Promi
       minimumSavings,
       moneyEarned,
       moneySpent,
-      currentSavings: lastKnownSavings,
+      currentSavings: lastKnownSavings.length > 0 ? sumSavings(lastKnownSavings) : null,
+      currentSavingsBreakdown: lastKnownSavings,
     });
 
     lastIncome = (income.salary ?? 0) + (income.otherIncome ?? 0);
