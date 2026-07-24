@@ -36,8 +36,17 @@
   padding: 16px 8px 8px;
 }
 
-.dashboard-bar {
-  cursor: pointer;
+/* Recharts merges this class onto the chart's root wrapper div, so the
+   pointer covers the whole plottable area (axes included) rather than just
+   each <Bar>'s own rendered shape — a near-zero bar has almost nothing to
+   hover over, but the click itself already worked across the full column via
+   Recharts' own mouse tracking, so the cursor should match that. Recharts
+   itself sets an inline `cursor: default` on that same wrapper div, and an
+   inline style always wins over a stylesheet rule regardless of specificity
+   — !important is the only way to override a third-party inline style from
+   CSS without reaching into its internals via JS. */
+.clickable-chart {
+  cursor: pointer !important;
 }
 
 .dashboard-hint {

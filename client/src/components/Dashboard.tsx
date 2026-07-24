@@ -46,14 +46,26 @@ const CATEGORY_CHARTS = [
 /** One category's monthly totals in isolation — each auto-scales to its own
  * range (rather than sharing the main chart's combined scale), so a lower-
  * spend category's month-to-month pattern is still readable instead of
- * looking flat next to a much bigger one. Module-level, not nested inside
+ * looking flat next to a much bigger one. Clickable the same way as the main
+ * chart (same onBarClick, same index-based month lookup, since every chart
+ * plots the identical chartData array). Module-level, not nested inside
  * Dashboard, so it isn't redefined (and its subtree remounted) every render. */
-function CategoryMiniChart({ data, dataKey, color }: { data: ChartRow[]; dataKey: (typeof CATEGORY_CHARTS)[number]["dataKey"]; color: string }) {
+function CategoryMiniChart({
+  data,
+  dataKey,
+  color,
+  onBarClick,
+}: {
+  data: ChartRow[];
+  dataKey: (typeof CATEGORY_CHARTS)[number]["dataKey"];
+  color: string;
+  onBarClick: (state: MouseHandlerDataParam) => void;
+}) {
   return (
     <div className="category-chart">
       <h3>{dataKey}</h3>
       <ResponsiveContainer width="100%" height={180}>
-        <BarChart data={data} syncId={DASHBOARD_SYNC_ID}>
+        <BarChart data={data} syncId={DASHBOARD_SYNC_ID} onClick={onBarClick} className="clickable-chart">
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
           <XAxis dataKey="name" stroke="var(--text)" fontSize={11} />
           <YAxis stroke="var(--text)" fontSize={11} width={40} />
@@ -126,7 +138,7 @@ export function Dashboard({ onSelectMonth }: Props) {
 
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={chartData} onClick={handleBarClick} syncId={DASHBOARD_SYNC_ID}>
+              <BarChart data={chartData} onClick={handleBarClick} syncId={DASHBOARD_SYNC_ID} className="clickable-chart">
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="name" stroke="var(--text)" fontSize={12} />
                 <YAxis stroke="var(--text)" fontSize={12} />
@@ -157,7 +169,7 @@ export function Dashboard({ onSelectMonth }: Props) {
 
           <div className="category-charts">
             {CATEGORY_CHARTS.map((c) => (
-              <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} />
+              <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} onBarClick={handleBarClick} />
             ))}
           </div>
         </>

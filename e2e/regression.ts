@@ -104,10 +104,17 @@ async function main() {
     const ticks = page.locator(".recharts-cartesian-axis-tick-value");
     const svgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
     async function clickChartMonth(index: number) {
+      // Recomputed fresh (not the outer svgBox) and scrolled into view every
+      // call — this runs again later after the mini-chart detour below has
+      // scrolled the page down, and page.mouse.move works in raw page
+      // coordinates with no auto-scroll, so a stale/off-screen box would
+      // silently miss the chart entirely.
+      await page.locator(".chart-wrap").scrollIntoViewIfNeeded();
+      const freshSvgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
       const tickBox = await ticks.nth(index).boundingBox();
-      if (!tickBox || !svgBox) throw new Error("Could not locate chart elements");
+      if (!tickBox || !freshSvgBox) throw new Error("Could not locate chart elements");
       const x = tickBox.x + tickBox.width / 2;
-      const y = svgBox.y + svgBox.height * 0.5;
+      const y = freshSvgBox.y + freshSvgBox.height * 0.5;
       await page.mouse.move(x, y, { steps: 8 });
       await page.waitForTimeout(150);
       await page.mouse.down();
@@ -123,6 +130,46 @@ async function main() {
       "Hovering the main chart highlights the same month in the category mini-charts",
       (await page.locator(".category-chart", { hasText: "Food :" }).count()) > 0,
     );
+
+    // The hover-sync check above leaves a tooltip popup floating right over
+    // the bar we're about to click next (same month, same first mini-chart)
+    // — move away first so that overlay doesn't intercept the click.
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(200);
+
+    // --- Category mini-charts are clickable too (same handleBarClick as the main chart) ---
+    // Targets the bar's own <path name="Jul"> rather than an X-axis tick by
+    // index: the mini charts are narrower than the main chart, so Recharts
+    // auto-skips some month labels to avoid overlap (e.g. only 8 of 12
+    // render) — meaning the Nth rendered tick doesn't reliably correspond to
+    // the Nth calendar month there, unlike the full-width main chart above.
+    // Also uses move-then-wait-then-down/up, not page.mouse.click() — that
+    // shortcut doesn't reliably populate Recharts' hover-tracked index first.
+    const firstMiniChart = page.locator(".category-chart").first();
+    // The mini-charts sit below the main chart and render below the fold at
+    // the default viewport size — page.mouse.move (unlike .click()) moves to
+    // raw page coordinates without auto-scrolling, so without this the
+    // computed bounding box points at an off-screen position.
+    await firstMiniChart.scrollIntoViewIfNeeded();
+    const monthAbbr = monthName.slice(0, 3);
+    const barBox = await firstMiniChart.locator(`path[name="${monthAbbr}"]`).boundingBox();
+    if (!barBox) throw new Error(`Could not locate the "${monthAbbr}" bar in the first category mini-chart`);
+    await page.mouse.move(barBox.x + barBox.width / 2, barBox.y + barBox.height / 2, { steps: 8 });
+    await page.waitForTimeout(150);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    check(
+      "Clicking a category mini-chart also navigates to Expenses",
+      (await page.locator(".tabs button.selected").innerText()) === "Expenses",
+    );
+    await page.click('.tabs button:has-text("Dashboard")');
+    // App.tsx conditionally renders the Dashboard tab, so switching back to
+    // it unmounts/remounts the whole component — wait for its chart to
+    // actually reappear (a fresh API fetch + render) rather than a fixed
+    // delay that may finish before that's done.
+    await page.waitForSelector(".chart-wrap svg");
+    await page.waitForTimeout(300);
 
     await clickChartMonth(monthIndex);
     check("Click-through navigated to Expenses", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
