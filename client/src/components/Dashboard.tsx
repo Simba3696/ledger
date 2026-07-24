@@ -13,18 +13,13 @@ import {
 import { getYearSummary, type MonthSummary } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
+import { rupee } from "../format";
 import "./Dashboard.css";
 
 const MONTH_ABBR = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-
-const rupee = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  maximumFractionDigits: 2,
-});
 
 interface Props {
   onSelectMonth: (year: number, month: number) => void;

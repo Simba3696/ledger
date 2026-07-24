@@ -1,0 +1,46 @@
+.finances h2 {
+  margin: 0 0 16px;
+}
+
+.income-form {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.income-form input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.finance-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.finance-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.finance-stat span {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+.finance-stat strong {
+  font-size: 18px;
+  color: var(--text-h);
+}

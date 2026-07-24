@@ -46,6 +46,28 @@ them in place.
   the Expenses tab's month/year. Clicking any month's bar (even an empty one)
   jumps to the Expenses tab with that month/year selected, so you can view an
   existing month or drop straight into adding a new entry.
+- A third tab, **Finances**, tracks Salary, Other Income, and a Current
+  Savings snapshot per month — entered through the app into a new
+  `Finances.xlsx` that it owns entirely (separate from `Expense
+  Summary.xlsm`, which stays macro-enabled, manual, and untouched). From
+  those entries it computes:
+  - **Balance** — last month's total income (salary + other income) minus
+    this month's expenses. A month with no income on record counts as zero,
+    so it shows as a real deficit rather than "unknown".
+  - **Cumulative** — running sum of Balance since 2018.
+  - **Minimum Savings** — `ceil(15% of this month's own salary + other income)`.
+  - **Money Earned / Money Spent** — running totals of income / ledger
+    expenses since 2018.
+  - **Current Savings** — a manually-entered snapshot (PPF/NPS/APY etc.)
+    that carries forward across months until you update it again, rather
+    than resetting to blank when a month has nothing new entered.
+
+  Historical Salary and the one-time Current Savings baseline were backfilled
+  once from `Expense Summary.xlsm`'s Summary sheet (that sheet's "Last
+  Month's Salary" row stores each value one column *after* the month it was
+  actually earned in, so the backfill shifted everything back by one month —
+  confirmed against the sheet's own `Balance = LastMonthSalary − Expenses`
+  formula and cross-checked exactly against its frozen `Money Earned` total).
 - Light/dark theme: a sun/moon slider toggle in the header (top right). The
   choice is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
@@ -53,18 +75,23 @@ them in place.
   not read or written by the app — those stay manual.
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
   refuses to write to it rather than silently editing through the lock.
-- The first time a given year's workbook is written to in a server run, a
-  timestamped copy is saved to a `.backups/` folder next to it.
+- The first time a given workbook (a year's `Expenses (YYYY).xlsx` or
+  `Finances.xlsx`) is written to in a server run, a timestamped copy is saved
+  to a `.backups/` folder next to it.
 
 ## Project layout
 
 ```
 server/   Express API (TypeScript). All Excel reading/writing lives in
-          server/src/excel/ — categoryColors.ts (the color↔category map) and
-          ledger.ts (read/append logic, safety checks).
+          server/src/excel/ — categoryColors.ts (the color↔category map),
+          workbookIO.ts (shared safe-write: backup + temp-file-then-rename,
+          used by both files below), ledger.ts (expense read/append logic
+          against Expenses (YYYY).xlsx), and finances.ts (Salary/Balance/
+          Savings against its own Finances.xlsx).
           server/test/ — vitest suite + the synthetic-fixture builder.
 client/   React + Vite frontend. Add Expense form + current month's entry list,
-          plus a Dashboard tab (category chart) — see src/components/.
+          a Dashboard tab (category chart), and a Finances tab — see
+          src/components/.
 e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand.
 ```
@@ -118,16 +145,19 @@ npm run stop
 
 Two suites, covering different layers:
 
-- **`npm test`** — `server/test/ledger.test.ts` (vitest). Backend logic tests
-  against synthetic `.xlsx` fixtures built at run time by
-  `server/test/fixtures.ts` (never real data — nothing sensitive is committed).
-  Covers `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary`,
-  including a couple of specific regression tests for the shared-style-object
-  bug described above: they seed two entries with *deliberately identical*
-  style (same category, both non-last rows) so ExcelJS's normal dedup gives
-  them a shared style object on read, then assert that editing/deleting one
-  doesn't cascade into the other. Fast (a few seconds), no browser or dev
-  server needed — this is the one to run after any change to `ledger.ts`.
+- **`npm test`** — vitest, two files. `server/test/ledger.test.ts` covers
+  `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
+  synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
+  (never real data — nothing sensitive is committed), including a couple of
+  specific regression tests for the shared-style-object bug described above:
+  they seed two entries with *deliberately identical* style (same category,
+  both non-last rows) so ExcelJS's normal dedup gives them a shared style
+  object on read, then assert that editing/deleting one doesn't cascade into
+  the other. `server/test/finances.test.ts` covers `getMonthIncome`/
+  `setMonthIncome`/`financeSummary`'s Balance/Cumulative/Minimum Savings/
+  Money Earned/Spent math, including carrying a Current Savings snapshot
+  forward across unset months. Fast (a few seconds), no browser or dev server
+  needed — this is the one to run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
   the `@playwright/test` runner). Builds a scratch data directory seeded with
   a full year (so switching months never legitimately 404s), starts the real
@@ -157,15 +187,20 @@ and never touch the real `Expenses` folder.
   Every cell this app writes to is detached (`ledger.ts`'s `detachStyle()`)
   before any property is touched, specifically to prevent a write to one
   entry from silently changing others that happened to share a style.
+- On Windows, `npm run dev`'s process tree is several layers deep
+  (`concurrently` → per-workspace `npm` shims → `tsx watch` / `vite`), and
+  Ctrl+C or closing the terminal window doesn't always propagate down through
+  every layer — an orphaned Node process can occasionally keep a port held
+  after you've "closed" the app. This is self-healing: `predev`/`prestart`
+  both run `scripts/kill-ports.js` automatically before starting, so the
+  *next* launch always clears anything left over. Run `npm run stop`
+  directly if you want to clean up without immediately restarting.
 
 ## Roadmap (not built yet)
 
-Read-only views into `Expense Summary.xlsm`'s other data, one phase at a time:
+Read-only views into `Expense Summary.xlsm`'s remaining data, one phase at a
+time:
 
-- Salary/Balance/Cumulative/Minimum Savings/Money Earned/Spent/Current Savings,
-  from the `Summary` sheet (the category totals on that same sheet are
-  redundant with the Dashboard tab, which is preferred since it's guaranteed
-  to match actual ledger entries).
 - Credit Card Bills — due/paid/due-date per month, one table per year.
 - Debts — who owes whom.
 - EMI schedules and Subscriptions.

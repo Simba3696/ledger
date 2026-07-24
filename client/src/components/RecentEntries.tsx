@@ -3,6 +3,7 @@ import type { LedgerEntry, CategoryOption } from "../api";
 import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
 import { EntryRow } from "./EntryRow";
+import { rupee } from "../format";
 import "./RecentEntries.css";
 
 interface Props {
@@ -14,12 +15,6 @@ interface Props {
   editable: boolean;
   onChanged: () => Promise<void>;
 }
-
-const rupee = new Intl.NumberFormat("en-IN", {
-  style: "currency",
-  currency: "INR",
-  maximumFractionDigits: 2,
-});
 
 export function RecentEntries({ entries, categories, loading, year, month, editable, onChanged }: Props) {
   const [editingRow, setEditingRow] = useState<number | null>(null);

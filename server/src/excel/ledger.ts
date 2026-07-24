@@ -1,16 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import ExcelJS from "exceljs";
 import { Category, CATEGORY_COLORS, colorToCategory } from "./categoryColors.js";
+import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const DB_DIR = process.env.LEDGER_DB_DIR
-  ? path.resolve(process.env.LEDGER_DB_DIR)
-  : path.resolve(__dirname, "../../../db");
-
-const BACKUP_DIR = path.join(DB_DIR, ".backups");
+export { DB_DIR, LedgerError };
 
 export const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -19,12 +13,6 @@ export const MONTH_NAMES = [
 
 const FALLBACK_AMOUNT_NUMFMT =
   '_ [$₹-4009]\\ * #,##0.00_ ;_ [$₹-4009]\\ * \\-#,##0.00_ ;_ [$₹-4009]\\ * "-"??_ ;_ @_ ';
-
-export class LedgerError extends Error {
-  constructor(message: string, public status: number) {
-    super(message);
-  }
-}
 
 function workbookPath(year: number): string {
   return path.join(DB_DIR, `Expenses (${year}).xlsx`);
@@ -253,37 +241,38 @@ export async function yearSummary(year: number): Promise<MonthSummary[]> {
   return months;
 }
 
-let backedUpThisRun = new Set<string>();
+/** Flat per-month expense totals for a year — like yearSummary but without the
+ * category breakdown, and reads the workbook once instead of once per month
+ * (yearSummary calls listMonth 12x, which reopens the file each time; fine for
+ * a single year, but wasteful when a caller needs many years' totals at once,
+ * e.g. an all-time running total). Index 0 is unused; 1-12 are the months. A
+ * missing workbook or sheet degrades to zero, matching yearSummary. */
+export async function yearExpenseTotals(year: number): Promise<number[]> {
+  const totals = new Array(13).fill(0);
 
-function backupOnce(filePath: string) {
-  if (backedUpThisRun.has(filePath)) return;
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const dest = path.join(BACKUP_DIR, `${path.basename(filePath, ".xlsx")}.${stamp}.xlsx`);
-  fs.copyFileSync(filePath, dest);
-  backedUpThisRun.add(filePath);
-}
-
-async function saveWorkbook(workbook: ExcelJS.Workbook, filePath: string): Promise<void> {
-  backupOnce(filePath);
-
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  let workbook: ExcelJS.Workbook;
   try {
-    await workbook.xlsx.writeFile(tempPath);
-  } catch (err) {
-    fs.rmSync(tempPath, { force: true });
-    throw new LedgerError(`Failed to write ${path.basename(filePath)}: ${(err as Error).message}`, 500);
-  }
-
-  try {
-    fs.renameSync(tempPath, filePath);
+    workbook = await loadWorkbook(year);
   } catch {
-    fs.rmSync(tempPath, { force: true });
-    throw new LedgerError(
-      `Could not save to ${path.basename(filePath)} — is it open in Excel? Close it and try again.`,
-      409,
-    );
+    return totals;
   }
+
+  for (let month = 1; month <= 12; month++) {
+    let sheet: ExcelJS.Worksheet;
+    try {
+      sheet = getSheet(workbook, year, month);
+    } catch {
+      continue;
+    }
+    let total = 0;
+    sheet.eachRow((row) => {
+      const value = row.getCell(1).value;
+      if (typeof value === "number") total += Math.abs(value);
+    });
+    totals[month] = total;
+  }
+
+  return totals;
 }
 
 /** Throws unless `row` is an existing transaction row (a real Amount value), not

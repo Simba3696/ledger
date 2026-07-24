@@ -39,6 +39,34 @@ export interface MonthSummary {
   total: number;
 }
 
+export interface MonthIncome {
+  year: number;
+  month: number;
+  salary: number | null;
+  otherIncome: number | null;
+  currentSavings: number | null;
+}
+
+export interface IncomeEdits {
+  salary: number | null;
+  otherIncome: number | null;
+  currentSavings: number | null;
+}
+
+export interface MonthFinanceSummary {
+  year: number;
+  month: number;
+  salary: number | null;
+  otherIncome: number | null;
+  expenses: number;
+  balance: number;
+  cumulative: number;
+  minimumSavings: number | null;
+  moneyEarned: number;
+  moneySpent: number;
+  currentSavings: number | null;
+}
+
 const BASE = "/api";
 
 async function handle<T>(res: Response): Promise<T> {
@@ -93,4 +121,20 @@ export function moveEntry(year: number, month: number, fromRow: number, toRow: n
 
 export function getYearSummary(year: number): Promise<MonthSummary[]> {
   return fetch(`${BASE}/summary/${year}`).then((r) => handle(r));
+}
+
+export function getMonthIncome(year: number, month: number): Promise<MonthIncome> {
+  return fetch(`${BASE}/finance/${year}/${month}`).then((r) => handle(r));
+}
+
+export function setMonthIncome(year: number, month: number, edits: IncomeEdits): Promise<MonthIncome> {
+  return fetch(`${BASE}/finance/${year}/${month}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function getFinanceSummary(year: number): Promise<MonthFinanceSummary[]> {
+  return fetch(`${BASE}/finance-summary/${year}`).then((r) => handle(r));
 }
