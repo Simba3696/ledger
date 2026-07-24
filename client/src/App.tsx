@@ -6,10 +6,11 @@ import { AddExpenseForm } from "./components/AddExpenseForm";
 import { RecentEntries } from "./components/RecentEntries";
 import { MonthYearPicker } from "./components/MonthYearPicker";
 import { Dashboard } from "./components/Dashboard";
+import { Finances } from "./components/Finances";
 import { ThemeToggle } from "./components/ThemeToggle";
 import logoIcon from "./assets/logo-icon.png";
 
-type Tab = "expenses" | "dashboard";
+type Tab = "expenses" | "dashboard" | "finances";
 
 function App() {
   const now = new Date();
@@ -59,7 +60,7 @@ function App() {
           <h1>Ledger</h1>
         </div>
         <div className="header-right">
-          {tab === "expenses" && (
+          {(tab === "expenses" || tab === "finances") && (
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
@@ -73,9 +74,12 @@ function App() {
         <button type="button" className={tab === "expenses" ? "selected" : ""} onClick={() => setTab("expenses")}>
           Expenses
         </button>
+        <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
+          Finances
+        </button>
       </nav>
 
-      {tab === "expenses" ? (
+      {tab === "expenses" && (
         <>
           <AddExpenseForm
             categories={categories}
@@ -96,9 +100,9 @@ function App() {
             onChanged={refresh}
           />
         </>
-      ) : (
-        <Dashboard onSelectMonth={goToMonth} />
       )}
+      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
+      {tab === "finances" && <Finances year={year} month={month} />}
     </div>
   );
 }

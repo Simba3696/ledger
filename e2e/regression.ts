@@ -222,6 +222,47 @@ async function main() {
     await page.waitForTimeout(400);
     check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
+    // --- Finances tab (salary/balance/savings) ---
+    await page.click('.tabs button:has-text("Finances")');
+    check("Finances tab selected", (await page.locator(".tabs button.selected").innerText()) === "Finances");
+
+    const incomeInputs = page.locator('.income-form input[type="number"]');
+    await incomeInputs.nth(0).fill("50000"); // Salary
+    await incomeInputs.nth(1).fill("5000"); // Other Income
+    await incomeInputs.nth(2).fill("200000"); // Current Savings
+    await page.click(".income-form button.submit-btn");
+    await page.waitForSelector(".finance-stats");
+    await page.waitForTimeout(300);
+
+    async function financeStat(label: string): Promise<string> {
+      return page.locator(`.finance-stat:has-text("${label}") strong`).innerText();
+    }
+    check("Finance: Money Earned reflects salary + other income", (await financeStat("Money Earned")).includes("55,000"));
+    check("Finance: Minimum Savings is ceil(15% of income)", (await financeStat("Minimum Savings")).includes("8,250"));
+    check("Finance: Current Savings reflects the manual entry", (await financeStat("Current Savings")).includes("2,00,000"));
+
+    // No prior month has a salary on record, so it's treated as zero income —
+    // this month's balance is a plain deficit equal to its own expenses (the
+    // 150 in seeded entries; Salary/Other Income entered *this* month only
+    // affects *next* month's balance, not this one).
+    const balanceText = await financeStat("Balance");
+    check("Finance: Balance treats unset prior salary as zero income (a deficit)", balanceText.startsWith("-") && balanceText.includes("150"));
+
+    // Cumulative sums every month back to EARLIEST_YEAR: each filler-seeded
+    // month before this one (10 in expenses, no salary) contributes -10, plus
+    // this month's own -150.
+    const expectedCumulativeMagnitude = 10 * monthIndex + 150;
+    const cumulativeText = await financeStat("Cumulative");
+    check(
+      "Finance: Cumulative accumulates deficits from every prior unset month",
+      cumulativeText.startsWith("-") && cumulativeText.includes(String(expectedCumulativeMagnitude)),
+    );
+
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.tabs button:has-text("Finances")');
+    await page.waitForSelector(".finance-stats");
+    check("Finance entry persisted across reload", (await incomeInputs.nth(0).inputValue()) === "50000");
+
     // --- Theme toggle ---
     await page.click(".theme-toggle");
     await page.waitForTimeout(300);

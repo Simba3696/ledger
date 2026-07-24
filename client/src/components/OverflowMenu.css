@@ -67,5 +67,5 @@
 }
 
 .overflow-menu-item.destructive {
-  color: #ef4444;
+  color: var(--danger);
 }
