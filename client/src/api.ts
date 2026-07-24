@@ -39,18 +39,23 @@ export interface MonthSummary {
   total: number;
 }
 
+export interface SavingsEntry {
+  name: string;
+  amount: number;
+}
+
 export interface MonthIncome {
   year: number;
   month: number;
   salary: number | null;
   otherIncome: number | null;
-  currentSavings: number | null;
+  savings: SavingsEntry[];
 }
 
 export interface IncomeEdits {
   salary: number | null;
   otherIncome: number | null;
-  currentSavings: number | null;
+  savings: SavingsEntry[];
 }
 
 export interface MonthFinanceSummary {
@@ -65,6 +70,7 @@ export interface MonthFinanceSummary {
   moneyEarned: number;
   moneySpent: number;
   currentSavings: number | null;
+  currentSavingsBreakdown: SavingsEntry[];
 }
 
 const BASE = "/api";

@@ -58,16 +58,23 @@ them in place.
   - **Minimum Savings** — `ceil(15% of this month's own salary + other income)`.
   - **Money Earned / Money Spent** — running totals of income / ledger
     expenses since 2018.
-  - **Current Savings** — a manually-entered snapshot (PPF/NPS/APY etc.)
-    that carries forward across months until you update it again, rather
-    than resetting to blank when a month has nothing new entered.
+  - **Current Savings** — named scheme balances (PPF, NPS, APY, etc.),
+    entered and edited individually and summed automatically into a total,
+    matching how you actually update it (touch one scheme, not recompute
+    the whole figure by hand). The set of schemes isn't fixed — add or
+    remove one freely as your actual savings mix changes. Whichever month's
+    breakdown was most recently entered carries forward across later months
+    until you update it again, rather than resetting to blank.
 
-  Historical Salary and the one-time Current Savings baseline were backfilled
-  once from `Expense Summary.xlsm`'s Summary sheet (that sheet's "Last
-  Month's Salary" row stores each value one column *after* the month it was
-  actually earned in, so the backfill shifted everything back by one month —
-  confirmed against the sheet's own `Balance = LastMonthSalary − Expenses`
-  formula and cross-checked exactly against its frozen `Money Earned` total).
+  Historical Salary was backfilled once from `Expense Summary.xlsm`'s
+  Summary sheet (that sheet's "Last Month's Salary" row stores each value
+  one column *after* the month it was actually earned in, so the backfill
+  shifted everything back by one month — confirmed against the sheet's own
+  `Balance = LastMonthSalary − Expenses` formula and cross-checked exactly
+  against its frozen `Money Earned` total). Current Savings wasn't
+  backfilled the same way — the `.xlsm` only ever had one snapshot, entered
+  once as a present-day figure rather than tied to a specific month, so it
+  was entered fresh as of the actual month it was true.
 - Light/dark theme: a sun/moon slider toggle in the header (top right). The
   choice is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
@@ -178,9 +185,12 @@ and never touch the real `Expenses` folder.
 - The target `.xlsx` file must be closed in Excel while adding entries through
   the app — Excel holds an exclusive lock, and a write while it's open will
   fail with a clear error rather than corrupting the file.
-- Adding an entry for a year that doesn't have a workbook yet (e.g. next
-  January) isn't supported — create that year's file from the template first,
-  the same way as always.
+- Adding an entry for a year with no workbook yet (e.g. next January) creates
+  `Expenses (YYYY).xlsx` automatically — 12 blank month sheets, matching your
+  own `Expenses (202X).xlsx` template exactly (just an Amount/Remarks header;
+  no formulas or protection to copy). The new entry's own formatting (number
+  format, borders, alignment, category fill) comes from the same fallback
+  logic already used for the first entry on any sheet.
 - ExcelJS shares one JS style object across every cell that happens to have
   the same style index (normal XLSX dedup — see `getStyleModel()` in its
   source), and its `.fill`/`.border`/etc setters mutate that object in place.
@@ -198,13 +208,16 @@ and never touch the real `Expenses` folder.
 
 ## Roadmap (not built yet)
 
-Read-only views into `Expense Summary.xlsm`'s remaining data, one phase at a
-time:
+The remaining data still living in `Expense Summary.xlsm`, one phase at a
+time, following the same pattern as Finances above — a new app-owned
+workbook with a one-time historical backfill, so the app is fully
+read/write and the `.xlsm` never needs a write path:
 
 - Credit Card Bills — due/paid/due-date per month, one table per year.
 - Debts — who owes whom.
 - EMI schedules and Subscriptions.
 
-Each of the above is manually-maintained data with no connection to the
-per-year ledger files, and `.xlsm` is macro-enabled, so these will stay
-strictly **read-only** unless/until explicitly decided otherwise.
+The end goal is to retire `Expense Summary.xlsm` entirely once everything
+in it has a home in the app; `.xlsm` itself stays read-only right up until
+that point (it's macro-enabled, so it's never worth writing to
+programmatically even for a single field).

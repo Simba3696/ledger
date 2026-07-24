@@ -21,6 +21,53 @@ const MONTH_ABBR = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+interface ChartRow {
+  name: string;
+  month: number;
+  Food: number;
+  Transportation: number;
+  Rent: number;
+  Other: number;
+}
+
+// Shared across every BarChart below so hovering a month in any one of them
+// (main or per-category) highlights the same month's cursor/tooltip in all
+// the others — they all plot the same chartData in the same month order, so
+// Recharts' default index-based sync lines them up correctly.
+const DASHBOARD_SYNC_ID = "dashboard-charts";
+
+const CATEGORY_CHARTS = [
+  { dataKey: "Food", color: CATEGORY_SWATCH.food.bg },
+  { dataKey: "Transportation", color: CATEGORY_SWATCH.transportation.bg },
+  { dataKey: "Rent", color: CATEGORY_SWATCH.rent.bg },
+  { dataKey: "Other", color: CATEGORY_SWATCH.other.bg },
+] as const;
+
+/** One category's monthly totals in isolation — each auto-scales to its own
+ * range (rather than sharing the main chart's combined scale), so a lower-
+ * spend category's month-to-month pattern is still readable instead of
+ * looking flat next to a much bigger one. Module-level, not nested inside
+ * Dashboard, so it isn't redefined (and its subtree remounted) every render. */
+function CategoryMiniChart({ data, dataKey, color }: { data: ChartRow[]; dataKey: (typeof CATEGORY_CHARTS)[number]["dataKey"]; color: string }) {
+  return (
+    <div className="category-chart">
+      <h3>{dataKey}</h3>
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={data} syncId={DASHBOARD_SYNC_ID}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="name" stroke="var(--text)" fontSize={11} />
+          <YAxis stroke="var(--text)" fontSize={11} width={40} />
+          <Tooltip
+            formatter={(value) => rupee.format(Number(value))}
+            contentStyle={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}
+          />
+          <Bar dataKey={dataKey} fill={color} radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 interface Props {
   onSelectMonth: (year: number, month: number) => void;
 }
@@ -79,7 +126,7 @@ export function Dashboard({ onSelectMonth }: Props) {
 
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={chartData} onClick={handleBarClick}>
+              <BarChart data={chartData} onClick={handleBarClick} syncId={DASHBOARD_SYNC_ID}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="name" stroke="var(--text)" fontSize={12} />
                 <YAxis stroke="var(--text)" fontSize={12} />
@@ -107,6 +154,12 @@ export function Dashboard({ onSelectMonth }: Props) {
             </ResponsiveContainer>
           </div>
           <p className="dashboard-hint">Click a month to view or add entries for it.</p>
+
+          <div className="category-charts">
+            {CATEGORY_CHARTS.map((c) => (
+              <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} />
+            ))}
+          </div>
         </>
       )}
     </div>

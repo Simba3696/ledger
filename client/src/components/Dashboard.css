@@ -47,3 +47,24 @@
   text-align: center;
   margin: 10px 0 0;
 }
+
+.category-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.category-chart {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 8px 8px;
+}
+
+.category-chart h3 {
+  margin: 0 0 4px;
+  padding-left: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--text-h);
+}

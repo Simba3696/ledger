@@ -21,38 +21,63 @@ afterAll(() => {
 });
 
 describe("getMonthIncome / setMonthIncome", () => {
-  it("returns all-null for a month that was never entered", async () => {
+  it("returns all-empty for a month that was never entered", async () => {
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: null, otherIncome: null, currentSavings: null });
+    expect(income).toEqual({ year: 2094, month: 6, salary: null, otherIncome: null, savings: [] });
   });
 
-  it("round-trips a saved entry", async () => {
-    await finances.setMonthIncome({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, currentSavings: 90000 });
+  it("round-trips a saved entry, including a multi-scheme savings breakdown", async () => {
+    const savings = [
+      { name: "PPF", amount: 34100 },
+      { name: "NPS", amount: 9652.1 },
+    ];
+    await finances.setMonthIncome({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, savings });
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, currentSavings: 90000 });
+    expect(income).toEqual({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, savings });
   });
 
-  it("overwrites an existing entry rather than duplicating a row", async () => {
-    await finances.setMonthIncome({ year: 2094, month: 6, salary: 51000, otherIncome: null, currentSavings: null });
+  it("overwrites an existing entry (including clearing savings) rather than duplicating a row", async () => {
+    await finances.setMonthIncome({ year: 2094, month: 6, salary: 51000, otherIncome: null, savings: [] });
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: 51000, otherIncome: null, currentSavings: null });
+    expect(income).toEqual({ year: 2094, month: 6, salary: 51000, otherIncome: null, savings: [] });
   });
 
   it("rejects a year before EARLIEST_YEAR", async () => {
     await expect(
-      finances.setMonthIncome({ year: 2000, month: 1, salary: 1000, otherIncome: null, currentSavings: null }),
+      finances.setMonthIncome({ year: 2000, month: 1, salary: 1000, otherIncome: null, savings: [] }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
   it("rejects an out-of-range month", async () => {
     await expect(
-      finances.setMonthIncome({ year: 2094, month: 13, salary: 1000, otherIncome: null, currentSavings: null }),
+      finances.setMonthIncome({ year: 2094, month: 13, salary: 1000, otherIncome: null, savings: [] }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
   it("rejects a non-finite amount", async () => {
     await expect(
-      finances.setMonthIncome({ year: 2094, month: 7, salary: NaN, otherIncome: null, currentSavings: null }),
+      finances.setMonthIncome({ year: 2094, month: 7, salary: NaN, otherIncome: null, savings: [] }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("rejects a savings entry with no name or a non-finite amount", async () => {
+    await expect(
+      finances.setMonthIncome({
+        year: 2094,
+        month: 8,
+        salary: null,
+        otherIncome: null,
+        savings: [{ name: "", amount: 100 }],
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      finances.setMonthIncome({
+        year: 2094,
+        month: 8,
+        salary: null,
+        otherIncome: null,
+        savings: [{ name: "PPF", amount: NaN }],
+      }),
     ).rejects.toMatchObject({ status: 400 });
   });
 });
@@ -76,9 +101,27 @@ describe("financeSummary", () => {
       // No March sheet at all — exercises the "missing sheet degrades to zero" path.
     ]);
 
-    await finances.setMonthIncome({ year: YEAR, month: 1, salary: 50000, otherIncome: 5000, currentSavings: 100000 });
-    await finances.setMonthIncome({ year: YEAR, month: 2, salary: 52000, otherIncome: null, currentSavings: null });
-    await finances.setMonthIncome({ year: YEAR, month: 3, salary: null, otherIncome: 2000, currentSavings: 110000 });
+    await finances.setMonthIncome({
+      year: YEAR,
+      month: 1,
+      salary: 50000,
+      otherIncome: 5000,
+      savings: [
+        { name: "PPF", amount: 60000 },
+        { name: "NPS", amount: 40000 },
+      ],
+    });
+    await finances.setMonthIncome({ year: YEAR, month: 2, salary: 52000, otherIncome: null, savings: [] });
+    await finances.setMonthIncome({
+      year: YEAR,
+      month: 3,
+      salary: null,
+      otherIncome: 2000,
+      savings: [
+        { name: "PPF", amount: 70000 },
+        { name: "NPS", amount: 40000 },
+      ],
+    });
     // Month 4 intentionally left with no entry at all.
   });
 
@@ -99,7 +142,11 @@ describe("financeSummary", () => {
       minimumSavings: 8250, // ceil(0.15 * 55000)
       moneyEarned: 55000,
       moneySpent: 20000,
-      currentSavings: 100000,
+      currentSavings: 100000, // 60000 + 40000
+      currentSavingsBreakdown: [
+        { name: "PPF", amount: 60000 },
+        { name: "NPS", amount: 40000 },
+      ],
     });
 
     // February: balance = January's total income, salary + other income
@@ -115,6 +162,10 @@ describe("financeSummary", () => {
       moneyEarned: 107000,
       moneySpent: 45000,
       currentSavings: 100000, // carried forward — not re-entered this month
+      currentSavingsBreakdown: [
+        { name: "PPF", amount: 60000 },
+        { name: "NPS", amount: 40000 },
+      ],
     });
 
     // March: balance = February's total income (52000 + 0) - March's
@@ -129,7 +180,11 @@ describe("financeSummary", () => {
       minimumSavings: 300, // ceil(0.15 * 2000), salary absent this month
       moneyEarned: 109000,
       moneySpent: 45000,
-      currentSavings: 110000, // freshly re-entered this month
+      currentSavings: 110000, // freshly re-entered this month (70000 + 40000)
+      currentSavingsBreakdown: [
+        { name: "PPF", amount: 70000 },
+        { name: "NPS", amount: 40000 },
+      ],
     });
 
     // April: no entry at all. Balance = March's total income (0 salary + 2000
@@ -148,6 +203,10 @@ describe("financeSummary", () => {
       moneyEarned: 109000,
       moneySpent: 45000,
       currentSavings: 110000,
+      currentSavingsBreakdown: [
+        { name: "PPF", amount: 70000 },
+        { name: "NPS", amount: 40000 },
+      ],
     });
   });
 });

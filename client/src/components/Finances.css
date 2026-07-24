@@ -18,6 +18,85 @@
   cursor: not-allowed;
 }
 
+.savings-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.savings-editor-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.savings-editor-total {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.savings-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.savings-row input {
+  font-size: var(--font-size-base);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.savings-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.savings-row input[type="number"] {
+  width: 110px;
+}
+
+.savings-remove {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--danger);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.savings-remove:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.savings-add {
+  align-self: flex-start;
+  font-size: var(--font-size-sm);
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.savings-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .finance-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -43,4 +122,8 @@
 .finance-stat strong {
   font-size: 18px;
   color: var(--text-h);
+}
+
+.finance-stat strong.negative {
+  color: var(--danger);
 }

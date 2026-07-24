@@ -108,15 +108,20 @@ function parseAmountField(value: unknown): number | null {
   return value === null || value === undefined || value === "" ? null : Number(value);
 }
 
+function parseSavingsField(value: unknown): { name: string; amount: number }[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((e) => ({ name: String(e?.name ?? ""), amount: Number(e?.amount) }));
+}
+
 router.put("/finance/:year/:month", async (req, res, next) => {
   try {
-    const { salary, otherIncome, currentSavings } = req.body ?? {};
+    const { salary, otherIncome, savings } = req.body ?? {};
     const income = await setMonthIncome({
       year: Number(req.params.year),
       month: Number(req.params.month),
       salary: parseAmountField(salary),
       otherIncome: parseAmountField(otherIncome),
-      currentSavings: parseAmountField(currentSavings),
+      savings: parseSavingsField(savings),
     });
     res.json(income);
   } catch (err) {

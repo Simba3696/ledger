@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getFinanceSummary, getMonthIncome, setMonthIncome, type MonthFinanceSummary } from "../api";
+import { getFinanceSummary, getMonthIncome, setMonthIncome, type MonthFinanceSummary, type SavingsEntry } from "../api";
 import { rupee } from "../format";
 import "./Finances.css";
 
@@ -13,14 +13,87 @@ interface Props {
   month: number;
 }
 
+interface SavingsRow {
+  id: string;
+  name: string;
+  amount: string;
+}
+
 function formatOrDash(value: number | null): string {
   return value === null ? "—" : rupee.format(value);
+}
+
+function toRows(savings: SavingsEntry[]): SavingsRow[] {
+  return savings.map((s) => ({ id: crypto.randomUUID(), name: s.name, amount: String(s.amount) }));
+}
+
+interface SavingsEditorProps {
+  rows: SavingsRow[];
+  onChange: (rows: SavingsRow[]) => void;
+  disabled: boolean;
+}
+
+function SavingsEditor({ rows, onChange, disabled }: SavingsEditorProps) {
+  function updateRow(id: string, patch: Partial<SavingsRow>) {
+    onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+  function removeRow(id: string) {
+    onChange(rows.filter((r) => r.id !== id));
+  }
+  function addRow() {
+    onChange([...rows, { id: crypto.randomUUID(), name: "", amount: "" }]);
+  }
+
+  const total = rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+  return (
+    <div className="savings-editor">
+      <div className="savings-editor-header">
+        <span>Current Savings</span>
+        <span className="savings-editor-total">{rupee.format(total)}</span>
+      </div>
+
+      {rows.map((row) => (
+        <div className="savings-row" key={row.id}>
+          <input
+            type="text"
+            placeholder="Scheme (PPF, NPS, APY…)"
+            value={row.name}
+            onChange={(e) => updateRow(row.id, { name: e.target.value })}
+            disabled={disabled}
+          />
+          <input
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            placeholder="0.00"
+            value={row.amount}
+            onChange={(e) => updateRow(row.id, { amount: e.target.value })}
+            disabled={disabled}
+          />
+          <button
+            type="button"
+            className="savings-remove"
+            onClick={() => removeRow(row.id)}
+            disabled={disabled}
+            aria-label={`Remove ${row.name || "this scheme"}`}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+
+      <button type="button" className="savings-add" onClick={addRow} disabled={disabled}>
+        + Add scheme
+      </button>
+    </div>
+  );
 }
 
 export function Finances({ year, month }: Props) {
   const [salary, setSalary] = useState("");
   const [otherIncome, setOtherIncome] = useState("");
-  const [currentSavings, setCurrentSavings] = useState("");
+  const [savingsRows, setSavingsRows] = useState<SavingsRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +123,7 @@ export function Finances({ year, month }: Props) {
       if (cancelled) return;
       setSalary(income.salary !== null ? String(income.salary) : "");
       setOtherIncome(income.otherIncome !== null ? String(income.otherIncome) : "");
-      setCurrentSavings(income.currentSavings !== null ? String(income.currentSavings) : "");
+      setSavingsRows(toRows(income.savings));
       setLoading(false);
     })().catch((err) => {
       if (!cancelled) {
@@ -69,10 +142,13 @@ export function Finances({ year, month }: Props) {
     setSaving(true);
     setError(null);
     try {
+      const savings = savingsRows
+        .filter((r) => r.name.trim() !== "" || r.amount.trim() !== "")
+        .map((r) => ({ name: r.name.trim(), amount: Number(r.amount) }));
       await setMonthIncome(year, month, {
         salary: salary.trim() === "" ? null : Number(salary),
         otherIncome: otherIncome.trim() === "" ? null : Number(otherIncome),
-        currentSavings: currentSavings.trim() === "" ? null : Number(currentSavings),
+        savings,
       });
       await loadStats();
     } catch (err) {
@@ -84,12 +160,12 @@ export function Finances({ year, month }: Props) {
 
   const stats = thisMonth
     ? [
-        { label: "Balance", value: rupee.format(thisMonth.balance) },
-        { label: "Cumulative", value: rupee.format(thisMonth.cumulative) },
-        { label: "Minimum Savings", value: formatOrDash(thisMonth.minimumSavings) },
-        { label: "Money Earned", value: rupee.format(thisMonth.moneyEarned) },
-        { label: "Money Spent", value: rupee.format(thisMonth.moneySpent) },
-        { label: "Current Savings", value: formatOrDash(thisMonth.currentSavings) },
+        { label: "Balance", value: rupee.format(thisMonth.balance), raw: thisMonth.balance },
+        { label: "Cumulative", value: rupee.format(thisMonth.cumulative), raw: thisMonth.cumulative },
+        { label: "Minimum Savings", value: formatOrDash(thisMonth.minimumSavings), raw: thisMonth.minimumSavings },
+        { label: "Money Earned", value: rupee.format(thisMonth.moneyEarned), raw: thisMonth.moneyEarned },
+        { label: "Money Spent", value: rupee.format(thisMonth.moneySpent), raw: thisMonth.moneySpent },
+        { label: "Current Savings", value: formatOrDash(thisMonth.currentSavings), raw: thisMonth.currentSavings },
       ]
     : [];
 
@@ -127,19 +203,9 @@ export function Finances({ year, month }: Props) {
               disabled={loading}
             />
           </label>
-          <label>
-            Current Savings (₹)
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              value={currentSavings}
-              onChange={(e) => setCurrentSavings(e.target.value)}
-              placeholder="PPF, NPS, APY…"
-              disabled={loading}
-            />
-          </label>
         </div>
+
+        <SavingsEditor rows={savingsRows} onChange={setSavingsRows} disabled={loading} />
 
         {error && <p className="error">{error}</p>}
 
@@ -155,7 +221,7 @@ export function Finances({ year, month }: Props) {
           {stats.map((s) => (
             <div className="finance-stat" key={s.label}>
               <span>{s.label}</span>
-              <strong>{s.value}</strong>
+              <strong className={s.raw !== null && s.raw < 0 ? "negative" : undefined}>{s.value}</strong>
             </div>
           ))}
         </div>
