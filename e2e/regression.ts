@@ -51,6 +51,7 @@ async function main() {
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
   ];
+  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
   // Seed every month sheet (a couple of unrelated dummy entries each) so
   // switching the month selector during the test never legitimately 404s.
@@ -95,25 +96,63 @@ async function main() {
     page.on("pageerror", (err) => consoleErrors.push("pageerror: " + err.message));
     page.on("dialog", (d) => d.accept());
 
+    // The Dashboard chart's DOM shell now renders immediately (even before its
+    // data has loaded, so the loading overlay has something to cover) — so
+    // waiting for `.chart-wrap svg` to exist is no longer enough to know the
+    // real data (and therefore real tick positions) are in place. Also wait
+    // for the loading overlay to clear before computing any click coordinates
+    // against the chart.
+    async function waitForDashboardData() {
+      await page.waitForSelector(".chart-wrap svg");
+      await page.waitForSelector(".loading-overlay", { state: "detached" });
+    }
+
     await page.goto("http://localhost:5173", { waitUntil: "networkidle" });
-    await page.waitForSelector(".chart-wrap svg");
+    await waitForDashboardData();
 
     // --- Dashboard defaults + click-through navigation ---
     check("Default tab is Dashboard", (await page.locator(".tabs button.selected").innerText()) === "Dashboard");
 
-    const ticks = page.locator(".recharts-cartesian-axis-tick-value");
-    const svgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
+    // Targets a bar's own <path name="Jul"> rather than an X-axis tick's
+    // position: `.recharts-cartesian-axis-tick-value` matches Y-axis tick
+    // labels too (the main chart renders its 5 Y-axis ticks *before* its 12
+    // X-axis ticks in DOM order), so a plain index into that selector across
+    // the whole page doesn't reliably land on the intended month — same
+    // fragility already discovered for the narrower mini-charts below, just
+    // less obviously so here since the main chart itself doesn't skip labels.
+    async function monthBarBox(index: number) {
+      const abbr = MONTH_ABBR[index];
+      const locator = page.locator(`.chart-wrap path[name="${abbr}"]`).first();
+      // Retries the whole attached-then-boundingBox sequence, not just a
+      // single wait: right after a remount, React StrictMode's dev-mode
+      // double-invoke can make Recharts mount its bar <path> elements, then
+      // briefly replace them again — a locator can resolve "attached" and
+      // then find the element already gone by the very next call. Polling a
+      // few times rides out that flicker instead of assuming one resolution
+      // is stable.
+      const start = Date.now();
+      while (Date.now() - start < 10000) {
+        try {
+          await locator.waitFor({ state: "attached", timeout: 2000 });
+          const box = await locator.boundingBox();
+          if (box) return box;
+        } catch {
+          // not attached yet within this attempt's window — retry
+        }
+        await page.waitForTimeout(150);
+      }
+      throw new Error(`Could not locate the "${abbr}" bar in the main chart`);
+    }
     async function clickChartMonth(index: number) {
-      // Recomputed fresh (not the outer svgBox) and scrolled into view every
-      // call — this runs again later after the mini-chart detour below has
-      // scrolled the page down, and page.mouse.move works in raw page
-      // coordinates with no auto-scroll, so a stale/off-screen box would
-      // silently miss the chart entirely.
+      // Scrolled into view every call — this runs again later after the
+      // mini-chart detour below has scrolled the page down, and
+      // page.mouse.move works in raw page coordinates with no auto-scroll,
+      // so an off-screen target would silently miss the chart entirely.
       await page.locator(".chart-wrap").scrollIntoViewIfNeeded();
       const freshSvgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
-      const tickBox = await ticks.nth(index).boundingBox();
-      if (!tickBox || !freshSvgBox) throw new Error("Could not locate chart elements");
-      const x = tickBox.x + tickBox.width / 2;
+      const barBox = await monthBarBox(index);
+      if (!freshSvgBox) throw new Error("Could not locate chart elements");
+      const x = barBox.x + barBox.width / 2;
       const y = freshSvgBox.y + freshSvgBox.height * 0.5;
       await page.mouse.move(x, y, { steps: 8 });
       await page.waitForTimeout(150);
@@ -122,9 +161,10 @@ async function main() {
       await page.waitForTimeout(400);
     }
     // --- Cross-chart hover sync (syncId) ---
-    const hoverTickBox = await ticks.nth(monthIndex).boundingBox();
-    if (!hoverTickBox || !svgBox) throw new Error("Could not locate chart elements for hover-sync check");
-    await page.mouse.move(hoverTickBox.x + hoverTickBox.width / 2, svgBox.y + svgBox.height * 0.5, { steps: 8 });
+    const hoverBarBox = await monthBarBox(monthIndex);
+    const hoverSvgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
+    if (!hoverSvgBox) throw new Error("Could not locate chart elements for hover-sync check");
+    await page.mouse.move(hoverBarBox.x + hoverBarBox.width / 2, hoverSvgBox.y + hoverSvgBox.height * 0.5, { steps: 8 });
     await page.waitForTimeout(300);
     check(
       "Hovering the main chart highlights the same month in the category mini-charts",
@@ -166,9 +206,9 @@ async function main() {
     await page.click('.tabs button:has-text("Dashboard")');
     // App.tsx conditionally renders the Dashboard tab, so switching back to
     // it unmounts/remounts the whole component — wait for its chart to
-    // actually reappear (a fresh API fetch + render) rather than a fixed
-    // delay that may finish before that's done.
-    await page.waitForSelector(".chart-wrap svg");
+    // actually reappear with real data loaded (not just the DOM shell)
+    // rather than a fixed delay that may finish before that's done.
+    await waitForDashboardData();
     await page.waitForTimeout(300);
 
     await clickChartMonth(monthIndex);
@@ -248,12 +288,12 @@ async function main() {
     // --- Edit the copy (the newest row) — proves it's independently editable,
     // not a linked clone, and that the original is left untouched ---
     await clickMenuItem(page.locator(".entry-row").first(), "Edit");
-    await page.waitForSelector(".entry-row-editing");
-    const editInputs = page.locator(".entry-row-editing .edit-fields input");
+    await page.waitForSelector(".row-editing");
+    const editInputs = page.locator(".row-editing .edit-fields input");
     await editInputs.nth(0).fill("99");
     await editInputs.nth(1).fill("E2E Cash Entry Edited");
-    await page.click('.entry-row-editing button.category-chip:has-text("Transportation")');
-    await page.click('.entry-row-editing button:has-text("Save")');
+    await page.click('.row-editing button.category-chip:has-text("Transportation")');
+    await page.click('.row-editing button:has-text("Save")');
     await page.waitForSelector("text=E2E Cash Entry Edited");
     const editedRowText = await page.locator('.entry-row:has-text("E2E Cash Entry Edited")').innerText();
     check("Edit updated the amount", editedRowText.includes("99.00"));
@@ -361,9 +401,149 @@ async function main() {
 
     await page.reload({ waitUntil: "networkidle" });
     await page.click('.tabs button:has-text("Finances")');
+    // .finance-stats can appear before the salary field is repopulated (the
+    // two fetches run in parallel; the stats-visible signal only tracks one
+    // of them), so wait for the overlay to actually clear rather than just
+    // for the stats to exist.
     await page.waitForSelector(".finance-stats");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
     check("Finance entry persisted across reload", (await incomeInputs.nth(0).inputValue()) === "50000");
     check("Finance: savings breakdown persisted across reload", (await page.locator(".savings-row").count()) === 2);
+
+    // --- Debts tab ---
+    await page.click('.tabs button:has-text("Debts")');
+    check("Debts tab selected", (await page.locator(".tabs button.selected").innerText()) === "Debts");
+    await page.waitForSelector(".debts p.empty");
+    check("Debts starts empty", (await page.locator(".debts p.empty").count()) === 1);
+
+    async function fillDebtForm(name: string, amount: string) {
+      await page.fill(".add-debt-form input[type=\"text\"]", name);
+      await page.fill(".add-debt-form input[type=\"number\"]", amount);
+      await page.click('.add-debt-form button:has-text("Add Debt")');
+      await page.waitForSelector(`text=${name}`);
+    }
+
+    await fillDebtForm("E2E Umma", "17700"); // positive = you owe
+    check("Adding a debt shows it in the list", (await page.locator(".debt-row", { hasText: "E2E Umma" }).count()) === 1);
+    check("Debt stats: You owe reflects the positive entry", (await page.locator(".debt-stat", { hasText: "You owe" }).innerText()).includes("17,700"));
+
+    await fillDebtForm("E2E Anandu", "-29000"); // negative = owed to you
+    check(
+      "Debt stats: Owed to you reflects the negative entry",
+      (await page.locator(".debt-stat", { hasText: "Owed to you" }).innerText()).includes("29,000"),
+    );
+    const netStatText = await page.locator(".debt-stat", { hasText: "Net" }).innerText();
+    check(
+      "Debt stats: Net is You owe minus Owed to you",
+      netStatText.includes("-") && netStatText.includes("11,300"),
+    );
+
+    // --- Edit a debt entry ---
+    await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Umma" }), "Edit");
+    await page.waitForSelector(".row-editing");
+    const debtEditInputs = page.locator(".row-editing .edit-fields input");
+    await debtEditInputs.nth(1).fill("20000");
+    await page.click('.row-editing button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check(
+      "Editing a debt updates its amount",
+      (await page.locator(".debt-row", { hasText: "E2E Umma" }).innerText()).includes("20,000"),
+    );
+
+    // --- Sorting (Umma=20000, Anandu=-29000 at this point) ---
+    async function debtNames(): Promise<string[]> {
+      return page.locator(".debt-name").allInnerTexts();
+    }
+    await page.click('.debts-sort button:has-text("Amount")'); // ascending: lowest first
+    const amountAsc = await debtNames();
+    check(
+      "Sorting by Amount ascending puts the negative entry first",
+      amountAsc.indexOf("E2E Anandu") < amountAsc.indexOf("E2E Umma"),
+    );
+    await page.click('.debts-sort button:has-text("Amount")'); // descending: highest first
+    const amountDesc = await debtNames();
+    check(
+      "Sorting by Amount descending puts the positive entry first",
+      amountDesc.indexOf("E2E Umma") < amountDesc.indexOf("E2E Anandu"),
+    );
+    await page.click('.debts-sort button:has-text("Name")'); // back to default for the rest of the flow
+    await page.waitForTimeout(200);
+
+    // --- Delete a debt entry ---
+    const beforeDebtCount = await page.locator(".debt-row").count();
+    await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Anandu" }), "Delete");
+    await page.waitForTimeout(400);
+    check("Deleting a debt removes it from the list", (await page.locator(".debt-row").count()) === beforeDebtCount - 1);
+    check(
+      "Debt stats after delete: Net matches the one remaining entry",
+      (await page.locator(".debt-stat", { hasText: "Net" }).innerText()).includes("20,000"),
+    );
+
+    // Clean up the remaining test debt so this suite is idempotent across runs.
+    await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Umma" }), "Delete");
+    await page.waitForTimeout(400);
+    check("Debts back to empty after cleanup", (await page.locator(".debt-row").count()) === 0);
+
+    // --- Credit Cards tab ---
+    await page.click('.tabs button:has-text("Credit Cards")');
+    check("Credit Cards tab selected", (await page.locator(".tabs button.selected").innerText()) === "Credit Cards");
+
+    const ccMonthStr = String(monthIndex + 1).padStart(2, "0");
+    const ccDueDateEarly = `${year}-${ccMonthStr}-07`;
+    const ccDueDateLate = `${year}-${ccMonthStr}-22`;
+
+    await page.click(".cards-add");
+    await page.click(".cards-add");
+    const cardRows = page.locator(".card-row-fields");
+    await cardRows.nth(0).locator('input[type="text"]').fill("E2E Coral");
+    await cardRows.nth(0).locator('input[type="number"]').nth(0).fill("5000");
+    await cardRows.nth(0).locator('input[type="number"]').nth(1).fill("4990");
+    await cardRows.nth(0).locator('input[type="date"]').fill(ccDueDateEarly);
+    await cardRows.nth(1).locator('input[type="text"]').fill("E2E OneCard");
+    await cardRows.nth(1).locator('input[type="number"]').nth(0).fill("3000");
+    await cardRows.nth(1).locator('input[type="number"]').nth(1).fill("3050");
+    await cardRows.nth(1).locator('input[type="date"]').fill(ccDueDateLate);
+
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForSelector(".cards-stats");
+    // Unlike a fresh page load, saving doesn't toggle the `loading` flag
+    // (only `saving`), so `.loading-overlay` never actually appears here —
+    // waiting for it to "detach" is a no-op, not a real wait for the
+    // post-save stats refresh. A short fixed wait (same as the equivalent
+    // Finances/Debts save-then-check flows) covers the local round-trip.
+    await page.waitForTimeout(400);
+
+    check(
+      "Credit Cards: Total Due sums both cards",
+      (await page.locator(".cards-stat", { hasText: "Total Due" }).innerText()).includes("8,000"),
+    );
+    check(
+      "Credit Cards: Total Paid sums both cards",
+      (await page.locator(".cards-stat", { hasText: "Total Paid" }).innerText()).includes("8,040"),
+    );
+    const earliestDueText = await page.locator(".cards-stat", { hasText: "Earliest Due Date" }).innerText();
+    check(
+      "Credit Cards: Earliest Due Date picks the 7th over the 22nd",
+      earliestDueText.includes("7") && !earliestDueText.includes("22"),
+    );
+    check(
+      "Credit Cards: shows Overpaid when total paid exceeds total due",
+      (await page.locator(".cards-stat", { hasText: "Overpaid" }).count()) === 1,
+    );
+
+    // --- Reload persistence ---
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.tabs button:has-text("Credit Cards")');
+    await page.waitForSelector(".cards-stats");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check("Credit Cards: entries persisted across reload", (await page.locator(".card-row-fields").count()) === 2);
+
+    // Clean up so the suite is idempotent across runs.
+    await page.click(".cards-remove >> nth=0");
+    await page.click(".cards-remove >> nth=0");
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check("Credit Cards back to empty after cleanup", (await page.locator(".card-row-fields").count()) === 0);
 
     // --- Theme toggle ---
     await page.click(".theme-toggle");

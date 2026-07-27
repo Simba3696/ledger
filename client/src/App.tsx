@@ -7,10 +7,12 @@ import { RecentEntries } from "./components/RecentEntries";
 import { MonthYearPicker } from "./components/MonthYearPicker";
 import { Dashboard } from "./components/Dashboard";
 import { Finances } from "./components/Finances";
+import { Debts } from "./components/Debts";
+import { CreditCards } from "./components/CreditCards";
 import { ThemeToggle } from "./components/ThemeToggle";
 import logoIcon from "./assets/logo-icon.png";
 
-type Tab = "expenses" | "dashboard" | "finances";
+type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards";
 
 function App() {
   const now = new Date();
@@ -64,7 +66,7 @@ function App() {
           <h1>Ledger</h1>
         </div>
         <div className="header-right">
-          {(tab === "expenses" || tab === "finances") && (
+          {(tab === "expenses" || tab === "finances" || tab === "creditCards") && (
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
@@ -80,6 +82,16 @@ function App() {
         </button>
         <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
           Finances
+        </button>
+        <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
+          Debts
+        </button>
+        <button
+          type="button"
+          className={tab === "creditCards" ? "selected" : ""}
+          onClick={() => setTab("creditCards")}
+        >
+          Credit Cards
         </button>
       </nav>
 
@@ -107,6 +119,8 @@ function App() {
       )}
       {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
       {tab === "finances" && <Finances year={year} month={month} />}
+      {tab === "debts" && <Debts />}
+      {tab === "creditCards" && <CreditCards year={year} month={month} />}
     </div>
   );
 }

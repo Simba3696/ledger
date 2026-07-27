@@ -2,6 +2,8 @@ import { Router, type ErrorRequestHandler } from "express";
 import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry, yearSummary } from "./excel/ledger.js";
 import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
+import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
+import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
 
 export const router = Router();
 
@@ -133,6 +135,89 @@ router.get("/finance-summary/:year", async (req, res, next) => {
   try {
     const year = Number(req.params.year);
     const summary = await financeSummary(year, 12);
+    res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/debts", async (_req, res, next) => {
+  try {
+    const debts = await listDebts();
+    res.json(debts);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/debts", async (req, res, next) => {
+  try {
+    const { name, amount } = req.body ?? {};
+    const entry = await addDebt({ name: String(name ?? ""), amount: Number(amount) });
+    res.status(201).json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/debts/:row", async (req, res, next) => {
+  try {
+    const { name, amount } = req.body ?? {};
+    const entry = await updateDebt({ row: Number(req.params.row), name: String(name ?? ""), amount: Number(amount) });
+    res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/debts/:row", async (req, res, next) => {
+  try {
+    await deleteDebt(Number(req.params.row));
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+function parseCardsField(value: unknown): CardBill[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((c) => ({
+    name: String(c?.name ?? ""),
+    due: Number(c?.due),
+    paid: Number(c?.paid),
+    dueDate: c?.dueDate === null || c?.dueDate === undefined || c?.dueDate === "" ? null : String(c.dueDate),
+  }));
+}
+
+router.get("/credit-card-bills/:year/:month", async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const month = Number(req.params.month);
+    const bills = await getMonthBills(year, month);
+    res.json(bills);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/credit-card-bills/:year/:month", async (req, res, next) => {
+  try {
+    const { cards } = req.body ?? {};
+    const bills = await setMonthBills({
+      year: Number(req.params.year),
+      month: Number(req.params.month),
+      cards: parseCardsField(cards),
+    });
+    res.json(bills);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/credit-card-bills-summary/:year", async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const summary = await yearBillsSummary(year);
     res.json(summary);
   } catch (err) {
     next(err);

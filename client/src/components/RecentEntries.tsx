@@ -3,6 +3,7 @@ import type { LedgerEntry, CategoryOption } from "../api";
 import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
 import { EntryRow } from "./EntryRow";
+import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./RecentEntries.css";
 
@@ -92,12 +93,13 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
 
   return (
     <div className="recent-entries">
+      <LoadingOverlay active={loading} />
+
       <div className="recent-header">
         <h2>Entries this month</h2>
         <span className="total">{rupee.format(total)}</span>
       </div>
 
-      {loading && <p>Loading…</p>}
       {!loading && entries.length === 0 && <p className="empty">No entries yet.</p>}
       {error && <p className="error">{error}</p>}
 

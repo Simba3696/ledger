@@ -73,6 +73,41 @@ export interface MonthFinanceSummary {
   currentSavingsBreakdown: SavingsEntry[];
 }
 
+export interface DebtEntry {
+  row: number;
+  name: string;
+  /** Negative = money the user lent out (owed back to them); positive =
+   * money the user owes someone else. */
+  amount: number;
+}
+
+export interface DebtEdits {
+  name: string;
+  amount: number;
+}
+
+export interface CardBill {
+  name: string;
+  due: number;
+  paid: number;
+  /** YYYY-MM-DD, or null if not entered. */
+  dueDate: string | null;
+}
+
+export interface MonthBills {
+  year: number;
+  month: number;
+  cards: CardBill[];
+}
+
+export interface MonthBillsSummary extends MonthBills {
+  totalDue: number;
+  totalPaid: number;
+  earliestDueDate: string | null;
+  /** totalDue - totalPaid: negative = overpaid, positive = saved a little. */
+  overpaidOrSaved: number;
+}
+
 const BASE = "/api";
 
 async function handle<T>(res: Response): Promise<T> {
@@ -143,4 +178,44 @@ export function setMonthIncome(year: number, month: number, edits: IncomeEdits):
 
 export function getFinanceSummary(year: number): Promise<MonthFinanceSummary[]> {
   return fetch(`${BASE}/finance-summary/${year}`).then((r) => handle(r));
+}
+
+export function getDebts(): Promise<DebtEntry[]> {
+  return fetch(`${BASE}/debts`).then((r) => handle(r));
+}
+
+export function addDebt(edits: DebtEdits): Promise<DebtEntry> {
+  return fetch(`${BASE}/debts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function updateDebt(row: number, edits: DebtEdits): Promise<DebtEntry> {
+  return fetch(`${BASE}/debts/${row}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function deleteDebt(row: number): Promise<void> {
+  return fetch(`${BASE}/debts/${row}`, { method: "DELETE" }).then((r) => handle(r));
+}
+
+export function getMonthBills(year: number, month: number): Promise<MonthBills> {
+  return fetch(`${BASE}/credit-card-bills/${year}/${month}`).then((r) => handle(r));
+}
+
+export function setMonthBills(year: number, month: number, cards: CardBill[]): Promise<MonthBills> {
+  return fetch(`${BASE}/credit-card-bills/${year}/${month}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cards }),
+  }).then((r) => handle(r));
+}
+
+export function getCreditCardBillsSummary(year: number): Promise<MonthBillsSummary[]> {
+  return fetch(`${BASE}/credit-card-bills-summary/${year}`).then((r) => handle(r));
 }

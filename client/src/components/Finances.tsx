@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getFinanceSummary, getMonthIncome, setMonthIncome, type MonthFinanceSummary, type SavingsEntry } from "../api";
+import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./Finances.css";
 
@@ -214,18 +215,20 @@ export function Finances({ year, month }: Props) {
         </button>
       </form>
 
-      {loading && <p>Loading…</p>}
+      <div className="finance-stats-wrap">
+        <LoadingOverlay active={loading} />
 
-      {!loading && thisMonth && (
-        <div className="finance-stats">
-          {stats.map((s) => (
-            <div className="finance-stat" key={s.label}>
-              <span>{s.label}</span>
-              <strong className={s.raw !== null && s.raw < 0 ? "negative" : undefined}>{s.value}</strong>
-            </div>
-          ))}
-        </div>
-      )}
+        {thisMonth && (
+          <div className="finance-stats">
+            {stats.map((s) => (
+              <div className="finance-stat" key={s.label}>
+                <span>{s.label}</span>
+                <strong className={s.raw !== null && s.raw < 0 ? "negative" : undefined}>{s.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

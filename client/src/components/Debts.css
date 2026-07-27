@@ -1,0 +1,126 @@
+.debts h2 {
+  margin: 0 0 16px;
+}
+
+.debts-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.debt-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.debt-stat span {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+.debt-stat strong {
+  font-size: 18px;
+  color: var(--text-h);
+}
+
+.debt-stat strong.negative {
+  color: var(--danger);
+}
+
+.add-debt-form {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.debts-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: var(--font-size-xs);
+  color: var(--text);
+}
+
+.debts-sort button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.debts-sort button.selected {
+  border-color: var(--accent);
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.sort-arrow {
+  font-size: 10px;
+}
+
+.debts-body {
+  position: relative;
+  min-height: 80px;
+}
+
+.debts-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.debt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-h);
+}
+
+.debt-name {
+  flex: 1;
+}
+
+.debt-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.debt-amount.owe {
+  color: var(--danger);
+}
+
+.debt-direction {
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  opacity: 0.7;
+}
+

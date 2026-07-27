@@ -37,3 +37,88 @@
   color: var(--text);
   opacity: 0.6;
 }
+
+/* Inline row-editing UI (an item card that turns into a small edit form),
+   used by EditEntryRow and EditDebtRow — pair with a component-specific base
+   class, e.g. `<li className="entry-row row-editing">` or `"debt-row row-editing"`. */
+.row-editing {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.edit-fields input[type="number"] {
+  width: 110px;
+}
+
+.edit-fields input {
+  font-size: var(--font-size-control);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.edit-fields input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-actions button:not(.submit-btn) {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* LoadingOverlay — pair with `position: relative` on whichever container it
+   should cover; the backdrop is a separate element (not the overlay's own
+   opacity) so it can be faded without also dimming the spinner on top of it. */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.loading-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  opacity: 0.7;
+}
+
+.spinner {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

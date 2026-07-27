@@ -13,6 +13,7 @@ import {
 import { getYearSummary, type MonthSummary } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
+import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./Dashboard.css";
 
@@ -126,11 +127,12 @@ export function Dashboard({ onSelectMonth }: Props) {
         <YearSelect value={year} onChange={setYear} />
       </div>
 
-      {loading && <p>Loading…</p>}
       {error && <p className="error">{error}</p>}
 
-      {!loading && !error && (
-        <>
+      {!error && (
+        <div className="dashboard-body">
+          <LoadingOverlay active={loading} />
+
           <div className="dashboard-total">
             <span>Total for {year}</span>
             <strong>{rupee.format(yearTotal)}</strong>
@@ -172,7 +174,7 @@ export function Dashboard({ onSelectMonth }: Props) {
               <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} onBarClick={handleBarClick} />
             ))}
           </div>
-        </>
+        </div>
       )}
     </div>
   );

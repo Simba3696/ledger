@@ -45,7 +45,7 @@ export function EditEntryRow({ entry, categories, year, month, onCancel, onSaved
   }
 
   return (
-    <li className="entry-row entry-row-editing">
+    <li className="entry-row row-editing">
       <div className="edit-fields">
         <input
           type="number"

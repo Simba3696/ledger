@@ -1,8 +1,8 @@
-.finances h2 {
+.credit-cards h2 {
   margin: 0 0 16px;
 }
 
-.income-form {
+.cards-form {
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -13,39 +13,20 @@
   gap: 16px;
 }
 
-.income-form input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.savings-editor {
+.cards-editor {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.savings-editor-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  color: var(--text);
-}
-
-.savings-editor-total {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--text-h);
-}
-
-.savings-row {
+.card-row-fields {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
-.savings-row input {
+.card-row-fields input {
   font-size: var(--font-size-base);
   padding: 8px 10px;
   border-radius: 8px;
@@ -54,16 +35,20 @@
   color: var(--text-h);
 }
 
-.savings-row input[type="text"] {
+.card-row-fields input[type="text"] {
   flex: 1;
-  min-width: 0;
+  min-width: 140px;
 }
 
-.savings-row input[type="number"] {
-  width: 110px;
+.card-row-fields input[type="number"] {
+  width: 100px;
 }
 
-.savings-remove {
+.card-row-fields input[type="date"] {
+  width: 150px;
+}
+
+.cards-remove {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
@@ -76,12 +61,12 @@
   cursor: pointer;
 }
 
-.savings-remove:disabled {
+.cards-remove:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.savings-add {
+.cards-add {
   align-self: flex-start;
   font-size: var(--font-size-sm);
   padding: 6px 12px;
@@ -92,23 +77,23 @@
   cursor: pointer;
 }
 
-.savings-add:disabled {
+.cards-add:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.finance-stats-wrap {
+.cards-stats-wrap {
   position: relative;
   min-height: 80px;
 }
 
-.finance-stats {
+.cards-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
 }
 
-.finance-stat {
+.cards-stat {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -118,17 +103,17 @@
   padding: 14px 16px;
 }
 
-.finance-stat span {
+.cards-stat span {
   color: var(--text);
   font-size: var(--font-size-xs);
   opacity: 0.75;
 }
 
-.finance-stat strong {
+.cards-stat strong {
   font-size: 18px;
   color: var(--text-h);
 }
 
-.finance-stat strong.negative {
+.cards-stat strong.negative {
   color: var(--danger);
 }
