@@ -77,15 +77,6 @@ function App() {
         <button type="button" className={tab === "dashboard" ? "selected" : ""} onClick={() => setTab("dashboard")}>
           Dashboard
         </button>
-        <button type="button" className={tab === "expenses" ? "selected" : ""} onClick={() => setTab("expenses")}>
-          Expenses
-        </button>
-        <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
-          Finances
-        </button>
-        <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
-          Debts
-        </button>
         <button
           type="button"
           className={tab === "creditCards" ? "selected" : ""}
@@ -93,8 +84,19 @@ function App() {
         >
           Credit Cards
         </button>
+        <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
+          Debts
+        </button>
+        <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
+          Finances
+        </button>
       </nav>
 
+      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
+      {tab === "creditCards" && <CreditCards year={year} month={month} />}
+      {tab === "debts" && <Debts />}
+      {tab === "finances" && <Finances year={year} month={month} />}
+      {/* Expenses has no nav button — only reachable via a Dashboard chart click (goToMonth). */}
       {tab === "expenses" && (
         <>
           <AddExpenseForm
@@ -117,10 +119,6 @@ function App() {
           />
         </>
       )}
-      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
-      {tab === "finances" && <Finances year={year} month={month} />}
-      {tab === "debts" && <Debts />}
-      {tab === "creditCards" && <CreditCards year={year} month={month} />}
     </div>
   );
 }

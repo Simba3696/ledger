@@ -43,10 +43,16 @@ them in place.
 - The app opens on the **Dashboard** tab by default. It shows a stacked bar
   chart of category totals per month for a selected year, computed live from
   the same ledger data (no separate storage) — a year selector independent of
-  the Expenses tab's month/year. Clicking any month's bar (even an empty one)
-  jumps to the Expenses tab with that month/year selected, so you can view an
-  existing month or drop straight into adding a new entry.
-- A third tab, **Finances**, tracks Salary, Other Income, and a Current
+  the Expenses view's month/year. Clicking any month's bar (even an empty one)
+  jumps to Expenses with that month/year selected, so you can view an existing
+  month or drop straight into adding a new entry. **Expenses has no button in
+  the nav bar** — the Dashboard chart is the only way in, by design, since the
+  Dashboard is meant to be the main view day to day. The rest of the nav bar
+  is ordered Dashboard, Credit Cards, Debts, Finances — matching the sheet
+  order in `Expense Summary.xlsm` (Credit Card Bills, Debts, then EMI/
+  Subscriptions when built) rather than the order each tab happened to be
+  built in.
+- The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (separate from `Expense
   Summary.xlsm`, which stays macro-enabled, manual, and untouched). From
@@ -75,7 +81,7 @@ them in place.
   backfilled the same way — the `.xlsm` only ever had one snapshot, entered
   once as a present-day figure rather than tied to a specific month, so it
   was entered fresh as of the actual month it was true.
-- A fourth tab, **Debts**, is a flat list of who you owe and who owes you —
+- The **Debts** tab is a flat list of who you owe and who owes you —
   entered into its own app-owned `Debts.xlsx`, not month-indexed like
   Finances since it's just current state, not a monthly history. Each
   entry is a name and a single signed amount you update directly when it
@@ -86,7 +92,7 @@ them in place.
   two real debts further down; the app's total doesn't have that gap.
   Sortable by Name, Amount, or Type (groups owed-to-you vs you-owe apart) —
   click a sort button again to flip ascending/descending.
-- A fifth tab, **Credit Cards**, tracks each card/loan's bill as its own
+- The **Credit Cards** tab tracks each card/loan's bill as its own
   named entry per month (due amount, paid amount, and that card's own due
   date) in its own app-owned `CreditCardBills.xlsx` — the number of cards
   isn't fixed, so adding or paying off one is just adding/removing an entry,
@@ -94,15 +100,18 @@ them in place.
   Paid, the Earliest Due Date across all cards that month (so you know when
   to arrange funds), and Overpaid/Saved (Due − Paid: negative means you paid
   more than billed, positive means a payment app rounded a few rupees in
-  your favor). Historical Due/Paid amounts were backfilled from `Expense
-  Summary.xlsm`'s Credit Card Bills sheet, whose own `=a+b+c+...` formulas
-  turned out to be literally one term per card (in the order the cards were
-  acquired) — splitting those formulas back into named per-card entries
-  reproduced every year's own total exactly (2020 through 2025, ₹140,301.76
-  through ₹669,857.81). Per-card due dates weren't backfillable — the old
-  sheet only ever tracked one shared "earliest due date" per month, not
-  per-card, so historical entries have that field unset; it's tracked
-  per-card going forward from here.
+  your favor). It also shows yearly totals — Total Spent This Year, Total
+  Paid This Year, and Net Overpaid/Saved This Year — summed across all 12
+  months of the selected year. Historical Due/Paid amounts were backfilled
+  from `Expense Summary.xlsm`'s Credit Card Bills sheet, whose own
+  `=a+b+c+...` formulas turned out to be literally one term per card (in the
+  order the cards were acquired) — splitting those formulas back into named
+  per-card entries reproduced every year's own total exactly (2020 through
+  2025, ₹140,301.76 through ₹669,857.81). The old sheet only ever tracked one
+  shared "earliest due date" per month, not per-card, so historical per-card
+  due dates were backfilled with that same shared date as a floor value (no
+  individual card's real due date could have been earlier than it, only
+  later) — it's tracked per-card going forward from here.
 - Every tab shows a spinner over a faded backdrop while its data loads,
   rather than swapping content out for plain "Loading…" text — previous
   content (e.g. last month's stats while this month's are being fetched)
@@ -130,9 +139,11 @@ server/   Express API (TypeScript). All Excel reading/writing lives in
           against its own Debts.xlsx), and creditCardBills.ts (per-card
           bills against its own CreditCardBills.xlsx).
           server/test/ — vitest suite + the synthetic-fixture builder.
-client/   React + Vite frontend. Add Expense form + current month's entry list,
-          a Dashboard tab (category chart), a Finances tab, a Debts tab, and
-          a Credit Cards tab — see src/components/.
+client/   React + Vite frontend. A Dashboard tab (category chart), a Credit
+          Cards tab, a Debts tab, and a Finances tab in the nav bar — see
+          src/components/. The Add Expense form + current month's entry list
+          (Expenses) has no nav button; it's only reached via a Dashboard
+          chart click.
 e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand.
 ```

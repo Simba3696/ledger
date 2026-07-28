@@ -201,7 +201,10 @@ async function main() {
     await page.waitForTimeout(400);
     check(
       "Clicking a category mini-chart also navigates to Expenses",
-      (await page.locator(".tabs button.selected").innerText()) === "Expenses",
+      // Expenses has no nav button (only reachable via a chart click), so
+      // there's no ".tabs button.selected" to check here — the add-expense
+      // form's presence is the reliable marker that we landed on that tab.
+      await page.locator(".add-expense-form").isVisible(),
     );
     await page.click('.tabs button:has-text("Dashboard")');
     // App.tsx conditionally renders the Dashboard tab, so switching back to
@@ -212,7 +215,7 @@ async function main() {
     await page.waitForTimeout(300);
 
     await clickChartMonth(monthIndex);
-    check("Click-through navigated to Expenses", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
+    check("Click-through navigated to Expenses", await page.locator(".add-expense-form").isVisible());
     check(
       "Click-through selected the clicked month",
       (await page.locator(".month-picker select").first().inputValue()) === String(monthIndex + 1),
@@ -513,22 +516,39 @@ async function main() {
     // Finances/Debts save-then-check flows) covers the local round-trip.
     await page.waitForTimeout(400);
 
+    const monthStat = (text: string) => page.locator(".cards-month-stats .cards-stat", { hasText: text });
+    const yearStat = (text: string) => page.locator(".cards-year-stats .cards-stat", { hasText: text });
+
     check(
       "Credit Cards: Total Due sums both cards",
-      (await page.locator(".cards-stat", { hasText: "Total Due" }).innerText()).includes("8,000"),
+      (await monthStat("Total Due").innerText()).includes("8,000"),
     );
     check(
       "Credit Cards: Total Paid sums both cards",
-      (await page.locator(".cards-stat", { hasText: "Total Paid" }).innerText()).includes("8,040"),
+      (await monthStat("Total Paid").innerText()).includes("8,040"),
     );
-    const earliestDueText = await page.locator(".cards-stat", { hasText: "Earliest Due Date" }).innerText();
+    const earliestDueText = await monthStat("Earliest Due Date").innerText();
     check(
       "Credit Cards: Earliest Due Date picks the 7th over the 22nd",
       earliestDueText.includes("7") && !earliestDueText.includes("22"),
     );
     check(
       "Credit Cards: shows Overpaid when total paid exceeds total due",
-      (await page.locator(".cards-stat", { hasText: "Overpaid" }).count()) === 1,
+      (await monthStat("Overpaid").count()) === 1,
+    );
+
+    // Only this seeded month has data, so the yearly totals should equal it.
+    check(
+      "Credit Cards: yearly total spent matches the one seeded month",
+      (await yearStat("Total Spent This Year").innerText()).includes("8,000"),
+    );
+    check(
+      "Credit Cards: yearly total paid matches the one seeded month",
+      (await yearStat("Total Paid This Year").innerText()).includes("8,040"),
+    );
+    check(
+      "Credit Cards: yearly net shows Overpaid when paid exceeds due for the year",
+      (await yearStat("Net Overpaid This Year").count()) === 1,
     );
 
     // --- Reload persistence ---

@@ -117,3 +117,9 @@
 .cards-stat strong.negative {
   color: var(--danger);
 }
+
+.cards-year-stats {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

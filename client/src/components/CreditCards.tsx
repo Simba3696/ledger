@@ -121,14 +121,16 @@ export function CreditCards({ year, month }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [thisMonth, setThisMonth] = useState<MonthBillsSummary | null>(null);
+  const [yearMonths, setYearMonths] = useState<MonthBillsSummary[]>([]);
 
-  // Refreshes the computed stats panel only — never the card fields. Same
+  // Refreshes the computed stats panels only — never the card fields. Same
   // reasoning as Finances: re-deriving the form from a fresh GET here could
   // resolve after the user already started typing (or right after a save)
   // and silently wipe their in-progress input.
   const loadStats = useCallback(async (): Promise<void> => {
     try {
       const yearSummary = await getCreditCardBillsSummary(year);
+      setYearMonths(yearSummary);
       setThisMonth(yearSummary.find((m) => m.month === month) ?? null);
     } catch (err) {
       setError((err as Error).message);
@@ -192,6 +194,21 @@ export function CreditCards({ year, month }: Props) {
       ]
     : [];
 
+  const yearTotalDue = yearMonths.reduce((sum, m) => sum + m.totalDue, 0);
+  const yearTotalPaid = yearMonths.reduce((sum, m) => sum + m.totalPaid, 0);
+  const yearOverpaidOrSaved = yearTotalDue - yearTotalPaid;
+  const yearStats = yearMonths.length
+    ? [
+        { label: "Total Spent This Year", value: rupee.format(yearTotalDue) },
+        { label: "Total Paid This Year", value: rupee.format(yearTotalPaid) },
+        {
+          label: yearOverpaidOrSaved < 0 ? "Net Overpaid This Year" : "Net Saved This Year",
+          value: rupee.format(Math.abs(yearOverpaidOrSaved)),
+          negative: yearOverpaidOrSaved < 0,
+        },
+      ]
+    : [];
+
   return (
     <div className="credit-cards">
       <h2>
@@ -212,8 +229,19 @@ export function CreditCards({ year, month }: Props) {
         <LoadingOverlay active={loading} />
 
         {thisMonth && (
-          <div className="cards-stats">
+          <div className="cards-stats cards-month-stats">
             {stats.map((s) => (
+              <div className="cards-stat" key={s.label}>
+                <span>{s.label}</span>
+                <strong className={"negative" in s && s.negative ? "negative" : undefined}>{s.value}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {yearStats.length > 0 && (
+          <div className="cards-stats cards-year-stats">
+            {yearStats.map((s) => (
               <div className="cards-stat" key={s.label}>
                 <span>{s.label}</span>
                 <strong className={"negative" in s && s.negative ? "negative" : undefined}>{s.value}</strong>
