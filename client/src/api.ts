@@ -108,6 +108,55 @@ export interface MonthBillsSummary extends MonthBills {
   overpaidOrSaved: number;
 }
 
+export interface EmiEntry {
+  row: number;
+  cardOrBank: string;
+  emiAmount: number;
+  dueDay: number;
+  totalAmount: number;
+  remarks: string;
+  remainingAsOf: number;
+  asOfDate: string;
+}
+
+export interface EmiEntryComputed extends EmiEntry {
+  remaining: number;
+  isPaidOff: boolean;
+  estimatedPayoffMonth: string | null;
+}
+
+export interface EmiEdits {
+  cardOrBank: string;
+  emiAmount: number;
+  dueDay: number;
+  totalAmount: number;
+  remarks: string;
+  remainingAsOf: number;
+}
+
+export type SubscriptionDuration = "Monthly" | "Yearly";
+
+export interface SubscriptionEntry {
+  row: number;
+  service: string;
+  amount: number;
+  duration: SubscriptionDuration;
+  expiryAnchor: string;
+  cardOrBank: string;
+}
+
+export interface SubscriptionEntryComputed extends SubscriptionEntry {
+  nextExpiry: string;
+}
+
+export interface SubscriptionEdits {
+  service: string;
+  amount: number;
+  duration: SubscriptionDuration;
+  expiryAnchor: string;
+  cardOrBank: string;
+}
+
 const BASE = "/api";
 
 async function handle<T>(res: Response): Promise<T> {
@@ -218,4 +267,52 @@ export function setMonthBills(year: number, month: number, cards: CardBill[]): P
 
 export function getCreditCardBillsSummary(year: number): Promise<MonthBillsSummary[]> {
   return fetch(`${BASE}/credit-card-bills-summary/${year}`).then((r) => handle(r));
+}
+
+export function getEmis(): Promise<EmiEntryComputed[]> {
+  return fetch(`${BASE}/emi`).then((r) => handle(r));
+}
+
+export function addEmi(edits: EmiEdits): Promise<EmiEntryComputed> {
+  return fetch(`${BASE}/emi`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function updateEmi(row: number, edits: EmiEdits): Promise<EmiEntryComputed> {
+  return fetch(`${BASE}/emi/${row}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function deleteEmi(row: number): Promise<void> {
+  return fetch(`${BASE}/emi/${row}`, { method: "DELETE" }).then((r) => handle(r));
+}
+
+export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
+  return fetch(`${BASE}/subscriptions`).then((r) => handle(r));
+}
+
+export function addSubscription(edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
+  return fetch(`${BASE}/subscriptions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function updateSubscription(row: number, edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
+  return fetch(`${BASE}/subscriptions/${row}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(edits),
+  }).then((r) => handle(r));
+}
+
+export function deleteSubscription(row: number): Promise<void> {
+  return fetch(`${BASE}/subscriptions/${row}`, { method: "DELETE" }).then((r) => handle(r));
 }

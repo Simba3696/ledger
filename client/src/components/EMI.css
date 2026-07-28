@@ -1,0 +1,136 @@
+.emi h2 {
+  margin: 0 0 16px;
+}
+
+.emi-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.emi-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.emi-stat span {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+.emi-stat strong {
+  font-size: 18px;
+  color: var(--text-h);
+}
+
+.add-emi-form {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.emi-body {
+  position: relative;
+  min-height: 80px;
+}
+
+.emi-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.emi-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-h);
+}
+
+.emi-row.paid-off {
+  opacity: 0.6;
+}
+
+.emi-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.emi-card {
+  font-weight: 600;
+}
+
+.emi-remarks {
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.emi-figures {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.emi-remaining {
+  font-weight: 600;
+}
+
+.emi-of-total {
+  font-weight: 400;
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.emi-schedule,
+.emi-payoff {
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.emi-edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.emi-edit-fields input {
+  font-size: var(--font-size-base);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.emi-edit-fields input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
+
+.emi-edit-fields input[type="number"] {
+  width: 110px;
+}

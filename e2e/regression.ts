@@ -487,6 +487,123 @@ async function main() {
     await page.waitForTimeout(400);
     check("Debts back to empty after cleanup", (await page.locator(".debt-row").count()) === 0);
 
+    // --- EMI tab ---
+    await page.click('.tabs button:has-text("EMI")');
+    check("EMI tab selected", (await page.locator(".tabs button.selected").innerText()) === "EMI");
+    await page.waitForSelector(".emi p.empty");
+    check("EMI starts empty", (await page.locator(".emi p.empty").count()) === 1);
+
+    await page.fill('.add-emi-form input[placeholder="Who\'s it with?"]', "E2E Coral");
+    const emiNumberInputs = page.locator(".add-emi-form input[type=\"number\"]");
+    await emiNumberInputs.nth(0).fill("1000"); // EMI Amount
+    await emiNumberInputs.nth(1).fill("15"); // Due Day
+    await emiNumberInputs.nth(2).fill("12000"); // Total Amount
+    await emiNumberInputs.nth(3).fill("6000"); // Current Balance
+    await page.fill('.add-emi-form input[placeholder="Optional"]', "E2E Loan");
+    await page.click('.add-emi-form button:has-text("Add EMI")');
+    await page.waitForSelector('.emi-row:has-text("E2E Coral")');
+
+    check(
+      "EMI: row shows remaining of total",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("6,000") &&
+        (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("12,000"),
+    );
+    check(
+      "EMI: not paid off shows an estimated payoff month, not \"Paid off\"",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("Finishes"),
+    );
+    check(
+      "EMI: Total Remaining stat reflects the new entry",
+      (await page.locator(".emi-stat", { hasText: "Total Remaining" }).innerText()).includes("6,000"),
+    );
+    check(
+      "EMI: Total Monthly EMI stat reflects the new entry",
+      (await page.locator(".emi-stat", { hasText: "Total Monthly EMI" }).innerText()).includes("1,000"),
+    );
+    check(
+      "EMI: Active Loans stat is 1",
+      (await page.locator(".emi-stat", { hasText: "Active Loans" }).innerText()).includes("1"),
+    );
+
+    // --- Edit an EMI entry (correcting drift in the current balance) ---
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Edit");
+    await page.waitForSelector(".row-editing");
+    await page.locator(".emi-edit-fields input[type=\"number\"]").nth(3).fill("3000"); // Current Balance
+    await page.click('.row-editing button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check(
+      "EMI: editing updates the current balance",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("3,000"),
+    );
+
+    // --- Reload persistence ---
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.tabs button:has-text("EMI")');
+    await page.waitForSelector('.emi-row:has-text("E2E Coral")');
+    check(
+      "EMI: entry persisted across reload",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("3,000"),
+    );
+
+    // Clean up so the suite is idempotent across runs — simulates foreclosing the loan.
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Delete");
+    await page.waitForTimeout(400);
+    check("EMI back to empty after cleanup (foreclosure)", (await page.locator(".emi-row").count()) === 0);
+
+    // --- Subscriptions tab ---
+    await page.click('.tabs button:has-text("Subscriptions")');
+    check("Subscriptions tab selected", (await page.locator(".tabs button.selected").innerText()) === "Subscriptions");
+    await page.waitForSelector(".subscriptions p.empty");
+    check("Subscriptions starts empty", (await page.locator(".subscriptions p.empty").count()) === 1);
+
+    await page.fill('.add-subscription-form input[placeholder="Netflix"]', "E2E Netflix");
+    await page.fill('.add-subscription-form input[type="number"]', "649");
+    // A deliberately stale, long-past anchor — proves the auto-advance logic
+    // actually runs rather than just echoing back whatever was entered.
+    await page.fill('.add-subscription-form input[type="date"]', "2020-01-15");
+    await page.click('.add-subscription-form button:has-text("Add Subscription")');
+    await page.waitForSelector('.subscription-row:has-text("E2E Netflix")');
+
+    const subscriptionRowText = await page.locator(".subscription-row", { hasText: "E2E Netflix" }).innerText();
+    check("Subscriptions: row shows the amount", subscriptionRowText.includes("649"));
+    check(
+      "Subscriptions: stale 2020 anchor auto-advances to a current renewal date",
+      subscriptionRowText.includes("Renews") && !subscriptionRowText.includes("2020"),
+    );
+    check(
+      "Subscriptions: Monthly Cost stat reflects the new entry",
+      (await page.locator(".subscription-stat", { hasText: "Monthly Cost" }).innerText()).includes("649"),
+    );
+
+    // --- Edit a subscription ---
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + 60);
+    const futureDateStr = futureDate.toISOString().slice(0, 10);
+    await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Netflix" }), "Edit");
+    await page.waitForSelector(".row-editing");
+    await page.locator('.subscription-edit-fields input[type="number"]').fill("699");
+    await page.locator('.subscription-edit-fields input[type="date"]').fill(futureDateStr);
+    await page.click('.row-editing button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check(
+      "Subscriptions: editing updates the amount",
+      (await page.locator(".subscription-row", { hasText: "E2E Netflix" }).innerText()).includes("699"),
+    );
+
+    // --- Reload persistence ---
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.tabs button:has-text("Subscriptions")');
+    await page.waitForSelector('.subscription-row:has-text("E2E Netflix")');
+    check(
+      "Subscriptions: entry persisted across reload",
+      (await page.locator(".subscription-row", { hasText: "E2E Netflix" }).innerText()).includes("699"),
+    );
+
+    // Clean up so the suite is idempotent across runs.
+    await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Netflix" }), "Delete");
+    await page.waitForTimeout(400);
+    check("Subscriptions back to empty after cleanup", (await page.locator(".subscription-row").count()) === 0);
+
     // --- Credit Cards tab ---
     await page.click('.tabs button:has-text("Credit Cards")');
     check("Credit Cards tab selected", (await page.locator(".tabs button.selected").innerText()) === "Credit Cards");

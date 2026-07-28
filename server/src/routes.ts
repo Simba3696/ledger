@@ -4,6 +4,14 @@ import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
+import { addEmi, deleteEmi, listEmis, updateEmi, type EmiEditsInput } from "./excel/emi.js";
+import {
+  addSubscription,
+  deleteSubscription,
+  listSubscriptions,
+  updateSubscription,
+  type SubscriptionEditsInput,
+} from "./excel/subscriptions.js";
 
 export const router = Router();
 
@@ -219,6 +227,99 @@ router.get("/credit-card-bills-summary/:year", async (req, res, next) => {
     const year = Number(req.params.year);
     const summary = await yearBillsSummary(year);
     res.json(summary);
+  } catch (err) {
+    next(err);
+  }
+});
+
+function parseEmiInput(body: unknown): EmiEditsInput {
+  const b = (body ?? {}) as Record<string, unknown>;
+  return {
+    cardOrBank: String(b.cardOrBank ?? ""),
+    emiAmount: Number(b.emiAmount),
+    dueDay: Number(b.dueDay),
+    totalAmount: Number(b.totalAmount),
+    remarks: String(b.remarks ?? ""),
+    remainingAsOf: Number(b.remainingAsOf),
+  };
+}
+
+router.get("/emi", async (_req, res, next) => {
+  try {
+    res.json(await listEmis());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/emi", async (req, res, next) => {
+  try {
+    const entry = await addEmi(parseEmiInput(req.body));
+    res.status(201).json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/emi/:row", async (req, res, next) => {
+  try {
+    const entry = await updateEmi(Number(req.params.row), parseEmiInput(req.body));
+    res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/emi/:row", async (req, res, next) => {
+  try {
+    await deleteEmi(Number(req.params.row));
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+function parseSubscriptionInput(body: unknown): SubscriptionEditsInput {
+  const b = (body ?? {}) as Record<string, unknown>;
+  return {
+    service: String(b.service ?? ""),
+    amount: Number(b.amount),
+    duration: b.duration as SubscriptionEditsInput["duration"],
+    expiryAnchor: String(b.expiryAnchor ?? ""),
+    cardOrBank: String(b.cardOrBank ?? ""),
+  };
+}
+
+router.get("/subscriptions", async (_req, res, next) => {
+  try {
+    res.json(await listSubscriptions());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/subscriptions", async (req, res, next) => {
+  try {
+    const entry = await addSubscription(parseSubscriptionInput(req.body));
+    res.status(201).json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/subscriptions/:row", async (req, res, next) => {
+  try {
+    const entry = await updateSubscription(Number(req.params.row), parseSubscriptionInput(req.body));
+    res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/subscriptions/:row", async (req, res, next) => {
+  try {
+    await deleteSubscription(Number(req.params.row));
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

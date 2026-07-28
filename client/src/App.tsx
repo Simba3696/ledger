@@ -9,10 +9,12 @@ import { Dashboard } from "./components/Dashboard";
 import { Finances } from "./components/Finances";
 import { Debts } from "./components/Debts";
 import { CreditCards } from "./components/CreditCards";
+import { EMI } from "./components/EMI";
+import { Subscriptions } from "./components/Subscriptions";
 import { ThemeToggle } from "./components/ThemeToggle";
 import logoIcon from "./assets/logo-icon.png";
 
-type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards";
+type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards" | "emi" | "subscriptions";
 
 function App() {
   const now = new Date();
@@ -87,6 +89,16 @@ function App() {
         <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
           Debts
         </button>
+        <button type="button" className={tab === "emi" ? "selected" : ""} onClick={() => setTab("emi")}>
+          EMI
+        </button>
+        <button
+          type="button"
+          className={tab === "subscriptions" ? "selected" : ""}
+          onClick={() => setTab("subscriptions")}
+        >
+          Subscriptions
+        </button>
         <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
           Finances
         </button>
@@ -95,6 +107,8 @@ function App() {
       {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
       {tab === "creditCards" && <CreditCards year={year} month={month} />}
       {tab === "debts" && <Debts />}
+      {tab === "emi" && <EMI />}
+      {tab === "subscriptions" && <Subscriptions />}
       {tab === "finances" && <Finances year={year} month={month} />}
       {/* Expenses has no nav button — only reachable via a Dashboard chart click (goToMonth). */}
       {tab === "expenses" && (

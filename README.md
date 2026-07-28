@@ -112,6 +112,33 @@ them in place.
   due dates were backfilled with that same shared date as a floor value (no
   individual card's real due date could have been earlier than it, only
   later) — it's tracked per-card going forward from here.
+- The **EMI** tab is a flat list of active loans/EMI plans (Card/Bank, EMI
+  Amount, Due Day, Total Amount, Remarks) in its own app-owned `EMI.xlsx`.
+  Unlike the old sheet — where Remaining/Total Amount were plain numbers you
+  had to re-type by hand — Remaining is **auto-computed**: you enter the real
+  current balance once (from your bank/card statement) and the app decreases
+  it by the EMI Amount every time the due day passes, entirely automatically.
+  The estimated payoff month is computed the same way (from Remaining ÷ EMI
+  Amount) rather than being a manually-typed "Until" date, which the real
+  sheet showed can silently drift out of sync with the actual balance (a
+  duplicate pair of rows differed only by a typo'd end year). Foreclosed or
+  fully-paid loans are removed via the same Edit/Delete menu as everywhere
+  else. Backfilled from `Expense Summary.xlsm`'s EMI sheet (37 entries,
+  cross-checked exactly against its own EMI Amount/Remaining/Total Amount
+  SUBTOTAL row) — roman-numeral card references (I-V) were resolved to real
+  names via the sheet's own Legend (Coral, Amazon Pay, OneCard, Manchester
+  United, Moneyback+); newer entries already used plain names (Jumbo Loan,
+  CRED, Kreditbee, ICICI).
+- The **Subscriptions** tab is a flat list (Service, Amount, Monthly/Yearly,
+  Card/Bank) in its own app-owned `Subscriptions.xlsx`. The renewal date you
+  enter is never treated as stale — the app auto-advances it forward by
+  whole Monthly/Yearly cycles until it's on or after today, so a
+  long-untouched entry always shows its real next renewal rather than a date
+  that's quietly fallen into the past. Shows an approximate combined
+  Monthly Cost (Yearly subscriptions divided by 12). Backfilled from
+  `Expense Summary.xlsm`'s Subscriptions sheet (10 entries; one stray row
+  with a date instead of an amount was correctly excluded, same as the rest
+  of the app's number-or-skip parsing).
 - Every tab shows a spinner over a faded backdrop while its data loads,
   rather than swapping content out for plain "Loading…" text — previous
   content (e.g. last month's stats while this month's are being fetched)
@@ -124,8 +151,9 @@ them in place.
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
   refuses to write to it rather than silently editing through the lock.
 - The first time a given workbook (a year's `Expenses (YYYY).xlsx`,
-  `Finances.xlsx`, `Debts.xlsx`, or `CreditCardBills.xlsx`) is written to in
-  a server run, a timestamped copy is saved to a `.backups/` folder next to it.
+  `Finances.xlsx`, `Debts.xlsx`, `CreditCardBills.xlsx`, `EMI.xlsx`, or
+  `Subscriptions.xlsx`) is written to in a server run, a timestamped copy is
+  saved to a `.backups/` folder next to it.
 
 ## Project layout
 
@@ -133,17 +161,20 @@ them in place.
 server/   Express API (TypeScript). All Excel reading/writing lives in
           server/src/excel/ — categoryColors.ts (the color↔category map),
           workbookIO.ts (shared safe-write: backup + temp-file-then-rename,
-          used by every file below), ledger.ts (expense read/append logic
-          against Expenses (YYYY).xlsx), finances.ts (Salary/Balance/
-          Savings against its own Finances.xlsx), debts.ts (who-owes-whom
-          against its own Debts.xlsx), and creditCardBills.ts (per-card
-          bills against its own CreditCardBills.xlsx).
+          used by every file below), dateMath.ts (shared month/day
+          arithmetic for EMI's decay and Subscriptions' renewal-advance),
+          ledger.ts (expense read/append logic against Expenses (YYYY).xlsx),
+          finances.ts (Salary/Balance/Savings against its own
+          Finances.xlsx), debts.ts (who-owes-whom against its own
+          Debts.xlsx), creditCardBills.ts (per-card bills against its own
+          CreditCardBills.xlsx), emi.ts (loan snapshots + auto-decay against
+          its own EMI.xlsx), and subscriptions.ts (auto-advancing renewals
+          against its own Subscriptions.xlsx).
           server/test/ — vitest suite + the synthetic-fixture builder.
-client/   React + Vite frontend. A Dashboard tab (category chart), a Credit
-          Cards tab, a Debts tab, and a Finances tab in the nav bar — see
-          src/components/. The Add Expense form + current month's entry list
-          (Expenses) has no nav button; it's only reached via a Dashboard
-          chart click.
+client/   React + Vite frontend. Nav bar order: Dashboard, Credit Cards,
+          Debts, EMI, Subscriptions, Finances — see src/components/. The
+          Add Expense form + current month's entry list (Expenses) has no
+          nav button; it's only reached via a Dashboard chart click.
 e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand.
 ```
@@ -197,7 +228,7 @@ npm run stop
 
 Two suites, covering different layers:
 
-- **`npm test`** — vitest, four files. `server/test/ledger.test.ts` covers
+- **`npm test`** — vitest, seven files. `server/test/ledger.test.ts` covers
   `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
   synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
   (never real data — nothing sensitive is committed), including a couple of
@@ -211,9 +242,14 @@ Two suites, covering different layers:
   forward across unset months. `server/test/debts.test.ts` covers add/update/
   delete and the sign convention. `server/test/creditCardBills.test.ts`
   covers per-card entries summing correctly into totals, the earliest-due-
-  date computation, and Overpaid/Saved. Fast (a few seconds), no browser or
-  dev server needed — this is the one to run after any change under
-  `server/src/excel/`.
+  date computation, and Overpaid/Saved. `server/test/dateMath.test.ts` covers
+  the shared month/day arithmetic (day-of-month clamping, year rollover, leap
+  years). `server/test/emi.test.ts` covers the Remaining snapshot-decay math
+  (including a due-day clamp and the paid-off floor at zero) and the
+  estimated-payoff-month calculation. `server/test/subscriptions.test.ts`
+  covers the Expiry auto-advance for both Monthly and Yearly cycles. Fast (a
+  few seconds), no browser or dev server needed — this is the one to run
+  after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
   the `@playwright/test` runner). Builds a scratch data directory seeded with
   a full year (so switching months never legitimately 404s), starts the real
@@ -221,13 +257,15 @@ Two suites, covering different layers:
   Dashboard-is-default, chart click-through navigation (main chart and the
   per-category mini-charts, including their synced hover), month/year
   selects, add (cash + card), edit, drag-reorder, delete, Finances entry +
-  persistence, Debts add/edit/delete/sort, Credit Cards add/edit/persistence,
-  and theme toggle + persistence — failing loudly on both failed assertions
-  and any browser console error. Seeds the *real current* month/year (not a
-  hardcoded one), since edit/delete/reorder are only enabled in the UI for
-  the actual current month. Slower (~20–25s) and needs the dev ports free —
-  this is the one to run after any client-side change, or before considering
-  a session's changes done.
+  persistence, Debts add/edit/delete/sort, EMI add/edit/delete (including the
+  auto-computed Remaining/payoff estimate), Subscriptions add/edit/delete
+  (including the stale-anchor auto-advance), Credit Cards add/edit/
+  persistence, and theme toggle + persistence — failing loudly on both
+  failed assertions and any browser console error. Seeds the *real current*
+  month/year (not a hardcoded one), since edit/delete/reorder are only
+  enabled in the UI for the actual current month. Slower (~20–25s) and needs
+  the dev ports free — this is the one to run after any client-side change,
+  or before considering a session's changes done.
 
 Both suites are self-contained: they create their own temp data directories
 and never touch the real `Expenses` folder.
@@ -258,18 +296,13 @@ and never touch the real `Expenses` folder.
   *next* launch always clears anything left over. Run `npm run stop`
   directly if you want to clean up without immediately restarting.
 
-## Roadmap (not built yet)
+## Roadmap
 
-The remaining data still living in `Expense Summary.xlsm`, one phase at a
-time, following the same pattern as Finances/Debts/Credit Cards above — a
-new app-owned workbook with a one-time historical backfill, so the app is
-fully read/write and the `.xlsm` never needs a write path:
-
-- EMI schedules and Subscriptions (possibly one workbook, two sheets — both
-  are recurring obligations with a due date and an amount, unlike Credit
-  Card Bills' month-grouped structure).
-
-The end goal is to retire `Expense Summary.xlsm` entirely once everything
-in it has a home in the app; `.xlsm` itself stays read-only right up until
-that point (it's macro-enabled, so it's never worth writing to
-programmatically even for a single field).
+Every sheet that used to live only in `Expense Summary.xlsm` — Summary
+(Finances), Credit Card Bills, Debts, EMI, and Subscriptions — now has a
+fully read/write home in the app, each in its own app-owned workbook with a
+one-time historical backfill cross-validated against the `.xlsm`'s own
+totals. `Expense Summary.xlsm` can be retired from day-to-day use; it's kept
+around as a frozen historical record rather than being deleted, and the app
+never writes to it (it's macro-enabled, so that was never worth doing even
+for a single field).

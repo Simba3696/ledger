@@ -1,0 +1,127 @@
+.subscriptions h2 {
+  margin: 0 0 16px;
+}
+
+.subscriptions-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.subscription-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.subscription-stat span {
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  opacity: 0.75;
+}
+
+.subscription-stat strong {
+  font-size: 18px;
+  color: var(--text-h);
+}
+
+.add-subscription-form {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.subscriptions-body {
+  position: relative;
+  min-height: 80px;
+}
+
+.subscriptions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subscription-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-h);
+}
+
+.subscription-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.subscription-service {
+  font-weight: 600;
+}
+
+.subscription-card {
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.subscription-figures {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.subscription-amount {
+  font-weight: 600;
+}
+
+.subscription-duration {
+  font-weight: 400;
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.subscription-expiry {
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+}
+
+.subscription-edit-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.subscription-edit-fields input {
+  font-size: var(--font-size-base);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.subscription-edit-fields input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+}
