@@ -38,6 +38,34 @@
   opacity: 0.6;
 }
 
+/* A form's row of side-by-side labeled fields — used by AddExpenseForm,
+   Debts, EMI, and Subscriptions' add-forms. */
+.field-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.field-row label {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.field-row input {
+  font-size: var(--font-size-base);
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
 /* Inline row-editing UI (an item card that turns into a small edit form),
    used by EditEntryRow and EditDebtRow — pair with a component-specific base
    class, e.g. `<li className="entry-row row-editing">` or `"debt-row row-editing"`. */
