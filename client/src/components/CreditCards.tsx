@@ -8,6 +8,7 @@ import {
 } from "../api";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
+import { generateId } from "../id";
 import "./CreditCards.css";
 
 const MONTH_NAMES = [
@@ -31,7 +32,7 @@ interface CardRow {
 
 function toRows(cards: CardBill[]): CardRow[] {
   return cards.map((c) => ({
-    id: crypto.randomUUID(),
+    id: generateId(),
     name: c.name,
     due: String(c.due),
     paid: String(c.paid),
@@ -58,7 +59,7 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
     onChange(rows.filter((r) => r.id !== id));
   }
   function addRow() {
-    onChange([...rows, { id: crypto.randomUUID(), name: "", due: "", paid: "", dueDate: "" }]);
+    onChange([...rows, { id: generateId(), name: "", due: "", paid: "", dueDate: "" }]);
   }
 
   return (

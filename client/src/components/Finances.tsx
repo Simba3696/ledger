@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getFinanceSummary, getMonthIncome, setMonthIncome, type MonthFinanceSummary, type SavingsEntry } from "../api";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
+import { generateId } from "../id";
 import "./Finances.css";
 
 const MONTH_NAMES = [
@@ -25,7 +26,7 @@ function formatOrDash(value: number | null): string {
 }
 
 function toRows(savings: SavingsEntry[]): SavingsRow[] {
-  return savings.map((s) => ({ id: crypto.randomUUID(), name: s.name, amount: String(s.amount) }));
+  return savings.map((s) => ({ id: generateId(), name: s.name, amount: String(s.amount) }));
 }
 
 interface SavingsEditorProps {
@@ -42,7 +43,7 @@ function SavingsEditor({ rows, onChange, disabled }: SavingsEditorProps) {
     onChange(rows.filter((r) => r.id !== id));
   }
   function addRow() {
-    onChange([...rows, { id: crypto.randomUUID(), name: "", amount: "" }]);
+    onChange([...rows, { id: generateId(), name: "", amount: "" }]);
   }
 
   const total = rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);

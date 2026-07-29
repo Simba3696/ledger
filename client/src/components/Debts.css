@@ -34,6 +34,10 @@
   color: var(--danger);
 }
 
+.debt-stat strong.positive {
+  color: var(--success);
+}
+
 .add-debt-form {
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -116,6 +120,10 @@
 
 .debt-amount.owe {
   color: var(--danger);
+}
+
+.debt-amount.owed {
+  color: var(--success);
 }
 
 .debt-direction {

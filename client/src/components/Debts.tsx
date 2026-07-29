@@ -126,11 +126,11 @@ export function Debts() {
           </div>
           <div className="debt-stat">
             <span>Owed to you</span>
-            <strong>{rupee.format(owedToYou)}</strong>
+            <strong className="positive">{rupee.format(owedToYou)}</strong>
           </div>
           <div className="debt-stat">
             <span>Net</span>
-            <strong className={net < 0 ? "negative" : undefined}>{rupee.format(net)}</strong>
+            <strong className={net < 0 ? "negative" : net > 0 ? "positive" : undefined}>{rupee.format(net)}</strong>
           </div>
         </div>
       )}

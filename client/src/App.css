@@ -42,6 +42,7 @@ header h1 {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 24px;
   border-bottom: 1px solid var(--border);
@@ -57,9 +58,27 @@ header h1 {
   margin-bottom: -1px;
   border-bottom: 2px solid transparent;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .tabs button.selected {
   color: var(--text-h);
   border-bottom-color: var(--accent);
+}
+
+.tab-label-short {
+  display: none;
+}
+
+/* Narrow phones: swap in a shorter label for "Credit Cards" specifically —
+   it's the longest tab label and the main contributor to the nav overflowing
+   past one row on a small screen. */
+@media (max-width: 600px) {
+  .tab-label-full {
+    display: none;
+  }
+
+  .tab-label-short {
+    display: inline;
+  }
 }

@@ -84,7 +84,8 @@ function App() {
           className={tab === "creditCards" ? "selected" : ""}
           onClick={() => setTab("creditCards")}
         >
-          Credit Cards
+          <span className="tab-label-full">Credit Cards</span>
+          <span className="tab-label-short">CC Bills</span>
         </button>
         <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
           Debts

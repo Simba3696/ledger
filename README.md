@@ -224,6 +224,29 @@ Either way, to stop everything:
 npm run stop
 ```
 
+## Remote access (Tailscale)
+
+The app now also starts automatically and is reachable from other personal
+devices (e.g. a phone) over [Tailscale](https://tailscale.com), a private
+mesh VPN — no public internet exposure, no separate login/auth added to the
+app itself, since only devices already enrolled in the same Tailscale account
+can reach it.
+
+- **Persistence**: a Windows Scheduled Task named `Ledger` runs
+  `scripts/run-server-hidden.vbs` → `scripts/run-server.bat` → `npm start` at
+  every logon, with no visible console window. Manage it via Task Scheduler,
+  or `Get-ScheduledTask -TaskName Ledger` / `Start-ScheduledTask -TaskName
+  Ledger` / `Unregister-ScheduledTask -TaskName Ledger` in PowerShell.
+- **Tailscale**: installed via `winget install Tailscale.Tailscale`, already
+  signed into the existing account. `tailscale status` lists every device on
+  the tailnet; `tailscale ip -4` gives this PC's stable private IP — the app
+  is reached at `http://<that-ip>:4000` from any other enrolled device.
+- **Firewall**: a Windows Firewall inbound rule (`Ledger (Tailscale)`, TCP
+  4000, all profiles) had to be added by hand from an elevated PowerShell —
+  several old `node.exe` allow rules already existed from past nvm/nvs Node
+  installs, but none matched the actual `C:\Program Files\nodejs\node.exe`
+  binary this app runs from, so none of them actually covered it.
+
 ## Testing
 
 Two suites, covering different layers:
