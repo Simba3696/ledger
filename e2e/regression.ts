@@ -383,6 +383,17 @@ async function main() {
     await page.waitForSelector(".finance-stats");
     await page.waitForTimeout(300);
 
+    check(
+      "Finance: Save button disables once there's nothing new to save",
+      await page.locator(".income-form button.submit-btn").isDisabled(),
+    );
+    await incomeInputs.nth(0).fill("50001");
+    check(
+      "Finance: Save button re-enables after an edit",
+      !(await page.locator(".income-form button.submit-btn").isDisabled()),
+    );
+    await incomeInputs.nth(0).fill("50000"); // revert to the saved value for the checks below
+
     async function financeStat(label: string): Promise<string> {
       return page.locator(`.finance-stat:has-text("${label}") strong`).innerText();
     }
@@ -604,8 +615,10 @@ async function main() {
       (await coralRemaining().innerText()).includes("₹2,000"),
     );
 
-    // Clean up so the suite is idempotent across runs — simulates foreclosing the loan.
-    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Delete");
+    // Clean up so the suite is idempotent across runs — via the real
+    // "Foreclose EMI" action (matches the user's actual workflow: once a
+    // loan is fully paid off, it comes off the list entirely).
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Foreclose EMI");
     await page.waitForTimeout(400);
     check("EMI back to empty after cleanup (foreclosure)", (await page.locator(".emi-row").count()) === 0);
 
@@ -691,6 +704,17 @@ async function main() {
     // post-save stats refresh. A short fixed wait (same as the equivalent
     // Finances/Debts save-then-check flows) covers the local round-trip.
     await page.waitForTimeout(400);
+
+    check(
+      "Credit Cards: Save button disables once there's nothing new to save",
+      await page.locator('.cards-form button:has-text("Save")').isDisabled(),
+    );
+    await cardRows.nth(0).locator('input[type="number"]').nth(1).fill("4991");
+    check(
+      "Credit Cards: Save button re-enables after an edit",
+      !(await page.locator('.cards-form button:has-text("Save")').isDisabled()),
+    );
+    await cardRows.nth(0).locator('input[type="number"]').nth(1).fill("4990"); // revert to the saved value
 
     const monthStat = (text: string) => page.locator(".cards-month-stats .cards-stat", { hasText: text });
     const yearStat = (text: string) => page.locator(".cards-year-stats .cards-stat", { hasText: text });
@@ -822,6 +846,29 @@ async function main() {
     check(
       "Dashboard Overview: settled card no longer appears in Upcoming",
       (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 0,
+    );
+
+    // Upcoming defaults open (it's the actionable part of the dashboard),
+    // collapses on click, and remembers that choice across a reload.
+    check(
+      "Dashboard Overview: Upcoming starts expanded",
+      (await page.locator(".upcoming-toggle").getAttribute("aria-expanded")) === "true",
+    );
+    await page.click(".upcoming-toggle");
+    await page.waitForTimeout(300); // let the grid-rows fold transition finish
+    // The list stays in the DOM (an animated fold, not mount/unmount), so
+    // check the collapsed wrapper's actual rendered height instead of item
+    // count — that's what "folded" really means here.
+    const collapsedHeight = (await page.locator(".upcoming-collapse").boundingBox())?.height ?? -1;
+    check(
+      "Dashboard Overview: clicking the toggle collapses Upcoming",
+      collapsedHeight === 0 && (await page.locator(".upcoming-toggle").getAttribute("aria-expanded")) === "false",
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector(".upcoming-toggle");
+    check(
+      "Dashboard Overview: collapsed state persists across reload",
+      (await page.locator(".upcoming-toggle").getAttribute("aria-expanded")) === "false",
     );
 
     // Clean up so the suite is idempotent across runs.

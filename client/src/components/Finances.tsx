@@ -29,6 +29,13 @@ function toRows(savings: SavingsEntry[]): SavingsRow[] {
   return savings.map((s) => ({ id: generateId(), name: s.name, amount: String(s.amount) }));
 }
 
+/** Compares savings rows by their actual field values, ignoring the
+ * client-only `id` key — used to tell whether the form has unsaved changes. */
+function savingsRowsEqual(a: SavingsRow[], b: SavingsRow[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((row, i) => row.name === b[i].name && row.amount === b[i].amount);
+}
+
 interface SavingsEditorProps {
   rows: SavingsRow[];
   onChange: (rows: SavingsRow[]) => void;
@@ -96,6 +103,10 @@ export function Finances({ year, month }: Props) {
   const [salary, setSalary] = useState("");
   const [otherIncome, setOtherIncome] = useState("");
   const [savingsRows, setSavingsRows] = useState<SavingsRow[]>([]);
+  // The last loaded-or-saved state, to tell whether Save has anything to do.
+  const [savedSalary, setSavedSalary] = useState("");
+  const [savedOtherIncome, setSavedOtherIncome] = useState("");
+  const [savedSavingsRows, setSavedSavingsRows] = useState<SavingsRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,9 +134,15 @@ export function Finances({ year, month }: Props) {
     (async () => {
       const [income] = await Promise.all([getMonthIncome(year, month), loadStats()]);
       if (cancelled) return;
-      setSalary(income.salary !== null ? String(income.salary) : "");
-      setOtherIncome(income.otherIncome !== null ? String(income.otherIncome) : "");
-      setSavingsRows(toRows(income.savings));
+      const salaryValue = income.salary !== null ? String(income.salary) : "";
+      const otherIncomeValue = income.otherIncome !== null ? String(income.otherIncome) : "";
+      const rows = toRows(income.savings);
+      setSalary(salaryValue);
+      setOtherIncome(otherIncomeValue);
+      setSavingsRows(rows);
+      setSavedSalary(salaryValue);
+      setSavedOtherIncome(otherIncomeValue);
+      setSavedSavingsRows(rows);
       setLoading(false);
     })().catch((err) => {
       if (!cancelled) {
@@ -153,12 +170,18 @@ export function Finances({ year, month }: Props) {
         savings,
       });
       await loadStats();
+      setSavedSalary(salary);
+      setSavedOtherIncome(otherIncome);
+      setSavedSavingsRows(savingsRows);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
     }
   }
+
+  const isDirty =
+    salary !== savedSalary || otherIncome !== savedOtherIncome || !savingsRowsEqual(savingsRows, savedSavingsRows);
 
   const stats = thisMonth
     ? [
@@ -211,7 +234,7 @@ export function Finances({ year, month }: Props) {
 
         {error && <p className="error">{error}</p>}
 
-        <button type="submit" className="submit-btn" disabled={saving}>
+        <button type="submit" className="submit-btn" disabled={saving || !isDirty}>
           {saving ? "Saving…" : "Save"}
         </button>
       </form>

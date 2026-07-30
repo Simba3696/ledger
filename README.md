@@ -82,7 +82,17 @@ them in place.
   that leftover. An EMI's Upcoming due date is computed from its own stored
   snapshot date, not just "today" — so clicking **Paid this month** (or
   **Record payment…**) correctly advances which cycle shows as upcoming
-  next, rather than continuing to show the one just paid.
+  next, rather than continuing to show the one just paid. Upcoming can get
+  long, so its header is a fold/collapse toggle — defaults open (it's the
+  actionable part of the dashboard), and remembers whichever state you last
+  left it in (`localStorage`, same pattern as the theme toggle) so it stays
+  collapsed across visits once you close it, e.g. to get to the yearly chart
+  below it faster. Styled as its own card (matching `.dashboard-total`/
+  `.chart-wrap` below it) with a title sized/weighted to match "Yearly
+  Overview"'s `<h2>` exactly, so the two section headers read as the same
+  level of the page; folds via an animated `grid-template-rows` 1fr↔0fr
+  transition rather than an instant show/hide, so collapsing it visibly
+  shrinks down to a single-line card instead of just disappearing.
 - The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (separate from `Expense
@@ -103,6 +113,10 @@ them in place.
     breakdown was most recently entered carries forward across later months
     until you update it again, rather than resetting to blank.
 
+  The Save button stays disabled until something on the form actually
+  differs from what's on record, so there's no way to click it uselessly (or
+  worry whether a click actually did anything) when nothing's changed.
+
   Historical Salary was backfilled once from `Expense Summary.xlsm`'s
   Summary sheet (that sheet's "Last Month's Salary" row stores each value
   one column *after* the month it was actually earned in, so the backfill
@@ -122,7 +136,12 @@ them in place.
   used a formula that only covered its first four rows and silently missed
   two real debts further down; the app's total doesn't have that gap.
   Sortable by Name, Amount, or Type (groups owed-to-you vs you-owe apart) —
-  click a sort button again to flip ascending/descending.
+  click a sort button again to flip ascending/descending. **You owe** and
+  **Net** (when positive, meaning you owe more overall) are colored red as a
+  liability; **Owed to you** (and Net when negative, meaning you're owed
+  more overall) is colored green — ordinary bad/good coloring, not "positive
+  number = green" regardless of what that number actually means. The Add
+  Debt button stays disabled until both Name and Amount are filled in.
 - The **Credit Cards** tab tracks each card/loan's bill as its own
   named entry per month (due amount, paid amount, that card's own due date,
   and a **Settled** checkbox) in its own app-owned `CreditCardBills.xlsx` —
@@ -146,7 +165,8 @@ them in place.
   shared "earliest due date" per month, not per-card, so historical per-card
   due dates were backfilled with that same shared date as a floor value (no
   individual card's real due date could have been earlier than it, only
-  later) — it's tracked per-card going forward from here.
+  later) — it's tracked per-card going forward from here. Same as Finances,
+  Save stays disabled until the form actually has an unsaved change.
 - The **EMI** tab is a flat list of active loans/EMI plans (Card/Bank, EMI
   Amount, Due Day, Total Amount, Remarks) in its own app-owned `EMI.xlsx`.
   Unlike the old sheet — where Remaining/Total Amount were plain numbers you
@@ -157,8 +177,12 @@ them in place.
   Amount) rather than being a manually-typed "Until" date, which the real
   sheet showed can silently drift out of sync with the actual balance (a
   duplicate pair of rows differed only by a typo'd end year). Foreclosed or
-  fully-paid loans are removed via the same Edit/Delete menu as everywhere
-  else. Backfilled from `Expense Summary.xlsm`'s EMI sheet (37 entries,
+  fully-paid loans are removed via a dedicated **Foreclose EMI** action
+  (matching how the loan is actually paid off in practice: once it's fully
+  settled — whether by reaching ₹0 naturally or being paid off early — it
+  comes off the list entirely) — the plain Edit/Delete menu is still there
+  too, for correcting mistakes rather than closing out a loan. Backfilled
+  from `Expense Summary.xlsm`'s EMI sheet (37 entries,
   cross-checked exactly against its own EMI Amount/Remaining/Total Amount
   SUBTOTAL row) — roman-numeral card references (I-V) were resolved to real
   names via the sheet's own Legend (Coral, Amazon Pay, OneCard, Manchester
@@ -361,9 +385,10 @@ Two suites, covering different layers:
   payment" quick actions), Subscriptions add/edit/delete
   (including the stale-anchor auto-advance), Credit Cards add/edit/
   persistence, the Dashboard Overview widget (Net Worth combining figures
-  from Finances/Debts/EMI/Credit Cards, and the Upcoming list surfacing an
-  EMI and a credit card bill both due the same day), and theme toggle +
-  persistence — failing loudly on both
+  from Finances/Debts/EMI/Credit Cards, the Upcoming list surfacing an
+  EMI and a credit card bill both due the same day, and the Upcoming
+  fold/collapse toggle defaulting open and persisting its state across a
+  reload), and theme toggle + persistence — failing loudly on both
   failed assertions and any browser console error. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
   enabled in the UI for the actual current month. Slower (~20–25s) and needs

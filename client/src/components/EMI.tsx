@@ -90,11 +90,30 @@ export function EMI() {
   }
 
   async function handleDelete(row: number) {
-    if (!window.confirm("Delete this EMI? Use this once a loan is fully paid off or foreclosed.")) return;
+    if (!window.confirm("Delete this EMI?")) return;
     setBusyRow(row);
     setError(null);
     try {
       await deleteEmi(row);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyRow(null);
+    }
+  }
+
+  async function handleForeclose(emi: EmiEntryComputed) {
+    // Matches the user's actual real-world workflow: once a loan is fully
+    // paid off (whether by reaching ₹0 naturally or being paid off early),
+    // it comes off the list entirely rather than lingering as "Paid off" —
+    // same underlying delete as the general Delete action, just the
+    // dedicated, clearly-labeled entry point for that specific moment.
+    if (!window.confirm(`Foreclose ${emi.cardOrBank}? This removes it from your EMI list.`)) return;
+    setBusyRow(emi.row);
+    setError(null);
+    try {
+      await deleteEmi(emi.row);
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -264,6 +283,7 @@ export function EMI() {
                 onDelete={() => handleDelete(emi.row)}
                 onPaidThisMonth={() => handlePaidThisMonth(emi)}
                 onRecordPayment={() => handleRecordPayment(emi)}
+                onForeclose={() => handleForeclose(emi)}
               />
             ),
           )}

@@ -79,9 +79,11 @@ export function Debts() {
     refresh();
   }, [refresh]);
 
+  const canAdd = name.trim().length > 0 && amount.trim() !== "" && Number.isFinite(Number(amount)) && !adding;
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || amount.trim() === "" || !Number.isFinite(Number(amount))) return;
+    if (!canAdd) return;
     setAdding(true);
     setError(null);
     try {
@@ -122,7 +124,7 @@ export function Debts() {
         <div className="debts-stats">
           <div className="debt-stat">
             <span>You owe</span>
-            <strong>{rupee.format(youOwe)}</strong>
+            <strong className="negative">{rupee.format(youOwe)}</strong>
           </div>
           <div className="debt-stat">
             <span>Owed to you</span>
@@ -130,7 +132,9 @@ export function Debts() {
           </div>
           <div className="debt-stat">
             <span>Net</span>
-            <strong className={net < 0 ? "negative" : net > 0 ? "positive" : undefined}>{rupee.format(net)}</strong>
+            {/* Net > 0 means you owe more overall — that's a liability, so it
+                reads red here, the opposite of "Owed to you" above. */}
+            <strong className={net > 0 ? "negative" : net < 0 ? "positive" : undefined}>{rupee.format(net)}</strong>
           </div>
         </div>
       )}
@@ -154,7 +158,7 @@ export function Debts() {
             />
           </label>
         </div>
-        <button type="submit" className="submit-btn" disabled={adding}>
+        <button type="submit" className="submit-btn" disabled={!canAdd}>
           {adding ? "Adding…" : "Add Debt"}
         </button>
       </form>

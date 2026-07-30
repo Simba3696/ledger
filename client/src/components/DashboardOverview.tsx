@@ -10,6 +10,15 @@ const SOURCE_LABEL: Record<UpcomingItem["source"], string> = {
   "Credit Card": "Card",
 };
 
+const UPCOMING_COLLAPSED_KEY = "ledger-upcoming-collapsed";
+
+function getInitialCollapsed(): boolean {
+  // Defaults open — Upcoming is the actionable part of the dashboard, so
+  // folding it away by default would hide the thing most worth seeing.
+  // Only stays collapsed if the user explicitly closed it last time.
+  return localStorage.getItem(UPCOMING_COLLAPSED_KEY) === "true";
+}
+
 function formatDueDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 }
@@ -18,6 +27,11 @@ export function DashboardOverview() {
   const [data, setData] = useState<DashboardOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<boolean>(getInitialCollapsed);
+
+  useEffect(() => {
+    localStorage.setItem(UPCOMING_COLLAPSED_KEY, String(collapsed));
+  }, [collapsed]);
 
   useEffect(() => {
     setLoading(true);
@@ -66,20 +80,37 @@ export function DashboardOverview() {
         )}
 
         <div className="upcoming">
-          <h3>Upcoming (next 2 weeks)</h3>
-          {data && upcoming.length === 0 && <p className="empty">Nothing due in the next 2 weeks.</p>}
-          {upcoming.length > 0 && (
-            <ul className="upcoming-list">
-              {upcoming.map((item, i) => (
-                <li className="upcoming-item" key={`${item.source}-${item.name}-${item.dueDate}-${i}`}>
-                  <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
-                  <span className="upcoming-name">{item.name}</span>
-                  <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
-                  <span className="upcoming-amount">{rupee.format(item.amount)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <button
+            type="button"
+            className="upcoming-toggle"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-expanded={!collapsed}
+          >
+            <span className={`upcoming-chevron${collapsed ? " collapsed" : ""}`} aria-hidden="true">
+              ▾
+            </span>
+            <h3>Upcoming (next 2 weeks)</h3>
+          </button>
+          {/* Content stays in the DOM either way — the grid-rows/0fr trick
+              below animates the fold smoothly, which conditionally rendering
+              the content (mount/unmount) can't do. */}
+          <div className={`upcoming-collapse${collapsed ? " collapsed" : ""}`}>
+            <div className="upcoming-collapse-inner">
+              {data && upcoming.length === 0 && <p className="empty">Nothing due in the next 2 weeks.</p>}
+              {upcoming.length > 0 && (
+                <ul className="upcoming-list">
+                  {upcoming.map((item, i) => (
+                    <li className="upcoming-item" key={`${item.source}-${item.name}-${item.dueDate}-${i}`}>
+                      <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
+                      <span className="upcoming-name">{item.name}</span>
+                      <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
+                      <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

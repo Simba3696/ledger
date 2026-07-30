@@ -33,10 +33,19 @@
 .overview-stat strong {
   font-size: 18px;
   color: var(--text-h);
+  white-space: nowrap;
+}
+
+.overview-stat-headline {
+  /* Spans the full grid row instead of sharing a 160px cell with the smaller
+     stats — a signed 7-figure rupee amount at the larger headline font needs
+     more room than that, or the sign wraps onto its own line and the digits
+     overflow the card. */
+  grid-column: 1 / -1;
 }
 
 .overview-stat-headline strong {
-  font-size: 24px;
+  font-size: clamp(18px, 5vw, 24px);
 }
 
 .overview-stat strong.positive {
@@ -47,19 +56,81 @@
   color: var(--danger);
 }
 
-.upcoming h3 {
-  margin: 0 0 10px;
+.upcoming {
+  /* Same card treatment as .dashboard-total / .chart-wrap on the Yearly
+     Overview below — a bare title floating on the page background didn't
+     match, and a bordered card also gives the fold something to visibly
+     shrink down to (a single-line header row) rather than just vanishing
+     list items. */
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+}
+
+.upcoming-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.upcoming-toggle h3 {
+  /* Matches .dashboard-header h2 ("Yearly Overview") exactly, so the two
+     section titles read as the same visual weight/size across the page. */
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.upcoming-chevron {
+  display: inline-block;
   font-size: var(--font-size-sm);
   color: var(--text);
+  transition: transform 0.2s ease;
+}
+
+.upcoming-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* The classic grid-rows fold trick: animating a 1fr/0fr track height doesn't
+   need JS to measure content height (unlike animating max-height/height
+   directly, which needs an explicit target value) and handles content of any
+   length. The inner wrapper needs its own overflow:hidden, since a 0fr row
+   still gives its content nowhere to go otherwise. */
+.upcoming-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.2s ease;
+}
+
+.upcoming-collapse.collapsed {
+  grid-template-rows: 0fr;
+}
+
+.upcoming-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .upcoming-list {
   list-style: none;
   padding: 0;
-  margin: 0;
+  margin: 14px 0 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.upcoming-collapse-inner .empty {
+  margin: 14px 0 0;
 }
 
 .upcoming-item {
@@ -69,7 +140,7 @@
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--card-bg);
+  background: var(--bg);
   color: var(--text-h);
 }
 
