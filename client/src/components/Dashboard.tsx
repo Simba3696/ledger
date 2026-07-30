@@ -14,6 +14,7 @@ import { getYearSummary, type MonthSummary } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { DashboardOverview } from "./DashboardOverview";
 import { rupee } from "../format";
 import "./Dashboard.css";
 
@@ -122,6 +123,8 @@ export function Dashboard({ onSelectMonth }: Props) {
 
   return (
     <div className="dashboard">
+      <DashboardOverview />
+
       <div className="dashboard-header">
         <h2>Yearly Overview</h2>
         <YearSelect value={year} onChange={setYear} />

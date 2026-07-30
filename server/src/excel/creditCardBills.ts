@@ -17,6 +17,11 @@ export interface CardBill {
   paid: number;
   /** This card's own due date this month, YYYY-MM-DD, or null if not entered. */
   dueDate: string | null;
+  /** Marked true once this bill is paid off, even if a payment app's rounding
+   * left a rupee or two of (due − paid) gap that isn't real debt. A settled
+   * card contributes 0 to Net Worth's credit card outstanding and is excluded
+   * from the Dashboard's Upcoming list, regardless of its raw due/paid gap. */
+  settled: boolean;
 }
 
 function validateYearMonth(year: number, month: number) {
@@ -34,6 +39,9 @@ function validateCards(cards: CardBill[]) {
     if (card.dueDate !== null && !DATE_PATTERN.test(card.dueDate)) {
       throw new LedgerError(`Due date for "${card.name}" must be YYYY-MM-DD or null`, 400);
     }
+    if (typeof card.settled !== "boolean") {
+      throw new LedgerError(`Settled flag for "${card.name}" must be a boolean`, 400);
+    }
   }
 }
 
@@ -46,15 +54,22 @@ function parseCardsCell(value: ExcelJS.CellValue): CardBill[] {
     try {
       const parsed = JSON.parse(value);
       if (Array.isArray(parsed)) {
-        return parsed.filter(
-          (c): c is CardBill =>
+        const result: CardBill[] = [];
+        for (const c of parsed) {
+          if (
             c &&
             typeof c === "object" &&
             typeof c.name === "string" &&
             typeof c.due === "number" &&
             typeof c.paid === "number" &&
-            (c.dueDate === null || typeof c.dueDate === "string"),
-        );
+            (c.dueDate === null || typeof c.dueDate === "string")
+          ) {
+            // `settled` is a new field — entries written before it existed
+            // default to false (unsettled) rather than being rejected.
+            result.push({ name: c.name, due: c.due, paid: c.paid, dueDate: c.dueDate, settled: c.settled === true });
+          }
+        }
+        return result;
       }
     } catch {
       return [];

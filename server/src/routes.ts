@@ -4,7 +4,7 @@ import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
-import { addEmi, deleteEmi, listEmis, updateEmi, type EmiEditsInput } from "./excel/emi.js";
+import { addEmi, deleteEmi, listEmis, recordEmiPayment, updateEmi, type EmiEditsInput } from "./excel/emi.js";
 import {
   addSubscription,
   deleteSubscription,
@@ -12,6 +12,7 @@ import {
   updateSubscription,
   type SubscriptionEditsInput,
 } from "./excel/subscriptions.js";
+import { dashboardOverview } from "./excel/overview.js";
 
 export const router = Router();
 
@@ -194,6 +195,7 @@ function parseCardsField(value: unknown): CardBill[] {
     due: Number(c?.due),
     paid: Number(c?.paid),
     dueDate: c?.dueDate === null || c?.dueDate === undefined || c?.dueDate === "" ? null : String(c.dueDate),
+    settled: c?.settled === true,
   }));
 }
 
@@ -241,6 +243,7 @@ function parseEmiInput(body: unknown): EmiEditsInput {
     totalAmount: Number(b.totalAmount),
     remarks: String(b.remarks ?? ""),
     remainingAsOf: Number(b.remainingAsOf),
+    durationMonths: b.durationMonths === null || b.durationMonths === undefined ? null : Number(b.durationMonths),
   };
 }
 
@@ -274,6 +277,16 @@ router.delete("/emi/:row", async (req, res, next) => {
   try {
     await deleteEmi(Number(req.params.row));
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/emi/:row/pay", async (req, res, next) => {
+  try {
+    const { amount } = req.body ?? {};
+    const entry = await recordEmiPayment(Number(req.params.row), Number(amount));
+    res.json(entry);
   } catch (err) {
     next(err);
   }
@@ -320,6 +333,14 @@ router.delete("/subscriptions/:row", async (req, res, next) => {
   try {
     await deleteSubscription(Number(req.params.row));
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/overview", async (_req, res, next) => {
+  try {
+    res.json(await dashboardOverview());
   } catch (err) {
     next(err);
   }

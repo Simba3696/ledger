@@ -7,6 +7,8 @@ interface Props {
   busy: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onPaidThisMonth: () => void;
+  onRecordPayment: () => void;
 }
 
 function formatMonthYear(ym: string | null): string {
@@ -29,7 +31,7 @@ function ordinal(day: number): string {
   }
 }
 
-export function EmiRow({ emi, busy, onEdit, onDelete }: Props) {
+export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordPayment }: Props) {
   return (
     <li className={`emi-row${emi.isPaidOff ? " paid-off" : ""}`}>
       <div className="emi-main">
@@ -48,6 +50,8 @@ export function EmiRow({ emi, busy, onEdit, onDelete }: Props) {
       <OverflowMenu
         disabled={busy}
         items={[
+          { label: "Paid this month", icon: "✅", onClick: onPaidThisMonth, disabled: emi.isPaidOff },
+          { label: "Record payment…", icon: "💰", onClick: onRecordPayment, disabled: emi.isPaidOff },
           { label: "Edit", icon: "✏️", onClick: onEdit },
           { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
         ]}

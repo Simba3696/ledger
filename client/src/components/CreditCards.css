@@ -48,6 +48,16 @@
   width: 150px;
 }
 
+.cards-settled {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  white-space: nowrap;
+}
+
 .cards-remove {
   flex-shrink: 0;
   width: 32px;

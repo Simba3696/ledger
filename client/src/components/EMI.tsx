@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { addEmi, deleteEmi, getEmis, type EmiEntryComputed } from "../api";
+import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../api";
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
 import { LoadingOverlay } from "./LoadingOverlay";
@@ -19,7 +19,17 @@ export function EMI() {
   const [totalAmount, setTotalAmount] = useState("");
   const [remarks, setRemarks] = useState("");
   const [remainingAsOf, setRemainingAsOf] = useState("");
+  const [durationMonths, setDurationMonths] = useState("");
   const [adding, setAdding] = useState(false);
+
+  // A brand-new EMI hasn't had any payments yet, so Current Balance starts
+  // out equal to Total Amount — only auto-filled while Current Balance is
+  // still blank, so it never clobbers a value you've typed yourself (e.g.
+  // when backfilling a loan that's already partway through).
+  function handleTotalAmountChange(value: string) {
+    setTotalAmount(value);
+    if (remainingAsOf.trim() === "") setRemainingAsOf(value);
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -62,6 +72,7 @@ export function EMI() {
         totalAmount: Number(totalAmount),
         remarks: remarks.trim(),
         remainingAsOf: Number(remainingAsOf),
+        durationMonths: durationMonths.trim() === "" ? null : Number(durationMonths),
       });
       setCardOrBank("");
       setEmiAmount("");
@@ -69,6 +80,7 @@ export function EMI() {
       setTotalAmount("");
       setRemarks("");
       setRemainingAsOf("");
+      setDurationMonths("");
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -89,6 +101,38 @@ export function EMI() {
     } finally {
       setBusyRow(null);
     }
+  }
+
+  async function handlePay(row: number, amount: number) {
+    setBusyRow(row);
+    setError(null);
+    try {
+      await payEmi(row, amount);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyRow(null);
+    }
+  }
+
+  function handlePaidThisMonth(emi: EmiEntryComputed) {
+    handlePay(emi.row, emi.emiAmount);
+  }
+
+  function handleRecordPayment(emi: EmiEntryComputed) {
+    const input = window.prompt(`How much did you pay toward ${emi.cardOrBank}?`, String(emi.emiAmount));
+    // Treat both an explicit Cancel (null) and a blank submission the same
+    // way — a blank prompt isn't a deliberate "I paid ₹0", and Number("")
+    // is 0, so without this check it would silently look like a valid
+    // zero-amount payment instead of a no-op.
+    if (input === null || input.trim() === "") return;
+    const amount = Number(input);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError("Payment amount must be a non-negative number");
+      return;
+    }
+    handlePay(emi.row, amount);
   }
 
   const active = emis.filter((e) => !e.isPaidOff);
@@ -155,7 +199,7 @@ export function EMI() {
               inputMode="decimal"
               step="0.01"
               value={totalAmount}
-              onChange={(e) => setTotalAmount(e.target.value)}
+              onChange={(e) => handleTotalAmountChange(e.target.value)}
               required
             />
           </label>
@@ -167,8 +211,19 @@ export function EMI() {
               step="0.01"
               value={remainingAsOf}
               onChange={(e) => setRemainingAsOf(e.target.value)}
-              placeholder="What's left today"
+              placeholder="Defaults to Total Amount"
               required
+            />
+          </label>
+          <label>
+            Duration (months) — optional
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              value={durationMonths}
+              onChange={(e) => setDurationMonths(e.target.value)}
+              placeholder="If the bank told you"
             />
           </label>
           <label>
@@ -207,6 +262,8 @@ export function EMI() {
                 busy={busyRow === emi.row}
                 onEdit={() => setEditingRow(emi.row)}
                 onDelete={() => handleDelete(emi.row)}
+                onPaidThisMonth={() => handlePaidThisMonth(emi)}
+                onRecordPayment={() => handleRecordPayment(emi)}
               />
             ),
           )}

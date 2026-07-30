@@ -28,6 +28,7 @@ interface CardRow {
   paid: string;
   /** Native <input type="date"> value format (YYYY-MM-DD) or "". */
   dueDate: string;
+  settled: boolean;
 }
 
 function toRows(cards: CardBill[]): CardRow[] {
@@ -37,6 +38,7 @@ function toRows(cards: CardBill[]): CardRow[] {
     due: String(c.due),
     paid: String(c.paid),
     dueDate: c.dueDate ?? "",
+    settled: c.settled,
   }));
 }
 
@@ -59,7 +61,7 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
     onChange(rows.filter((r) => r.id !== id));
   }
   function addRow() {
-    onChange([...rows, { id: generateId(), name: "", due: "", paid: "", dueDate: "" }]);
+    onChange([...rows, { id: generateId(), name: "", due: "", paid: "", dueDate: "", settled: false }]);
   }
 
   return (
@@ -97,6 +99,15 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
             onChange={(e) => updateRow(row.id, { dueDate: e.target.value })}
             disabled={disabled}
           />
+          <label className="cards-settled">
+            <input
+              type="checkbox"
+              checked={row.settled}
+              onChange={(e) => updateRow(row.id, { settled: e.target.checked })}
+              disabled={disabled}
+            />
+            Settled
+          </label>
           <button
             type="button"
             className="cards-remove"
@@ -172,6 +183,7 @@ export function CreditCards({ year, month }: Props) {
           due: Number(r.due || 0),
           paid: Number(r.paid || 0),
           dueDate: r.dueDate || null,
+          settled: r.settled,
         }));
       await setMonthBills(year, month, cards);
       await loadStats();

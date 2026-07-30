@@ -14,6 +14,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
   const [totalAmount, setTotalAmount] = useState(String(emi.totalAmount));
   const [remarks, setRemarks] = useState(emi.remarks);
   const [remainingAsOf, setRemainingAsOf] = useState(String(emi.remaining));
+  const [durationMonths, setDurationMonths] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,6 +42,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
         totalAmount: Number(totalAmount),
         remarks: remarks.trim(),
         remainingAsOf: Number(remainingAsOf),
+        durationMonths: durationMonths.trim() === "" ? null : Number(durationMonths),
       });
       await onSaved();
     } catch (err) {
@@ -85,6 +87,14 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           value={remainingAsOf}
           onChange={(e) => setRemainingAsOf(e.target.value)}
           placeholder="Current Balance"
+        />
+        <input
+          type="number"
+          inputMode="numeric"
+          min={1}
+          value={durationMonths}
+          onChange={(e) => setDurationMonths(e.target.value)}
+          placeholder="Duration (months, optional)"
         />
         <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" />
       </div>

@@ -48,10 +48,41 @@ them in place.
   month or drop straight into adding a new entry. **Expenses has no button in
   the nav bar** — the Dashboard chart is the only way in, by design, since the
   Dashboard is meant to be the main view day to day. The rest of the nav bar
-  is ordered Dashboard, Credit Cards, Debts, Finances — matching the sheet
-  order in `Expense Summary.xlsm` (Credit Card Bills, Debts, then EMI/
-  Subscriptions when built) rather than the order each tab happened to be
-  built in.
+  is ordered Dashboard, Credit Cards, Debts, EMI, Subscriptions, Finances —
+  matching the sheet order in `Expense Summary.xlsm` rather than the order
+  each tab happened to be built in.
+- The Dashboard also opens with an **overview widget** above the yearly
+  chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
+  Remaining − this month's unpaid Credit Card bills, all pulled live from
+  their own tabs) and an **Upcoming (next 2 weeks)** list combining every
+  EMI due date, Subscription renewal, and outstanding Credit Card bill due
+  in that window, sorted soonest-first. It's the one place that reads across
+  every other tab — everything else stays a one-way read into that
+  aggregation; no tab writes through it, so each module's own write-path
+  isolation is untouched. Converting a purchase to EMI on one of the actual
+  credit cards bills it through that card's own monthly bill, not
+  separately — so an EMI whose Card/Bank name matches a card that also has
+  its own Credit Card Bill entry that month is left out of the Upcoming list
+  (it's already represented by that card's own line), while a standalone
+  loan not billed through any card still shows normally. This is worked out
+  dynamically against whichever names actually appear in Credit Card Bills,
+  not a hardcoded list, so a newly added card is picked up automatically.
+  Net Worth's EMI Remaining still counts every EMI's *full* balance
+  regardless, including card-linked ones — excluding them there would
+  understate real debt by everything beyond the current month's installment.
+  The **Credit Cards Owed (This Month)** figure specifically means this
+  month's total bill across every card minus whatever's already been paid
+  toward it (floored at 0), for every card not marked **Settled** — it's a
+  single-cycle number, not a running credit card balance, since credit cards
+  don't carry a multi-month "remaining" the way EMIs do. A card checked off
+  as Settled contributes exactly 0 here and is dropped from Upcoming
+  entirely, regardless of its raw due/paid gap — added because payment apps
+  like CRED routinely round a bill down by a rupee or two, and a card the
+  user has actually paid off shouldn't still read as "owed" just because of
+  that leftover. An EMI's Upcoming due date is computed from its own stored
+  snapshot date, not just "today" — so clicking **Paid this month** (or
+  **Record payment…**) correctly advances which cycle shows as upcoming
+  next, rather than continuing to show the one just paid.
 - The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (separate from `Expense
@@ -93,14 +124,18 @@ them in place.
   Sortable by Name, Amount, or Type (groups owed-to-you vs you-owe apart) —
   click a sort button again to flip ascending/descending.
 - The **Credit Cards** tab tracks each card/loan's bill as its own
-  named entry per month (due amount, paid amount, and that card's own due
-  date) in its own app-owned `CreditCardBills.xlsx` — the number of cards
-  isn't fixed, so adding or paying off one is just adding/removing an entry,
-  never touching a formula. From those entries it computes Total Due, Total
-  Paid, the Earliest Due Date across all cards that month (so you know when
-  to arrange funds), and Overpaid/Saved (Due − Paid: negative means you paid
-  more than billed, positive means a payment app rounded a few rupees in
-  your favor). It also shows yearly totals — Total Spent This Year, Total
+  named entry per month (due amount, paid amount, that card's own due date,
+  and a **Settled** checkbox) in its own app-owned `CreditCardBills.xlsx` —
+  the number of cards isn't fixed, so adding or paying off one is just
+  adding/removing an entry, never touching a formula. From those entries it
+  computes Total Due, Total Paid, the Earliest Due Date across all cards
+  that month (so you know when to arrange funds), and Overpaid/Saved
+  (Due − Paid: negative means you paid more than billed, positive means a
+  payment app rounded a few rupees in your favor) — these stats are still
+  computed from the raw figures regardless of Settled, since they're about
+  what actually happened with the money, not whether it's been marked done.
+  Settled only affects the Dashboard Overview widget's Net Worth/Upcoming
+  (see above). It also shows yearly totals — Total Spent This Year, Total
   Paid This Year, and Net Overpaid/Saved This Year — summed across all 12
   months of the selected year. Historical Due/Paid amounts were backfilled
   from `Expense Summary.xlsm`'s Credit Card Bills sheet, whose own
@@ -128,7 +163,24 @@ them in place.
   SUBTOTAL row) — roman-numeral card references (I-V) were resolved to real
   names via the sheet's own Legend (Coral, Amazon Pay, OneCard, Manchester
   United, Moneyback+); newer entries already used plain names (Jumbo Loan,
-  CRED, Kreditbee, ICICI).
+  CRED, Kreditbee, ICICI). Current Balance auto-defaults to Total Amount when
+  adding a fresh loan (nothing's paid yet), so you only need to override it
+  when backfilling one that's already partway through. An optional Duration
+  (months) field — the number of months the bank told you at EMI-conversion
+  time — is stored as a real payoff target (`Until Target`, an exact date)
+  rather than being derived: a plain `remaining ÷ emiAmount` estimate can be
+  off by a month either way, since a real bank schedule's final installment
+  is often adjusted (larger *or* smaller) to land on the stated date exactly.
+  Once set, the target is sticky — it survives ordinary balance corrections
+  and payments, and only changes if you explicitly enter a fresh Duration on
+  a later edit. Each entry also has quick payment actions — **Paid this
+  month** (subtracts one EMI Amount) and **Record payment…** (a custom
+  amount, for a partial or extra payment) — both of which anchor the new
+  balance snapshot to *this month's due date* rather than to whatever day
+  you happen to click, so paying a few days before the due date doesn't get
+  double-subtracted once that date actually passes, and paying the standard
+  amount *after* the due date has already passed is correctly a no-op (the
+  automatic decay already assumed it).
 - The **Subscriptions** tab is a flat list (Service, Amount, Monthly/Yearly,
   Card/Bank) in its own app-owned `Subscriptions.xlsx`. The renewal date you
   enter is never treated as stale — the app auto-advances it forward by
@@ -168,8 +220,10 @@ server/   Express API (TypeScript). All Excel reading/writing lives in
           Finances.xlsx), debts.ts (who-owes-whom against its own
           Debts.xlsx), creditCardBills.ts (per-card bills against its own
           CreditCardBills.xlsx), emi.ts (loan snapshots + auto-decay against
-          its own EMI.xlsx), and subscriptions.ts (auto-advancing renewals
-          against its own Subscriptions.xlsx).
+          its own EMI.xlsx), subscriptions.ts (auto-advancing renewals
+          against its own Subscriptions.xlsx), and overview.ts (read-only
+          aggregation across all of the above for the Dashboard's Net Worth
+          + Upcoming widget — no workbook of its own, never writes).
           server/test/ — vitest suite + the synthetic-fixture builder.
 client/   React + Vite frontend. Nav bar order: Dashboard, Credit Cards,
           Debts, EMI, Subscriptions, Finances — see src/components/. The
@@ -251,7 +305,7 @@ can reach it.
 
 Two suites, covering different layers:
 
-- **`npm test`** — vitest, seven files. `server/test/ledger.test.ts` covers
+- **`npm test`** — vitest, eight files. `server/test/ledger.test.ts` covers
   `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
   synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
   (never real data — nothing sensitive is committed), including a couple of
@@ -268,11 +322,32 @@ Two suites, covering different layers:
   date computation, and Overpaid/Saved. `server/test/dateMath.test.ts` covers
   the shared month/day arithmetic (day-of-month clamping, year rollover, leap
   years). `server/test/emi.test.ts` covers the Remaining snapshot-decay math
-  (including a due-day clamp and the paid-off floor at zero) and the
-  estimated-payoff-month calculation. `server/test/subscriptions.test.ts`
-  covers the Expiry auto-advance for both Monthly and Yearly cycles. Fast (a
-  few seconds), no browser or dev server needed — this is the one to run
-  after any change under `server/src/excel/`.
+  (including a due-day clamp and the paid-off floor at zero), the
+  estimated-payoff-month calculation and how a stored Duration overrides it,
+  that a Duration survives edits/payments that don't resupply it but gets
+  replaced by a fresh one that does, and `recordEmiPayment`'s due-date
+  anchoring — specifically that an early payment isn't later double-decayed
+  once the due date passes, that paying the standard amount after the due
+  date is a no-op, and that several unrecorded months get caught up
+  correctly in one payment. `server/test/subscriptions.test.ts`
+  covers the Expiry auto-advance for both Monthly and Yearly cycles.
+  `server/test/overview.test.ts` covers the Net Worth arithmetic (savings
+  minus debt minus EMI remaining minus this month's unpaid credit cards,
+  including that offsetting positive/negative debts net to exactly zero
+  rather than being dropped) and the Upcoming window — an EMI/Subscription/
+  Credit Card item due within 14 days is included, one already fully paid
+  is excluded, next month's credit card bills are picked up too when they
+  fall inside the window near month-end, a card-linked EMI is excluded (its
+  own matching Credit Card Bill entry already represents it) while a
+  standalone loan with no matching card still shows, that recording a
+  payment for the current cycle advances which cycle shows in Upcoming next
+  instead of continuing to show the one just paid, and that a card's
+  **Settled** checkbox (not a raw due/paid gap) is what zeroes out its
+  contribution to Net Worth and drops it from Upcoming — an unsettled card
+  counts its full gap even if tiny, and a settled card contributes exactly 0
+  even if it was overpaid on paper.
+  Fast (a few seconds), no browser or dev server needed — this is the one to
+  run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
   the `@playwright/test` runner). Builds a scratch data directory seeded with
   a full year (so switching months never legitimately 404s), starts the real
@@ -281,9 +356,14 @@ Two suites, covering different layers:
   per-category mini-charts, including their synced hover), month/year
   selects, add (cash + card), edit, drag-reorder, delete, Finances entry +
   persistence, Debts add/edit/delete/sort, EMI add/edit/delete (including the
-  auto-computed Remaining/payoff estimate), Subscriptions add/edit/delete
+  Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
+  payoff estimate and surviving edits, and the "Paid this month"/"Record
+  payment" quick actions), Subscriptions add/edit/delete
   (including the stale-anchor auto-advance), Credit Cards add/edit/
-  persistence, and theme toggle + persistence — failing loudly on both
+  persistence, the Dashboard Overview widget (Net Worth combining figures
+  from Finances/Debts/EMI/Credit Cards, and the Upcoming list surfacing an
+  EMI and a credit card bill both due the same day), and theme toggle +
+  persistence — failing loudly on both
   failed assertions and any browser console error. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
   enabled in the UI for the actual current month. Slower (~20–25s) and needs

@@ -161,6 +161,11 @@ async function main() {
       await page.waitForTimeout(400);
     }
     // --- Cross-chart hover sync (syncId) ---
+    // The Dashboard Overview widget (net worth + upcoming) sits above the
+    // chart now, pushing it below the fold at the default viewport height —
+    // page.mouse.move has no auto-scroll (unlike .click()), so without this
+    // the hover lands off-screen and never actually reaches the chart.
+    await page.locator(".chart-wrap").scrollIntoViewIfNeeded();
     const hoverBarBox = await monthBarBox(monthIndex);
     const hoverSvgBox = await page.locator('.chart-wrap svg[role="application"]').boundingBox();
     if (!hoverSvgBox) throw new Error("Could not locate chart elements for hover-sync check");
@@ -498,23 +503,44 @@ async function main() {
     await emiNumberInputs.nth(0).fill("1000"); // EMI Amount
     await emiNumberInputs.nth(1).fill("15"); // Due Day
     await emiNumberInputs.nth(2).fill("12000"); // Total Amount
-    await emiNumberInputs.nth(3).fill("6000"); // Current Balance
+    check(
+      "EMI: Current Balance auto-defaults to Total Amount for a fresh loan",
+      (await emiNumberInputs.nth(3).inputValue()) === "12000",
+    );
+
+    // Duration is a real bank-stated fact now (not a Current-Balance
+    // calculator) — entering it must not touch Current Balance at all.
+    await emiNumberInputs.nth(4).fill("10");
+    check(
+      "EMI: Duration does not overwrite Current Balance",
+      (await emiNumberInputs.nth(3).inputValue()) === "12000",
+    );
+
+    // ceil(12000/1000) = 12 future due dates would be the *derived* estimate
+    // — but Duration says this one actually finishes in 10 months, so the
+    // saved entry should show that instead, not the derived 12-months-out one.
+    const tenMonthsOut = new Date();
+    tenMonthsOut.setMonth(tenMonthsOut.getMonth() + 10);
+    const expectedFinishes = new Date(tenMonthsOut.getFullYear(), tenMonthsOut.getMonth(), 1).toLocaleDateString(
+      "en-IN",
+      { month: "short", year: "numeric" },
+    );
+
     await page.fill('.add-emi-form input[placeholder="Optional"]', "E2E Loan");
     await page.click('.add-emi-form button:has-text("Add EMI")');
     await page.waitForSelector('.emi-row:has-text("E2E Coral")');
 
     check(
-      "EMI: row shows remaining of total",
-      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("6,000") &&
-        (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("12,000"),
+      "EMI: row shows remaining equal to total for a fresh loan",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("12,000"),
     );
     check(
-      "EMI: not paid off shows an estimated payoff month, not \"Paid off\"",
-      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("Finishes"),
+      "EMI: Duration overrides the derived payoff estimate",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes(expectedFinishes),
     );
     check(
       "EMI: Total Remaining stat reflects the new entry",
-      (await page.locator(".emi-stat", { hasText: "Total Remaining" }).innerText()).includes("6,000"),
+      (await page.locator(".emi-stat", { hasText: "Total Remaining" }).innerText()).includes("12,000"),
     );
     check(
       "EMI: Total Monthly EMI stat reflects the new entry",
@@ -535,6 +561,10 @@ async function main() {
       "EMI: editing updates the current balance",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("3,000"),
     );
+    check(
+      "EMI: editing without a fresh Duration preserves the existing until-target",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes(expectedFinishes),
+    );
 
     // --- Reload persistence ---
     await page.reload({ waitUntil: "networkidle" });
@@ -543,6 +573,35 @@ async function main() {
     check(
       "EMI: entry persisted across reload",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("3,000"),
+    );
+
+    // --- Payment quick-actions (both anchor to the due date, not "now", so
+    // back-to-back payments within the same cycle correctly accumulate
+    // rather than double-counting — see recordEmiPayment in emi.ts). Scoped
+    // to .emi-remaining specifically (not the whole row) and matched with the
+    // ₹ prefix — the row's Total Amount (₹12,000.00) contains "2,000" as a
+    // bare substring, and the EMI-amount-per-month text always reads
+    // "₹1,000.00" regardless of the actual balance, so a looser match here
+    // would pass even if the payment logic were broken. ---
+    const coralRemaining = () => page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-remaining");
+
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Paid this month");
+    await page.waitForTimeout(400);
+    check(
+      "EMI: \"Paid this month\" subtracts one EMI amount",
+      (await coralRemaining().innerText()).includes("₹2,000"),
+    );
+
+    // The global dialog handler accepts every prompt with an *empty* string
+    // (Playwright's dialog.accept() with no argument does not resubmit the
+    // prompt's own default value) — this exercises a real bug found via this
+    // exact test: Number("") is 0, so without an explicit blank-input guard,
+    // this would have silently recorded a "paid ₹0" instead of a no-op.
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Record payment…");
+    await page.waitForTimeout(400);
+    check(
+      "EMI: \"Record payment\" treats a blank prompt as cancelled, not as a ₹0 payment",
+      (await coralRemaining().innerText()).includes("₹2,000"),
     );
 
     // Clean up so the suite is idempotent across runs — simulates foreclosing the loan.
@@ -681,6 +740,112 @@ async function main() {
     await page.click('.cards-form button:has-text("Save")');
     await page.waitForTimeout(400);
     check("Credit Cards back to empty after cleanup", (await page.locator(".card-row-fields").count()) === 0);
+
+    // --- Dashboard Overview widget (net worth + upcoming) ---
+    // Current Savings (₹2,00,000, from the Finances section above) is
+    // already on record and untouched by any section since — add a fresh
+    // debt, EMI, and credit card bill (all due soon, so they land in the
+    // 14-day upcoming window) to prove the widget actually combines figures
+    // from every module, not just echoes one of them.
+    await page.click('.tabs button:has-text("Debts")');
+    await page.waitForSelector(".add-debt-form");
+    await fillDebtForm("E2E Overview Debt", "5000");
+
+    // Due day deliberately 2 days out, not today's exact day-of-month: a due
+    // date equal to the snapshot day is genuinely ambiguous for a *freshly
+    // added* entry (has this cycle been paid or not? unlike after an actual
+    // "Paid this month" click, where the answer is unambiguously yes) —
+    // computed via real Date arithmetic (not a plain +2 on the day number)
+    // so it stays correct across a month boundary.
+    const overviewDueDate = new Date();
+    overviewDueDate.setDate(overviewDueDate.getDate() + 2);
+
+    await page.click('.tabs button:has-text("EMI")');
+    await page.waitForSelector(".add-emi-form");
+    await page.fill('.add-emi-form input[placeholder="Who\'s it with?"]', "E2E Overview EMI");
+    const overviewEmiInputs = page.locator('.add-emi-form input[type="number"]');
+    await overviewEmiInputs.nth(0).fill("1000"); // EMI Amount
+    await overviewEmiInputs.nth(1).fill(String(overviewDueDate.getDate())); // Due Day = 2 days out
+    await overviewEmiInputs.nth(2).fill("5000"); // Total Amount
+    await page.click('.add-emi-form button:has-text("Add EMI")');
+    await page.waitForSelector('.emi-row:has-text("E2E Overview EMI")');
+
+    await page.click('.tabs button:has-text("Credit Cards")');
+    await page.waitForSelector(".cards-form");
+    await page.click(".cards-add");
+    const overviewCardRow = page.locator(".card-row-fields").last();
+    await overviewCardRow.locator('input[type="text"]').fill("E2E Overview Card");
+    await overviewCardRow.locator('input[type="number"]').nth(0).fill("3000"); // due
+    await overviewCardRow.locator('input[type="number"]').nth(1).fill("1000"); // paid
+    await overviewCardRow.locator('input[type="date"]').fill(new Date().toISOString().slice(0, 10));
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    await page.waitForTimeout(400); // the overview fetch is separate from the yearly chart's own loading state
+
+    check(
+      "Dashboard Overview: Net Worth combines savings, debt, EMI, and credit card",
+      (await page.locator(".overview-stat-headline strong").innerText()).includes("1,88,000"),
+    );
+    check(
+      "Dashboard Overview: upcoming list shows the EMI due soon",
+      (await page.locator(".upcoming-item", { hasText: "E2E Overview EMI" }).count()) === 1,
+    );
+    check(
+      "Dashboard Overview: upcoming list shows the credit card due today",
+      (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 1,
+    );
+
+    // Checking "Settled" on that card should drop its (due - paid) gap from
+    // Net Worth and remove it from Upcoming entirely, regardless of the gap.
+    await page.click('.tabs button:has-text("Credit Cards")');
+    await page.waitForSelector(".cards-form");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    // "E2E Overview Card" is the only row present at this point (the earlier
+    // two-card scenario above already cleaned itself up) — `hasText` can't
+    // target a specific row here anyway, since the card name lives inside an
+    // <input value>, not rendered text content.
+    await page.locator(".card-row-fields").last().locator(".cards-settled input").check();
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    await page.waitForTimeout(400);
+
+    check(
+      "Dashboard Overview: settling the card adds its gap back to Net Worth",
+      (await page.locator(".overview-stat-headline strong").innerText()).includes("1,90,000"),
+    );
+    check(
+      "Dashboard Overview: settled card no longer appears in Upcoming",
+      (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 0,
+    );
+
+    // Clean up so the suite is idempotent across runs.
+    await page.click('.tabs button:has-text("Debts")');
+    await page.waitForSelector(".add-debt-form");
+    await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Overview Debt" }), "Delete");
+    await page.waitForTimeout(400);
+
+    await page.click('.tabs button:has-text("EMI")');
+    await page.waitForSelector(".add-emi-form");
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Overview EMI" }), "Delete");
+    await page.waitForTimeout(400);
+
+    await page.click('.tabs button:has-text("Credit Cards")');
+    await page.waitForSelector(".cards-form");
+    await page.click(".cards-remove >> nth=0");
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check(
+      "Dashboard Overview: cleanup removed all three test entries",
+      (await page.locator(".debt-row").count()) === 0 &&
+        (await page.locator(".emi-row").count()) === 0 &&
+        (await page.locator(".card-row-fields").count()) === 0,
+    );
 
     // --- Theme toggle ---
     await page.click(".theme-toggle");

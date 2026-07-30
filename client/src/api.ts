@@ -92,6 +92,9 @@ export interface CardBill {
   paid: number;
   /** YYYY-MM-DD, or null if not entered. */
   dueDate: string | null;
+  /** Marked true once this bill is fully paid off, regardless of a small
+   * rounding gap left by a payment app like CRED. */
+  settled: boolean;
 }
 
 export interface MonthBills {
@@ -117,6 +120,7 @@ export interface EmiEntry {
   remarks: string;
   remainingAsOf: number;
   asOfDate: string;
+  untilTarget: string | null;
 }
 
 export interface EmiEntryComputed extends EmiEntry {
@@ -132,6 +136,9 @@ export interface EmiEdits {
   totalAmount: number;
   remarks: string;
   remainingAsOf: number;
+  /** Bank-stated months until payoff — optional; omitting it on an edit
+   * preserves whatever until-target is already on record. */
+  durationMonths?: number | null;
 }
 
 export type SubscriptionDuration = "Monthly" | "Yearly";
@@ -293,6 +300,14 @@ export function deleteEmi(row: number): Promise<void> {
   return fetch(`${BASE}/emi/${row}`, { method: "DELETE" }).then((r) => handle(r));
 }
 
+export function payEmi(row: number, amount: number): Promise<EmiEntryComputed> {
+  return fetch(`${BASE}/emi/${row}/pay`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ amount }),
+  }).then((r) => handle(r));
+}
+
 export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
   return fetch(`${BASE}/subscriptions`).then((r) => handle(r));
 }
@@ -315,4 +330,30 @@ export function updateSubscription(row: number, edits: SubscriptionEdits): Promi
 
 export function deleteSubscription(row: number): Promise<void> {
   return fetch(`${BASE}/subscriptions/${row}`, { method: "DELETE" }).then((r) => handle(r));
+}
+
+export type UpcomingSource = "EMI" | "Subscription" | "Credit Card";
+
+export interface UpcomingItem {
+  source: UpcomingSource;
+  name: string;
+  amount: number;
+  dueDate: string;
+}
+
+export interface NetWorthBreakdown {
+  currentSavings: number;
+  totalDebt: number;
+  emiRemaining: number;
+  creditCardOutstanding: number;
+  netWorth: number;
+}
+
+export interface DashboardOverview {
+  netWorth: NetWorthBreakdown;
+  upcoming: UpcomingItem[];
+}
+
+export function getOverview(): Promise<DashboardOverview> {
+  return fetch(`${BASE}/overview`).then((r) => handle(r));
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import ExcelJS from "exceljs";
 
 // Same pattern as ledger.test.ts / finances.test.ts / debts.test.ts:
 // LEDGER_DB_DIR must be set before creditCardBills.ts's top-level DB_DIR
@@ -23,11 +24,44 @@ describe("getMonthBills / setMonthBills", () => {
 
   it("round-trips a saved entry with multiple cards", async () => {
     const cards = [
-      { name: "Coral", due: 5000, paid: 4990, dueDate: "2094-07-07" },
-      { name: "OneCard", due: 3000, paid: 3000, dueDate: "2094-07-09" },
+      { name: "Coral", due: 5000, paid: 4990, dueDate: "2094-07-07", settled: false },
+      { name: "OneCard", due: 3000, paid: 3000, dueDate: "2094-07-09", settled: true },
     ];
     await ccBills.setMonthBills({ year: 2094, month: 6, cards });
     expect(await ccBills.getMonthBills(2094, 6)).toEqual({ year: 2094, month: 6, cards });
+  });
+
+  it("defaults a legacy entry with no settled field (pre-dating the field) to false rather than rejecting it", async () => {
+    // Simulates data written before `settled` existed: write the raw cell
+    // JSON directly (bypassing setMonthBills, which now requires the field),
+    // then confirm the real getMonthBills path still reads it back cleanly.
+    const billsPath = path.join(scratchDir, "CreditCardBills.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(billsPath);
+    const sheet = workbook.getWorksheet("Bills")!;
+    const row = sheet.getRow(sheet.rowCount + 1);
+    row.getCell(1).value = 2094;
+    row.getCell(2).value = 8;
+    row.getCell(3).value = JSON.stringify([{ name: "Coral", due: 5000, paid: 4990, dueDate: "2094-07-07" }]);
+    row.commit();
+    await workbook.xlsx.writeFile(billsPath);
+
+    expect(await ccBills.getMonthBills(2094, 8)).toEqual({
+      year: 2094,
+      month: 8,
+      cards: [{ name: "Coral", due: 5000, paid: 4990, dueDate: "2094-07-07", settled: false }],
+    });
+  });
+
+  it("rejects a non-boolean settled flag", async () => {
+    await expect(
+      ccBills.setMonthBills({
+        year: 2094,
+        month: 7,
+        // @ts-expect-error - deliberately wrong type to exercise validation
+        cards: [{ name: "Coral", due: 100, paid: 100, dueDate: null, settled: "yes" }],
+      }),
+    ).rejects.toMatchObject({ status: 400 });
   });
 
   it("overwrites an existing entry (including clearing to empty) rather than duplicating a row", async () => {
@@ -45,13 +79,21 @@ describe("getMonthBills / setMonthBills", () => {
 
   it("rejects a card with no name", async () => {
     await expect(
-      ccBills.setMonthBills({ year: 2094, month: 7, cards: [{ name: "", due: 100, paid: 100, dueDate: null }] }),
+      ccBills.setMonthBills({
+        year: 2094,
+        month: 7,
+        cards: [{ name: "", due: 100, paid: 100, dueDate: null, settled: false }],
+      }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
   it("rejects a non-finite due/paid amount", async () => {
     await expect(
-      ccBills.setMonthBills({ year: 2094, month: 7, cards: [{ name: "Coral", due: NaN, paid: 100, dueDate: null }] }),
+      ccBills.setMonthBills({
+        year: 2094,
+        month: 7,
+        cards: [{ name: "Coral", due: NaN, paid: 100, dueDate: null, settled: false }],
+      }),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -60,7 +102,7 @@ describe("getMonthBills / setMonthBills", () => {
       ccBills.setMonthBills({
         year: 2094,
         month: 7,
-        cards: [{ name: "Coral", due: 100, paid: 100, dueDate: "07/09/2094" }],
+        cards: [{ name: "Coral", due: 100, paid: 100, dueDate: "07/09/2094", settled: false }],
       }),
     ).rejects.toMatchObject({ status: 400 });
   });
@@ -74,14 +116,14 @@ describe("yearBillsSummary", () => {
       year: YEAR,
       month: 1,
       cards: [
-        { name: "Coral", due: 5000, paid: 4990, dueDate: "2093-01-07" },
-        { name: "OneCard", due: 3000, paid: 3050, dueDate: "2093-01-09" },
+        { name: "Coral", due: 5000, paid: 4990, dueDate: "2093-01-07", settled: false },
+        { name: "OneCard", due: 3000, paid: 3050, dueDate: "2093-01-09", settled: false },
       ],
     });
     await ccBills.setMonthBills({
       year: YEAR,
       month: 2,
-      cards: [{ name: "Coral", due: 1000, paid: 1000, dueDate: null }],
+      cards: [{ name: "Coral", due: 1000, paid: 1000, dueDate: null, settled: false }],
     });
     // Month 3 intentionally left with no entry at all.
   });
