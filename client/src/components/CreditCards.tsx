@@ -42,6 +42,22 @@ function toRows(cards: CardBill[]): CardRow[] {
   }));
 }
 
+/** Compares rows by their actual field values, ignoring the client-only `id`
+ * key — used to tell whether the form has unsaved changes. */
+function rowsEqual(a: CardRow[], b: CardRow[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((row, i) => {
+    const other = b[i];
+    return (
+      row.name === other.name &&
+      row.due === other.due &&
+      row.paid === other.paid &&
+      row.dueDate === other.dueDate &&
+      row.settled === other.settled
+    );
+  });
+}
+
 function formatDate(date: string | null): string {
   if (!date) return "—";
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
@@ -129,6 +145,8 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
 
 export function CreditCards({ year, month }: Props) {
   const [cardRows, setCardRows] = useState<CardRow[]>([]);
+  // The last loaded-or-saved state, to tell whether Save has anything to do.
+  const [savedRows, setSavedRows] = useState<CardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -157,7 +175,9 @@ export function CreditCards({ year, month }: Props) {
     (async () => {
       const [bills] = await Promise.all([getMonthBills(year, month), loadStats()]);
       if (cancelled) return;
-      setCardRows(toRows(bills.cards));
+      const rows = toRows(bills.cards);
+      setCardRows(rows);
+      setSavedRows(rows);
       setLoading(false);
     })().catch((err) => {
       if (!cancelled) {
@@ -187,12 +207,15 @@ export function CreditCards({ year, month }: Props) {
         }));
       await setMonthBills(year, month, cards);
       await loadStats();
+      setSavedRows(cardRows);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
     }
   }
+
+  const isDirty = !rowsEqual(cardRows, savedRows);
 
   const stats = thisMonth
     ? [
@@ -233,7 +256,7 @@ export function CreditCards({ year, month }: Props) {
 
         {error && <p className="error">{error}</p>}
 
-        <button type="submit" className="submit-btn" disabled={saving}>
+        <button type="submit" className="submit-btn" disabled={saving || !isDirty}>
           {saving ? "Saving…" : "Save"}
         </button>
       </form>
