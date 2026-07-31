@@ -137,11 +137,21 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
   color: var(--text-h);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.upcoming-item:hover,
+.upcoming-item:focus-visible {
+  border-color: var(--accent);
 }
 
 .upcoming-source {

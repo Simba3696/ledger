@@ -23,7 +23,11 @@ function formatDueDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 }
 
-export function DashboardOverview() {
+interface Props {
+  onSelectUpcomingItem: (item: UpcomingItem) => void;
+}
+
+export function DashboardOverview({ onSelectUpcomingItem }: Props) {
   const [data, setData] = useState<DashboardOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -100,11 +104,18 @@ export function DashboardOverview() {
               {upcoming.length > 0 && (
                 <ul className="upcoming-list">
                   {upcoming.map((item, i) => (
-                    <li className="upcoming-item" key={`${item.source}-${item.name}-${item.dueDate}-${i}`}>
-                      <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
-                      <span className="upcoming-name">{item.name}</span>
-                      <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
-                      <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                    <li key={`${item.source}-${item.name}-${item.dueDate}-${i}`}>
+                      <button
+                        type="button"
+                        className="upcoming-item"
+                        onClick={() => onSelectUpcomingItem(item)}
+                        title={`Go to ${item.source === "EMI" ? "EMI" : item.source === "Subscription" ? "Subscriptions" : "Credit Cards"}`}
+                      >
+                        <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
+                        <span className="upcoming-name">{item.name}</span>
+                        <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
+                        <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                      </button>
                     </li>
                   ))}
                 </ul>

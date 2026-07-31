@@ -10,7 +10,7 @@ import {
   CartesianGrid,
   type MouseHandlerDataParam,
 } from "recharts";
-import { getYearSummary, type MonthSummary } from "../api";
+import { getYearSummary, type MonthSummary, type UpcomingItem } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
@@ -84,9 +84,10 @@ function CategoryMiniChart({
 
 interface Props {
   onSelectMonth: (year: number, month: number) => void;
+  onSelectUpcomingItem: (item: UpcomingItem) => void;
 }
 
-export function Dashboard({ onSelectMonth }: Props) {
+export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [data, setData] = useState<MonthSummary[]>([]);
@@ -123,7 +124,7 @@ export function Dashboard({ onSelectMonth }: Props) {
 
   return (
     <div className="dashboard">
-      <DashboardOverview />
+      <DashboardOverview onSelectUpcomingItem={onSelectUpcomingItem} />
 
       <div className="dashboard-header">
         <h2>Yearly Overview</h2>

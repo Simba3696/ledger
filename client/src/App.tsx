@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import "./App.css";
 import "./shared.css";
-import { addEntry, getCategories, getMonth, type CategoryOption, type LedgerEntry } from "./api";
+import { addEntry, getCategories, getMonth, type CategoryOption, type LedgerEntry, type UpcomingItem } from "./api";
 import { AddExpenseForm } from "./components/AddExpenseForm";
 import { RecentEntries } from "./components/RecentEntries";
 import { MonthYearPicker } from "./components/MonthYearPicker";
@@ -60,6 +60,22 @@ function App() {
     setTab("expenses");
   }
 
+  // EMI/Subscriptions are flat lists (no month scope) — just switch tabs.
+  // Credit Cards is month-scoped, so also jump year/month to match the
+  // item's actual due date, not whatever's currently selected.
+  function goToUpcomingItem(item: UpcomingItem) {
+    if (item.source === "EMI") {
+      setTab("emi");
+    } else if (item.source === "Subscription") {
+      setTab("subscriptions");
+    } else {
+      const [y, m] = item.dueDate.split("-").map(Number);
+      setYear(y);
+      setMonth(m);
+      setTab("creditCards");
+    }
+  }
+
   return (
     <div className="app">
       <header>
@@ -105,7 +121,7 @@ function App() {
         </button>
       </nav>
 
-      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} />}
+      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} onSelectUpcomingItem={goToUpcomingItem} />}
       {tab === "creditCards" && <CreditCards year={year} month={month} />}
       {tab === "debts" && <Debts />}
       {tab === "emi" && <EMI />}

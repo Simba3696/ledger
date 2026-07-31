@@ -6,6 +6,53 @@ that have been used to track spending since 2018. There is no database; the
 Excel files themselves are the source of truth, and the app reads and writes
 them in place.
 
+For the technical architecture (module map, request lifecycle, design
+principles, API surface) see [ARCHITECTURE.md](ARCHITECTURE.md). This file
+covers what each part of the app does and why, domain-wise.
+
+- [Why this exists](#why-this-exists)
+- [How it works](#how-it-works)
+- [Project layout](#project-layout)
+- [Setup](#setup)
+- [Running](#running)
+- [Remote access (Tailscale)](#remote-access-tailscale) — Windows-only, optional
+- [Testing](#testing)
+- [Notes / gotchas](#notes--gotchas)
+- [Roadmap](#roadmap)
+
+## Why this exists
+
+I'd tracked every expense by hand in Excel since 2018 — one workbook per
+year, one sheet per month, each row's category marked by literally coloring
+the cell (yellow for food, blue for transport, and so on), plus a manual note
+for anything paid by credit card instead of cash. It worked, but typing a new
+row into Excel on my phone every time I bought something was clunky, and
+years of categorized history meant switching to Mint/YNAB/some other
+budgeting app wasn't really an option without either losing that history or
+spending a weekend re-entering eight years of data by hand.
+
+So instead of replacing the spreadsheets, I built a small web app that reads
+and writes the *same* `.xlsx` files directly — no database, no import step,
+no migration. The Excel files stay the actual source of truth, still fully
+open-able and editable by hand at any time; the app is just a nicer front
+door to them, reachable from my phone. Once the core "add an expense" flow
+worked, the same idea extended naturally to everything else I used to track
+by hand in a second, more fragile macro-enabled workbook — credit card
+bills, loans/EMIs, subscriptions, debts, and monthly savings — each getting
+its own small owned Excel file and its own tab in the app, computed
+automatically wherever the old sheet required updating a number by hand
+(a loan's remaining balance, a subscription's next renewal date, whether a
+month's savings target was hit).
+
+If you've got years of financial history sitting in spreadsheets and want a
+better way to add to it *without* giving up ownership of the actual data,
+this is the shape that approach can take: treat the file the user already
+trusts as the real database, and build the smallest possible app around it.
+[ARCHITECTURE.md](ARCHITECTURE.md) covers how that's implemented in more
+technical detail, including the constraints that fell out of taking "the
+spreadsheet is the database, for real" seriously (no schema migrations, safe
+concurrent-with-Excel writes, no cached/stale derived numbers).
+
 ## How it works
 
 - Each month sheet has three columns: **Amount** (negative, ₹-formatted),
@@ -92,7 +139,16 @@ them in place.
   Overview"'s `<h2>` exactly, so the two section headers read as the same
   level of the page; folds via an animated `grid-template-rows` 1fr↔0fr
   transition rather than an instant show/hide, so collapsing it visibly
-  shrinks down to a single-line card instead of just disappearing.
+  shrinks down to a single-line card instead of just disappearing. Each
+  Upcoming row is itself clickable — a shortcut to go pay/settle it rather
+  than hunting for it by hand: an EMI item jumps to the EMI tab, a
+  Subscription item jumps to Subscriptions, and a Credit Card item jumps to
+  Credit Cards *on the month that bill is actually due* (not whatever
+  month happens to be selected already). EMI balances normally auto-decay
+  on their own due day without any click needed, but this still matters for
+  an early/manual payment made outside that automatic schedule — the same
+  reason a standalone EMI item is worth clicking through to at all, even
+  though its own tab would eventually reflect the payment regardless.
 - The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (separate from `Expense
@@ -259,20 +315,54 @@ scripts/  kill-ports.js — frees the dev ports before/on demand.
 
 ## Setup
 
-Requires Node 22+.
+**Prerequisites**: [Node.js](https://nodejs.org) 22+ and git. Setup,
+Running, and Testing below all work the same on macOS/Linux/Windows — only
+the [Remote access](#remote-access-tailscale) section further down is
+Windows-specific, and it's entirely optional.
 
-```
-npm install
-```
+1. **Get the code:**
 
-Then point the server at wherever your `Expenses (YYYY).xlsx` files actually
-live by creating `server/.env`:
+   ```
+   git clone https://github.com/Simba3696/ledger.git
+   cd ledger
+   ```
 
-```
-LEDGER_DB_DIR=C:/path/to/your/Expenses/folder
-```
+2. **Install dependencies.** This is an npm-workspaces monorepo — one
+   install at the root covers `server/`, `client/`, and the e2e script, no
+   need to run it separately in each folder:
 
-(Defaults to a `db/` folder at the repo root if `LEDGER_DB_DIR` isn't set.)
+   ```
+   npm install
+   ```
+
+3. **Try it before pointing at real data.** With no further configuration,
+   the app reads/writes a `db/` folder at the repo root (created empty on
+   first use) — jump to [Running](#running) and add a few throwaway entries
+   to see how it behaves before trusting it with your real spreadsheets.
+
+4. **Point it at your real Excel files**, once you're ready, by creating
+   `server/.env`:
+
+   ```
+   LEDGER_DB_DIR=C:/path/to/your/Expenses/folder
+   ```
+
+   Forward slashes work in this path on every OS, including Windows —
+   simplest to just always use them here rather than worrying about
+   backslash-escaping. This is the same variable the deployment scripts in
+   [Remote access](#remote-access-tailscale) point at, and can equally be a
+   plain environment variable instead of a `.env` file if you'd rather set
+   it that way.
+
+   **This isn't a generic Excel importer.** The app only works against
+   `Expenses (YYYY).xlsx` files that already follow the exact layout
+   described in [How it works](#how-it-works) above — columns A–C, category
+   encoded as the cell's fill color, and so on. If your own spreadsheets
+   don't already look like that, either reshape a copy to match before
+   pointing `LEDGER_DB_DIR` at it, or treat this project as a reference for
+   the same *approach* applied to your own format instead — see
+   [Why this exists](#why-this-exists) and
+   [ARCHITECTURE.md](ARCHITECTURE.md) for what would need to change.
 
 ## Running
 
@@ -304,26 +394,68 @@ npm run stop
 
 ## Remote access (Tailscale)
 
-The app now also starts automatically and is reachable from other personal
-devices (e.g. a phone) over [Tailscale](https://tailscale.com), a private
-mesh VPN — no public internet exposure, no separate login/auth added to the
-app itself, since only devices already enrolled in the same Tailscale account
-can reach it.
+Optional, and **Windows-only** (Scheduled Task + PowerShell firewall
+commands below are Windows-specific — the app itself isn't, but this
+particular always-on setup is). Skip this whole section if `npm run dev` /
+`npm start` on the one machine you use is enough.
 
-- **Persistence**: a Windows Scheduled Task named `Ledger` runs
-  `scripts/run-server-hidden.vbs` → `scripts/run-server.bat` → `npm start` at
-  every logon, with no visible console window. Manage it via Task Scheduler,
-  or `Get-ScheduledTask -TaskName Ledger` / `Start-ScheduledTask -TaskName
-  Ledger` / `Unregister-ScheduledTask -TaskName Ledger` in PowerShell.
-- **Tailscale**: installed via `winget install Tailscale.Tailscale`, already
-  signed into the existing account. `tailscale status` lists every device on
-  the tailnet; `tailscale ip -4` gives this PC's stable private IP — the app
-  is reached at `http://<that-ip>:4000` from any other enrolled device.
-- **Firewall**: a Windows Firewall inbound rule (`Ledger (Tailscale)`, TCP
-  4000, all profiles) had to be added by hand from an elevated PowerShell —
-  several old `node.exe` allow rules already existed from past nvm/nvs Node
-  installs, but none matched the actual `C:\Program Files\nodejs\node.exe`
-  binary this app runs from, so none of them actually covered it.
+The goal: the server starts automatically at login with no visible window,
+and is reachable from your other personal devices (e.g. a phone) over
+[Tailscale](https://tailscale.com), a private mesh VPN — no public internet
+exposure, no separate login/auth needed in the app itself, since only
+devices already enrolled in your own Tailscale account can reach it.
+
+1. **Install and sign in to Tailscale** on this machine and on whichever
+   other device(s) you want to reach the app from (its own phone/desktop
+   apps): `winget install Tailscale.Tailscale`, then sign in with the same
+   account on every device you want on the same private network (a free
+   personal Tailscale account covers this). `tailscale status` lists every
+   device currently on your tailnet; `tailscale ip -4` prints this machine's
+   stable private IP — that's the address you'll reach the app at.
+
+2. **Open the port in Windows Firewall**, from an elevated PowerShell
+   (**Run as Administrator**):
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "Ledger (Tailscale)" -Direction Inbound `
+     -Action Allow -Protocol TCP -LocalPort 4000 -Profile Any
+   ```
+
+   If the app still isn't reachable afterward, check for a *stale* rule
+   already blocking/shadowing it first — Windows keeps old firewall entries
+   from previous Node installs (e.g. via nvm/nvs) around indefinitely, and
+   one that doesn't match your current `node.exe` path won't actually cover
+   this app even if it looks similar at a glance.
+
+3. **Register the Scheduled Task**, so the server starts silently at every
+   logon instead of you having to run `npm start` by hand. The Scheduled
+   Task itself needs an absolute path to the `.vbs` file below — fill in
+   wherever you actually cloned the repo:
+
+   ```powershell
+   $action = New-ScheduledTaskAction -Execute "wscript.exe" `
+     -Argument '"C:\path\to\ledger\scripts\run-server-hidden.vbs"'
+   $trigger = New-ScheduledTaskTrigger -AtLogOn
+   Register-ScheduledTask -TaskName "Ledger" -Action $action -Trigger $trigger `
+     -Description "Starts the Ledger server at logon"
+   ```
+
+   `run-server-hidden.vbs` launches `run-server.bat` (in the same folder)
+   with its window hidden — the indirection through both files, rather than
+   pointing the Scheduled Task at `npm start` directly, is what gets rid of
+   the visible console window. Both scripts locate themselves relative to
+   their own file location (`%~dp0` / `WScript.ScriptFullName`), so — apart
+   from the one absolute path Task Scheduler itself requires above — nothing
+   inside either script needs editing regardless of where you cloned the repo.
+
+4. **Manage it later** via Task Scheduler's GUI, or from PowerShell:
+   `Get-ScheduledTask -TaskName Ledger`, `Start-ScheduledTask -TaskName
+   Ledger`, `Stop-ScheduledTask -TaskName Ledger`,
+   `Unregister-ScheduledTask -TaskName Ledger`.
+
+Once all three are done, the app is reachable at `http://<tailscale-ip>:4000`
+from any other device on the same tailnet, and `http://localhost:4000` on
+this machine — both survive a reboot without you doing anything.
 
 ## Testing
 

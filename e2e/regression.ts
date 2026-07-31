@@ -822,6 +822,30 @@ async function main() {
       (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 1,
     );
 
+    // Clicking an Upcoming item is a shortcut to go pay/settle it — EMI
+    // items go to the EMI tab, Credit Card items go to Credit Cards on the
+    // month the bill is actually due.
+    await page.locator(".upcoming-item", { hasText: "E2E Overview EMI" }).click();
+    await page.waitForSelector(".add-emi-form");
+    check(
+      "Dashboard Overview: clicking an EMI upcoming item navigates to the EMI tab",
+      (await page.locator(".tabs button.selected").innerText()) === "EMI",
+    );
+
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    await page.waitForTimeout(400);
+    await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).click();
+    await page.waitForSelector(".cards-form");
+    check(
+      "Dashboard Overview: clicking a Credit Card upcoming item navigates to Credit Cards",
+      (await page.locator(".tabs button.selected").innerText()) === "Credit Cards",
+    );
+
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    await page.waitForTimeout(400);
+
     // Checking "Settled" on that card should drop its (due - paid) gap from
     // Net Worth and remove it from Upcoming entirely, regardless of the gap.
     await page.click('.tabs button:has-text("Credit Cards")');
