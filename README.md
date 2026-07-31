@@ -11,6 +11,7 @@ principles, API surface) see [ARCHITECTURE.md](ARCHITECTURE.md). This file
 covers what each part of the app does and why, domain-wise.
 
 - [Why this exists](#why-this-exists)
+- [See it in action](#see-it-in-action)
 - [How it works](#how-it-works)
 - [Project layout](#project-layout)
 - [Setup](#setup)
@@ -52,6 +53,26 @@ trusts as the real database, and build the smallest possible app around it.
 technical detail, including the constraints that fell out of taking "the
 spreadsheet is the database, for real" seriously (no schema migrations, safe
 concurrent-with-Excel writes, no cached/stale derived numbers).
+
+## See it in action
+
+*(Screenshots below use made-up sample data, not anyone's real finances.)*
+
+**Dashboard** — Net Worth and an Upcoming list combining every EMI due date,
+subscription renewal, and outstanding credit card bill in the next two
+weeks, above a yearly spending chart. Supports light and dark themes:
+
+| Light | Dark |
+|---|---|
+| ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
+
+**Adding an expense** — pick a category by color (matching the same
+convention the underlying spreadsheets already used), mark it cash or card,
+and it's appended straight to the real `Expenses (YYYY).xlsx` file:
+
+| Filling out the form | Saved, showing in the month's list |
+|---|---|
+| ![Add Expense form filled in](docs/screenshots/add-expense.png) | ![New entry appears in the list](docs/screenshots/recent-entries.png) |
 
 ## How it works
 
