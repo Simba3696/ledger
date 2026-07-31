@@ -226,6 +226,7 @@ export function CreditCards({ year, month }: Props) {
           label: thisMonth.overpaidOrSaved < 0 ? "Overpaid" : "Saved",
           value: rupee.format(Math.abs(thisMonth.overpaidOrSaved)),
           negative: thisMonth.overpaidOrSaved < 0,
+          positive: thisMonth.overpaidOrSaved > 0,
         },
       ]
     : [];
@@ -241,6 +242,7 @@ export function CreditCards({ year, month }: Props) {
           label: yearOverpaidOrSaved < 0 ? "Net Overpaid This Year" : "Net Saved This Year",
           value: rupee.format(Math.abs(yearOverpaidOrSaved)),
           negative: yearOverpaidOrSaved < 0,
+          positive: yearOverpaidOrSaved > 0,
         },
       ]
     : [];
@@ -269,7 +271,9 @@ export function CreditCards({ year, month }: Props) {
             {stats.map((s) => (
               <div className="cards-stat" key={s.label}>
                 <span>{s.label}</span>
-                <strong className={"negative" in s && s.negative ? "negative" : undefined}>{s.value}</strong>
+                <strong className={"negative" in s && s.negative ? "negative" : "positive" in s && s.positive ? "positive" : undefined}>
+                  {s.value}
+                </strong>
               </div>
             ))}
           </div>
@@ -280,7 +284,9 @@ export function CreditCards({ year, month }: Props) {
             {yearStats.map((s) => (
               <div className="cards-stat" key={s.label}>
                 <span>{s.label}</span>
-                <strong className={"negative" in s && s.negative ? "negative" : undefined}>{s.value}</strong>
+                <strong className={"negative" in s && s.negative ? "negative" : "positive" in s && s.positive ? "positive" : undefined}>
+                  {s.value}
+                </strong>
               </div>
             ))}
           </div>

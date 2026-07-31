@@ -206,13 +206,16 @@ concurrent-with-Excel writes, no cached/stale derived numbers).
   computes Total Due, Total Paid, the Earliest Due Date across all cards
   that month (so you know when to arrange funds), and Overpaid/Saved
   (Due − Paid: negative means you paid more than billed, positive means a
-  payment app rounded a few rupees in your favor) — these stats are still
-  computed from the raw figures regardless of Settled, since they're about
-  what actually happened with the money, not whether it's been marked done.
-  Settled only affects the Dashboard Overview widget's Net Worth/Upcoming
-  (see above). It also shows yearly totals — Total Spent This Year, Total
-  Paid This Year, and Net Overpaid/Saved This Year — summed across all 12
-  months of the selected year. Historical Due/Paid amounts were backfilled
+  payment app rounded a few rupees in your favor) — colored red when
+  Overpaid, green when Saved, for at-a-glance visibility, though a positive
+  "Saved" figure can just as easily mean a bill that's genuinely still
+  unpaid rather than real savings — these stats are still computed from the
+  raw figures regardless of Settled, since they're about what actually
+  happened with the money, not whether it's been marked done. Settled only
+  affects the Dashboard Overview widget's Net Worth/Upcoming (see above). It
+  also shows yearly totals — Total Spent This Year, Total Paid This Year,
+  and Net Overpaid/Saved This Year (same red/green coloring) — summed across
+  all 12 months of the selected year. Historical Due/Paid amounts were backfilled
   from `Expense Summary.xlsm`'s Credit Card Bills sheet, whose own
   `=a+b+c+...` formulas turned out to be literally one term per card (in the
   order the cards were acquired) — splitting those formulas back into named
