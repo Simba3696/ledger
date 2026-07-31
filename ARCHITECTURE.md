@@ -267,5 +267,12 @@ client/
 e2e/
   regression.ts      Full-stack Playwright script (see Testing above)
 scripts/
-  kill-ports.js      Frees dev ports 4000/5173 before/on demand
+  kill-ports.js         Frees dev ports 4000/5173 before/on demand
+  run-server.bat,
+  run-server-hidden.vbs  Scheduled Task launch chain for always-on use
+                         (see README's Remote access section) — both
+                         self-locate relative to their own file, no
+                         hardcoded path
+docs/
+  screenshots/       Images embedded in README.md
 ```

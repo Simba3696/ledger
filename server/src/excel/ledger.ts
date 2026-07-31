@@ -277,7 +277,7 @@ export async function yearSummary(year: number): Promise<MonthSummary[]> {
  * e.g. an all-time running total). Index 0 is unused; 1-12 are the months. A
  * missing workbook or sheet degrades to zero, matching yearSummary. */
 export async function yearExpenseTotals(year: number): Promise<number[]> {
-  const totals = new Array(13).fill(0);
+  const totals = Array.from({ length: 13 }, () => 0);
 
   let workbook: ExcelJS.Workbook;
   try {

@@ -19,7 +19,7 @@ covers what each part of the app does and why, domain-wise.
 - [Remote access (Tailscale)](#remote-access-tailscale) — Windows-only, optional
 - [Testing](#testing)
 - [Notes / gotchas](#notes--gotchas)
-- [Roadmap](#roadmap)
+- [History: retiring Expense Summary.xlsm](#history-retiring-expense-summaryxlsm)
 
 ## Why this exists
 
@@ -70,9 +70,10 @@ weeks, above a yearly spending chart. Supports light and dark themes:
 convention the underlying spreadsheets already used), mark it cash or card,
 and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 
-| Filling out the form | Saved, showing in the month's list |
-|---|---|
-| ![Add Expense form filled in](docs/screenshots/add-expense.png) | ![New entry appears in the list](docs/screenshots/recent-entries.png) |
+| | Filling out the form | Saved, showing in the month's list |
+|---|---|---|
+| Light | ![Add Expense form filled in, light theme](docs/screenshots/add-expense.png) | ![New entry appears in the list, light theme](docs/screenshots/recent-entries.png) |
+| Dark | ![Add Expense form filled in, dark theme](docs/screenshots/add-expense-dark.png) | ![New entry appears in the list, dark theme](docs/screenshots/recent-entries-dark.png) |
 
 ## How it works
 
@@ -116,9 +117,12 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   month or drop straight into adding a new entry. **Expenses has no button in
   the nav bar** — the Dashboard chart is the only way in, by design, since the
   Dashboard is meant to be the main view day to day. The rest of the nav bar
-  is ordered Dashboard, Credit Cards, Debts, EMI, Subscriptions, Finances —
-  matching the sheet order in the old `Expense Summary.xlsm` (see Roadmap
-  below) rather than the order each tab happened to be built in.
+  is ordered Dashboard, Credit Cards, Debts, EMI (Equated Monthly
+  Installment — the standard Indian-banking term for a fixed loan
+  repayment), Subscriptions, Finances — matching the sheet order in the old
+  `Expense Summary.xlsm` (see
+  [History](#history-retiring-expense-summaryxlsm) below) rather than the
+  order each tab happened to be built in.
 - The Dashboard also opens with an **overview widget** above the yearly
   chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
   Remaining − this month's unpaid Credit Card bills, all pulled live from
@@ -174,7 +178,8 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (originally kept separate from
   `Expense Summary.xlsm`, the old macro-enabled workbook this superseded —
-  see Roadmap below). From those entries it computes:
+  see [History](#history-retiring-expense-summaryxlsm) below). From those
+  entries it computes:
   - **Balance** — last month's total income (salary + other income) minus
     this month's expenses. A month with no income on record counts as zero,
     so it shows as a real deficit rather than "unknown".
@@ -305,7 +310,8 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 - The yearly template (`Expenses (202X).xlsx`) is not read or written by the
   app — that stays manual. (`Expense Summary.xlsm`, the old macro-enabled
   workbook, was never read or written by the app either, and has since been
-  retired entirely — see Roadmap below.)
+  retired entirely — see [History](#history-retiring-expense-summaryxlsm)
+  below.)
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
   refuses to write to it rather than silently editing through the lock.
 - The first time a given workbook (a year's `Expenses (YYYY).xlsx`,
@@ -336,7 +342,13 @@ client/   React + Vite frontend. Nav bar order: Dashboard, Credit Cards,
           Add Expense form + current month's entry list (Expenses) has no
           nav button; it's only reached via a Dashboard chart click.
 e2e/      Full-stack Playwright regression script (see Testing below).
-scripts/  kill-ports.js — frees the dev ports before/on demand.
+scripts/  kill-ports.js — frees the dev ports before/on demand; run-server.bat
+          + run-server-hidden.vbs — the Scheduled Task launch chain (see
+          Remote access below).
+docs/     screenshots/ — images embedded in this README (See it in action).
+README.md, ARCHITECTURE.md — this file (domain/features) and the technical
+          reference (module map, request lifecycle, API surface), at the
+          repo root alongside these folders.
 ```
 
 ## Setup
@@ -479,9 +491,34 @@ devices already enrolled in your own Tailscale account can reach it.
    Ledger`, `Stop-ScheduledTask -TaskName Ledger`,
    `Unregister-ScheduledTask -TaskName Ledger`.
 
-Once all three are done, the app is reachable at `http://<tailscale-ip>:4000`
+5. **Optional: a Start Menu/Desktop icon to open it**, since the server is
+   already running and there's nothing left to "start" — just a shortcut
+   that opens the app itself, in its own window rather than a regular
+   browser tab (Edge's `--app=` mode: no address bar/tabs, its own taskbar
+   icon). Give it a dedicated Edge profile too, so it can never end up
+   sharing a process with your regular browsing:
+
+   ```powershell
+   $profileDir = "$env:LOCALAPPDATA\LedgerAppProfile"
+   New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+
+   $edgePath = (Get-ItemPropertyValue `
+     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe" -Name "(default)")
+
+   $shell = New-Object -ComObject WScript.Shell
+   $lnk = $shell.CreateShortcut("$env:USERPROFILE\Desktop\Ledger.lnk")
+   $lnk.TargetPath = $edgePath
+   $lnk.Arguments = "--app=http://localhost:4000 --user-data-dir=`"$profileDir`""
+   $lnk.Save()
+   ```
+
+   Copy the same `.lnk` into `$env:APPDATA\Microsoft\Windows\Start Menu\Programs`
+   for a Start Menu entry too.
+
+Once steps 1–3 are done, the app is reachable at `http://<tailscale-ip>:4000`
 from any other device on the same tailnet, and `http://localhost:4000` on
-this machine — both survive a reboot without you doing anything.
+this machine — both survive a reboot without you doing anything. Steps 4–5
+are just for managing/opening it conveniently once it's already running.
 
 ## Testing
 
@@ -582,7 +619,7 @@ and never touch the real `Expenses` folder.
   *next* launch always clears anything left over. Run `npm run stop`
   directly if you want to clean up without immediately restarting.
 
-## Roadmap
+## History: retiring Expense Summary.xlsm
 
 Every sheet that used to live only in `Expense Summary.xlsm` — Summary
 (Finances), Credit Card Bills, Debts, EMI, and Subscriptions — now has a
