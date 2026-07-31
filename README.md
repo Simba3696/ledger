@@ -96,8 +96,8 @@ concurrent-with-Excel writes, no cached/stale derived numbers).
   the nav bar** — the Dashboard chart is the only way in, by design, since the
   Dashboard is meant to be the main view day to day. The rest of the nav bar
   is ordered Dashboard, Credit Cards, Debts, EMI, Subscriptions, Finances —
-  matching the sheet order in `Expense Summary.xlsm` rather than the order
-  each tab happened to be built in.
+  matching the sheet order in the old `Expense Summary.xlsm` (see Roadmap
+  below) rather than the order each tab happened to be built in.
 - The Dashboard also opens with an **overview widget** above the yearly
   chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
   Remaining − this month's unpaid Credit Card bills, all pulled live from
@@ -151,9 +151,9 @@ concurrent-with-Excel writes, no cached/stale derived numbers).
   though its own tab would eventually reflect the payment regardless.
 - The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
-  `Finances.xlsx` that it owns entirely (separate from `Expense
-  Summary.xlsm`, which stays macro-enabled, manual, and untouched). From
-  those entries it computes:
+  `Finances.xlsx` that it owns entirely (originally kept separate from
+  `Expense Summary.xlsm`, the old macro-enabled workbook this superseded —
+  see Roadmap below). From those entries it computes:
   - **Balance** — last month's total income (salary + other income) minus
     this month's expenses. A month with no income on record counts as zero,
     so it shows as a real deficit rather than "unknown".
@@ -281,8 +281,10 @@ concurrent-with-Excel writes, no cached/stale derived numbers).
 - Light/dark theme: a sun/moon slider toggle in the header (top right). The
   choice is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
-- `Expense Summary.xlsm` and the yearly template (`Expenses (202X).xlsx`) are
-  not read or written by the app — those stay manual.
+- The yearly template (`Expenses (202X).xlsx`) is not read or written by the
+  app — that stays manual. (`Expense Summary.xlsm`, the old macro-enabled
+  workbook, was never read or written by the app either, and has since been
+  retired entirely — see Roadmap below.)
 - If a sheet is protected/locked in Excel (Review → Protect Sheet), the app
   refuses to write to it rather than silently editing through the lock.
 - The first time a given workbook (a year's `Expenses (YYYY).xlsx`,
@@ -565,7 +567,14 @@ Every sheet that used to live only in `Expense Summary.xlsm` — Summary
 (Finances), Credit Card Bills, Debts, EMI, and Subscriptions — now has a
 fully read/write home in the app, each in its own app-owned workbook with a
 one-time historical backfill cross-validated against the `.xlsm`'s own
-totals. `Expense Summary.xlsm` can be retired from day-to-day use; it's kept
-around as a frozen historical record rather than being deleted, and the app
-never writes to it (it's macro-enabled, so that was never worth doing even
-for a single field).
+totals (the app itself never read or wrote `.xlsm` directly — it's
+macro-enabled, so that was never worth doing even for a single field).
+
+With every sheet's data fully live in the app, `Expense Summary.xlsm` itself
+has been deleted — Debts/EMI/Subscriptions in particular would only ever go
+stale sitting in a frozen copy, since those change constantly and are now
+tracked for real here. What's kept instead is `Expense Summary (Up to Date
+2025).xlsx` (plain, non-macro), current through December 2025, with the
+Debts/EMI/Subscriptions sheets removed — a snapshot of the parts that
+genuinely are "done" (pre-app history), not a duplicate of what the app
+already tracks live.
