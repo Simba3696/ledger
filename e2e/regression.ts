@@ -25,6 +25,16 @@ function check(label: string, ok: boolean) {
   console.log(`${ok ? "PASS" : "FAIL"}: ${label}`);
 }
 
+// `Date.toISOString()` is UTC — near midnight IST (UTC+5:30), it can report
+// the *previous* calendar day relative to the server's real local "today"
+// (e.g. 1am IST is still 7:30pm the day before in UTC), silently landing a
+// "due today" test fixture one day in the past. Every date string used to
+// fill a real `<input type="date">` in this file must go through local
+// getFullYear/getMonth/getDate instead, never toISOString().
+function toLocalDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -650,7 +660,7 @@ async function main() {
     // --- Edit a subscription ---
     const futureDate = new Date();
     futureDate.setDate(futureDate.getDate() + 60);
-    const futureDateStr = futureDate.toISOString().slice(0, 10);
+    const futureDateStr = toLocalDateStr(futureDate);
     await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Netflix" }), "Edit");
     await page.waitForSelector(".row-editing");
     await page.locator('.subscription-edit-fields input[type="number"]').fill("699");
@@ -801,7 +811,7 @@ async function main() {
     await overviewCardRow.locator('input[type="text"]').fill("E2E Overview Card");
     await overviewCardRow.locator('input[type="number"]').nth(0).fill("3000"); // due
     await overviewCardRow.locator('input[type="number"]').nth(1).fill("1000"); // paid
-    await overviewCardRow.locator('input[type="date"]').fill(new Date().toISOString().slice(0, 10));
+    await overviewCardRow.locator('input[type="date"]').fill(toLocalDateStr(new Date()));
     await page.click('.cards-form button:has-text("Save")');
     await page.waitForTimeout(400);
 
@@ -820,6 +830,11 @@ async function main() {
     check(
       "Dashboard Overview: upcoming list shows the credit card due today",
       (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 1,
+    );
+    check(
+      // EMI 1000 + card outstanding (3000 due - 1000 paid = 2000) = 3000
+      "Dashboard Overview: Upcoming header shows the total across all items",
+      (await page.locator(".upcoming-total").innerText()).includes("3,000"),
     );
 
     // Clicking an Upcoming item is a shortcut to go pay/settle it — EMI

@@ -50,6 +50,7 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
 
   const netWorth = data?.netWorth;
   const upcoming = data?.upcoming ?? [];
+  const upcomingTotal = upcoming.reduce((sum, item) => sum + item.amount, 0);
 
   return (
     <div className="overview-panel">
@@ -94,6 +95,7 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
               ▾
             </span>
             <h3>Upcoming (next 2 weeks)</h3>
+            {upcoming.length > 0 && <span className="upcoming-total">{rupee.format(upcomingTotal)}</span>}
           </button>
           {/* Content stays in the DOM either way — the grid-rows/0fr trick
               below animates the fold smoothly, which conditionally rendering

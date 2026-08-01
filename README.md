@@ -154,7 +154,11 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   that leftover. An EMI's Upcoming due date is computed from its own stored
   snapshot date, not just "today" — so clicking **Paid this month** (or
   **Record payment…**) correctly advances which cycle shows as upcoming
-  next, rather than continuing to show the one just paid. Upcoming can get
+  next, rather than continuing to show the one just paid. The header also
+  shows the total across every Upcoming item, so you know what's coming due
+  at a glance without adding it up yourself — and since it lives in the
+  header rather than the (foldable) list itself, it's still visible even
+  when Upcoming is collapsed. Upcoming can get
   long, so its header is a fold/collapse toggle — defaults open (it's the
   actionable part of the dashboard), and remembers whichever state you last
   left it in (`localStorage`, same pattern as the theme toggle) so it stays

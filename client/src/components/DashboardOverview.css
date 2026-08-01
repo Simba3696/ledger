@@ -89,6 +89,16 @@
   color: var(--text-h);
 }
 
+.upcoming-total {
+  /* Pushed to the far right of the header row, which stays visible even
+     when the list itself is collapsed — so the total is glanceable without
+     needing to expand anything. */
+  margin-left: auto;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
 .upcoming-chevron {
   display: inline-block;
   font-size: var(--font-size-sm);
