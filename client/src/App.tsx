@@ -114,7 +114,8 @@ function App() {
           className={tab === "subscriptions" ? "selected" : ""}
           onClick={() => setTab("subscriptions")}
         >
-          Subscriptions
+          <span className="tab-label-full">Subscriptions</span>
+          <span className="tab-label-short">Subs</span>
         </button>
         <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
           Finances

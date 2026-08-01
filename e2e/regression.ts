@@ -837,6 +837,34 @@ async function main() {
       (await page.locator(".upcoming-total").innerText()).includes("3,000"),
     );
 
+    // Below 600px, the header swaps to a shorter "Upcoming" label so it
+    // doesn't crowd/wrap against the total sharing the same row.
+    await page.setViewportSize({ width: 420, height: 800 });
+    check(
+      "Dashboard Overview: Upcoming header shortens on a narrow viewport",
+      (await page.locator(".upcoming-toggle h3").innerText()) === "Upcoming",
+    );
+
+    // Same breakpoint: "Credit Cards"/"Subscriptions" shorten to "CC
+    // Bills"/"Subs" and the nav's gap tightens, together fitting all six
+    // tabs on one row instead of the last one wrapping to a second line.
+    const navTabTops = await page.locator(".tabs button").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+    check(
+      "Nav bar: all six tabs fit on one row on a narrow viewport",
+      new Set(navTabTops).size === 1,
+    );
+    // Both label spans are always in the DOM (CSS just hides one), so a
+    // `:has-text()` match alone can't tell visible text from hidden text —
+    // .innerText() does respect display:none, unlike raw textContent.
+    // Nav order is Dashboard/Credit Cards/Debts/EMI/Subscriptions/Finances.
+    const navButtons = page.locator(".tabs button");
+    check(
+      "Nav bar: Credit Cards/Subscriptions shorten on a narrow viewport",
+      (await navButtons.nth(1).innerText()) === "CC Bills" && (await navButtons.nth(4).innerText()) === "Subs",
+    );
+
+    await page.setViewportSize({ width: 1280, height: 720 }); // restore Playwright's default
+
     // Clicking an Upcoming item is a shortcut to go pay/settle it — EMI
     // items go to the EMI tab, Credit Card items go to Credit Cards on the
     // month the bill is actually due.

@@ -97,6 +97,25 @@
   font-size: 18px;
   font-weight: 600;
   color: var(--text-h);
+  white-space: nowrap;
+}
+
+.upcoming-title-short {
+  display: none;
+}
+
+/* Narrow phones: swap in the short "Upcoming" label — the full title now
+   shares the header row with the total, so on a narrow screen the two can
+   crowd/wrap together. Same breakpoint as the nav bar's own
+   full/short label swap (.tab-label-full/.tab-label-short in App.css). */
+@media (max-width: 600px) {
+  .upcoming-title-full {
+    display: none;
+  }
+
+  .upcoming-title-short {
+    display: inline;
+  }
 }
 
 .upcoming-chevron {

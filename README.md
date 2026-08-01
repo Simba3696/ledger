@@ -122,7 +122,12 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   repayment), Subscriptions, Finances — matching the sheet order in the old
   `Expense Summary.xlsm` (see
   [History](#history-retiring-expense-summaryxlsm) below) rather than the
-  order each tab happened to be built in.
+  order each tab happened to be built in. Below a ~600px viewport (a phone),
+  "Credit Cards" and "Subscriptions" — the two longest labels — shorten to
+  "CC Bills" and "Subs", and the nav's own spacing tightens slightly, so all
+  six tabs still fit on one row instead of the last one wrapping to a second
+  line. Verified by directly measuring rendered button/gap widths at 420px,
+  not just eyeballed.
 - The Dashboard also opens with an **overview widget** above the yearly
   chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
   Remaining − this month's unpaid Credit Card bills, all pulled live from
@@ -158,7 +163,9 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   shows the total across every Upcoming item, so you know what's coming due
   at a glance without adding it up yourself — and since it lives in the
   header rather than the (foldable) list itself, it's still visible even
-  when Upcoming is collapsed. Upcoming can get
+  when Upcoming is collapsed. On a phone-width screen the "(next 2 weeks)"
+  part of the heading drops to just "Upcoming", so it doesn't crowd the
+  total sharing the same row. Upcoming can get
   long, so its header is a fold/collapse toggle — defaults open (it's the
   actionable part of the dashboard), and remembers whichever state you last
   left it in (`localStorage`, same pattern as the theme toggle) so it stays

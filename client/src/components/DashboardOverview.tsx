@@ -94,7 +94,10 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
             <span className={`upcoming-chevron${collapsed ? " collapsed" : ""}`} aria-hidden="true">
               ▾
             </span>
-            <h3>Upcoming (next 2 weeks)</h3>
+            <h3>
+              <span className="upcoming-title-full">Upcoming (next 2 weeks)</span>
+              <span className="upcoming-title-short">Upcoming</span>
+            </h3>
             {upcoming.length > 0 && <span className="upcoming-total">{rupee.format(upcomingTotal)}</span>}
           </button>
           {/* Content stays in the DOM either way — the grid-rows/0fr trick

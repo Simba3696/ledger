@@ -70,9 +70,11 @@ header h1 {
   display: none;
 }
 
-/* Narrow phones: swap in a shorter label for "Credit Cards" specifically —
-   it's the longest tab label and the main contributor to the nav overflowing
-   past one row on a small screen. */
+/* Narrow phones: swap in shorter labels for "Credit Cards" and
+   "Subscriptions" — the two longest tab labels, and (together with the
+   slightly tighter gap below) enough to fit all six tabs on one row instead
+   of "Finances" wrapping to a second line. Verified by measuring real
+   rendered button/gap widths at 420px, not just eyeballed. */
 @media (max-width: 600px) {
   .tab-label-full {
     display: none;
@@ -80,5 +82,9 @@ header h1 {
 
   .tab-label-short {
     display: inline;
+  }
+
+  .tabs {
+    gap: 6px;
   }
 }
