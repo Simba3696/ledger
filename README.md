@@ -105,8 +105,15 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   entry. Deleting actually removes the row and shifts everything below it up,
   rather than just blanking it, so row numbers stay meaningful. Reordering
   (drag the ⠿ handle) similarly moves the row for real rather than just
-  changing how it displays. Copy adds a brand new entry with the same
-  amount/remarks/category/card-status, appended at the end like any other new
+  changing how it displays — driven by Pointer Events rather than the HTML5
+  drag-and-drop API, since the latter never fires on touch (mobile Safari/
+  Chrome), which is what made the handle silently do nothing on a phone. The
+  "⋮" menu also has **Move up**/**Move down** entries doing the same
+  adjacent-position swap, for when a keyboard is in use or the handle is
+  otherwise inconvenient — the handle itself is `aria-hidden`, so this is the
+  only reorder path a screen reader can reach. Copy adds a brand new entry
+  with the same amount/remarks/category/card-status, appended at the end
+  like any other new
   entry — never linked back to the original — so editing one afterward never
   touches the other.
 - The app opens on the **Dashboard** tab by default. It shows a stacked bar
@@ -199,12 +206,21 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   - **Money Earned / Money Spent** — running totals of income / ledger
     expenses since 2018.
   - **Current Savings** — named scheme balances (PPF, NPS, APY, etc.),
-    entered and edited individually and summed automatically into a total,
-    matching how you actually update it (touch one scheme, not recompute
-    the whole figure by hand). The set of schemes isn't fixed — add or
-    remove one freely as your actual savings mix changes. Whichever month's
-    breakdown was most recently entered carries forward across later months
-    until you update it again, rather than resetting to blank.
+    summed automatically into a total. Entry is delta-based, not absolute:
+    each scheme shows its last known balance (carried forward from
+    whichever month it was last touched) and you type a **+/− change** —
+    a deposit or a withdrawal — and the app computes and stores the new
+    absolute balance for you. For a scheme with no prior balance yet, the
+    first amount you type simply becomes its starting balance (baseline
+    zero). The underlying data is still a plain absolute balance per
+    scheme per month — only entry is delta-based — so a scheme's real
+    figure can always be corrected by typing whatever delta reconciles it
+    to your actual passbook/statement, rather than drifting permanently out
+    of sync the way a pure running-total ledger would. The set of schemes
+    isn't fixed — add or remove one freely as your actual savings mix
+    changes. Whichever month's breakdown was most recently entered carries
+    forward across later months until you update it again, rather than
+    resetting to blank.
 
   The Save button stays disabled until something on the form actually
   differs from what's on record, so there's no way to click it uselessly (or
@@ -235,6 +251,11 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
   more overall) is colored green — ordinary bad/good coloring, not "positive
   number = green" regardless of what that number actually means. The Add
   Debt button stays disabled until both Name and Amount are filled in.
+  Adding an entry whose name matches an existing one (case-insensitive) asks
+  whether to **consolidate** the new amount into that entry (a plain sum —
+  correct regardless of sign, e.g. a partial repayment nets down the debt)
+  or add it as a genuinely separate entry instead, rather than silently
+  creating a second row for what's almost always the same relationship.
 - The **Credit Cards** tab tracks each card/loan's bill as its own
   named entry per month (due amount, paid amount, that card's own due date,
   and a **Settled** checkbox) in its own app-owned `CreditCardBills.xlsx` —
@@ -328,7 +349,11 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 - The first time a given workbook (a year's `Expenses (YYYY).xlsx`,
   `Finances.xlsx`, `Debts.xlsx`, `CreditCardBills.xlsx`, `EMI.xlsx`, or
   `Subscriptions.xlsx`) is written to in a server run, a timestamped copy is
-  saved to a `.backups/` folder next to it.
+  saved to a `.backups/` folder next to it. Only the 10 most recent backups
+  per file are kept — older ones are pruned automatically on the next write,
+  since the Scheduled Task restarting at every login otherwise means one
+  fresh backup per file per login, forever (observed: ~90 files in 11 days
+  on real usage before this cap existed).
 
 ## Project layout
 
@@ -535,7 +560,7 @@ are just for managing/opening it conveniently once it's already running.
 
 Two suites, covering different layers:
 
-- **`npm test`** — vitest, eight files. `server/test/ledger.test.ts` covers
+- **`npm test`** — vitest, nine files. `server/test/ledger.test.ts` covers
   `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
   synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
   (never real data — nothing sensitive is committed), including a couple of
@@ -546,7 +571,11 @@ Two suites, covering different layers:
   the other. `server/test/finances.test.ts` covers `getMonthIncome`/
   `setMonthIncome`/`financeSummary`'s Balance/Cumulative/Minimum Savings/
   Money Earned/Spent math, including carrying a Current Savings snapshot
-  forward across unset months. `server/test/debts.test.ts` covers add/update/
+  forward across unset months, and `previousSavings` — the per-scheme
+  baseline the client computes deposit/withdrawal deltas against — carrying
+  forward correctly across untouched months and a year boundary, and being
+  empty only for the very first possible month.
+  `server/test/debts.test.ts` covers add/update/
   delete and the sign convention. `server/test/creditCardBills.test.ts`
   covers per-card entries summing correctly into totals, the earliest-due-
   date computation, and Overpaid/Saved. `server/test/dateMath.test.ts` covers
@@ -576,6 +605,10 @@ Two suites, covering different layers:
   contribution to Net Worth and drops it from Upcoming — an unsettled card
   counts its full gap even if tiny, and a settled card contributes exactly 0
   even if it was overpaid on paper.
+  `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
+  one backup per file per process run (not one per save), pruning down to
+  the most recent 10 per file, and that pruning one file's backups never
+  touches another file's.
   Fast (a few seconds), no browser or dev server needed — this is the one to
   run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
@@ -584,8 +617,11 @@ Two suites, covering different layers:
   dev server against it, and drives an actual browser through the full app:
   Dashboard-is-default, chart click-through navigation (main chart and the
   per-category mini-charts, including their synced hover), month/year
-  selects, add (cash + card), edit, drag-reorder, delete, Finances entry +
-  persistence, Debts add/edit/delete/sort, EMI add/edit/delete (including the
+  selects, add (cash + card), edit, drag-reorder, Move up/Move down via the
+  overflow menu, delete, Finances entry + persistence (including the
+  savings delta editor's live total), Debts add/edit/delete/sort (including
+  the duplicate-name consolidate-or-new prompt), EMI add/edit/delete
+  (including the
   Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
   payoff estimate and surviving edits, and the "Paid this month"/"Record
   payment" quick actions), Subscriptions add/edit/delete

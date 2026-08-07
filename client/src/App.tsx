@@ -1,18 +1,33 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, lazy, Suspense } from "react";
 import "./App.css";
 import "./shared.css";
 import { addEntry, getCategories, getMonth, type CategoryOption, type LedgerEntry, type UpcomingItem } from "./api";
-import { AddExpenseForm } from "./components/AddExpenseForm";
-import { RecentEntries } from "./components/RecentEntries";
 import { MonthYearPicker } from "./components/MonthYearPicker";
 import { Dashboard } from "./components/Dashboard";
-import { Finances } from "./components/Finances";
-import { Debts } from "./components/Debts";
-import { CreditCards } from "./components/CreditCards";
-import { EMI } from "./components/EMI";
-import { Subscriptions } from "./components/Subscriptions";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { LoadingOverlay } from "./components/LoadingOverlay";
 import logoIcon from "./assets/logo-icon.png";
+
+// Dashboard is the default tab (needed on first paint, so it stays eager);
+// everything else here is only ever needed after the user actually clicks
+// its tab, so splitting them into their own chunks trims the JS the phone
+// has to download/parse before the app is interactive — especially over
+// Tailscale, where the connection is often slower than localhost.
+const AddExpenseForm = lazy(() => import("./components/AddExpenseForm").then((m) => ({ default: m.AddExpenseForm })));
+const RecentEntries = lazy(() => import("./components/RecentEntries").then((m) => ({ default: m.RecentEntries })));
+const Finances = lazy(() => import("./components/Finances").then((m) => ({ default: m.Finances })));
+const Debts = lazy(() => import("./components/Debts").then((m) => ({ default: m.Debts })));
+const CreditCards = lazy(() => import("./components/CreditCards").then((m) => ({ default: m.CreditCards })));
+const EMI = lazy(() => import("./components/EMI").then((m) => ({ default: m.EMI })));
+const Subscriptions = lazy(() => import("./components/Subscriptions").then((m) => ({ default: m.Subscriptions })));
+
+function TabFallback() {
+  return (
+    <div className="tab-loading">
+      <LoadingOverlay active />
+    </div>
+  );
+}
 
 type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards" | "emi" | "subscriptions";
 
@@ -123,14 +138,18 @@ function App() {
       </nav>
 
       {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} onSelectUpcomingItem={goToUpcomingItem} />}
-      {tab === "creditCards" && <CreditCards year={year} month={month} />}
-      {tab === "debts" && <Debts />}
-      {tab === "emi" && <EMI />}
-      {tab === "subscriptions" && <Subscriptions />}
-      {tab === "finances" && <Finances year={year} month={month} />}
+      {tab !== "dashboard" && tab !== "expenses" && (
+        <Suspense fallback={<TabFallback />}>
+          {tab === "creditCards" && <CreditCards year={year} month={month} />}
+          {tab === "debts" && <Debts />}
+          {tab === "emi" && <EMI />}
+          {tab === "subscriptions" && <Subscriptions />}
+          {tab === "finances" && <Finances year={year} month={month} />}
+        </Suspense>
+      )}
       {/* Expenses has no nav button — only reachable via a Dashboard chart click (goToMonth). */}
       {tab === "expenses" && (
-        <>
+        <Suspense fallback={<TabFallback />}>
           <AddExpenseForm
             categories={categories}
             onSubmit={async (input) => {
@@ -149,7 +168,7 @@ function App() {
             editable={isCurrentMonth}
             onChanged={refresh}
           />
-        </>
+        </Suspense>
       )}
     </div>
   );

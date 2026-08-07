@@ -9,6 +9,11 @@
   padding: 24px 16px 64px;
 }
 
+.tab-loading {
+  position: relative;
+  min-height: 200px;
+}
+
 header {
   display: flex;
   align-items: center;

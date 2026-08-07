@@ -88,6 +88,24 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
     }
   }
 
+  // Keyboard/menu fallback for reordering, since the drag handle is
+  // aria-hidden and pointer-only — this is the only way to reorder without a
+  // mouse or a working touch drag. `entries` is oldest-first (matching sheet
+  // row order) but displayed reversed (newest first), so "up" in the visual
+  // list means swapping with the *next-higher* row number, and "down" means
+  // the *next-lower* one — same adjacent-swap moveEntry already does for drag.
+  const byRowAsc = [...entries].sort((a, b) => a.row - b.row);
+  function neighborRow(row: number, direction: "up" | "down"): number | null {
+    const idx = byRowAsc.findIndex((e) => e.row === row);
+    if (idx === -1) return null;
+    const targetIdx = direction === "up" ? idx + 1 : idx - 1;
+    return targetIdx >= 0 && targetIdx < byRowAsc.length ? byRowAsc[targetIdx].row : null;
+  }
+  function handleMove(row: number, direction: "up" | "down") {
+    const target = neighborRow(row, direction);
+    if (target != null) handleDrop(row, target);
+  }
+
   // Pointer Events (not the HTML5 drag-and-drop API) so reordering works with
   // touch input — native `draggable`/`ondragstart` never fires on mobile
   // Safari/Chrome, which is why the handle was unresponsive on phones.
@@ -161,6 +179,10 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
               isDragging={draggedRow === entry.row}
               canDrag={canDrag}
               onHandlePointerDown={(e) => handleHandlePointerDown(e, entry.row)}
+              canMoveUp={canDrag && neighborRow(entry.row, "up") != null}
+              canMoveDown={canDrag && neighborRow(entry.row, "down") != null}
+              onMoveUp={() => handleMove(entry.row, "up")}
+              onMoveDown={() => handleMove(entry.row, "down")}
               onCopy={() => handleCopy(entry)}
               onEdit={() => setEditingRow(entry.row)}
               onDelete={() => handleDelete(entry.row)}

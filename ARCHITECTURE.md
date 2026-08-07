@@ -71,7 +71,7 @@ and writes the whole workbook back out.
 | `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
 | `categoryColors.ts` | — | The category ↔ ARGB fill-color map for Expenses rows (category is encoded as cell fill color, not a column). |
 | `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. |
-| `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. |
+| `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
 | `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
 | `creditCardBills.ts` | `CreditCardBills.xlsx` | Per-card bill entries per month (due/paid/dueDate/settled), stored as a JSON array in one cell per month-row (card count isn't fixed). |
 | `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total) and payment recording. |
@@ -102,7 +102,11 @@ Every write goes through `saveWorkbook(workbook, filePath)`:
 1. **Backup once per process run** — before the *first* write to a given file
    in a server run, it's copied to `<DB_DIR>/.backups/<file>.<ISO
    timestamp>.xlsx`. Cheap insurance against a bad edit, given this is
-   irreplaceable financial data with no other backup mechanism.
+   irreplaceable financial data with no other backup mechanism. Pruned down
+   to the most recent `MAX_BACKUPS_PER_FILE` (10) per source file on every
+   new backup — a count-based cap rather than a time cutoff, since a
+   rarely-touched file (e.g. `Debts.xlsx`) shouldn't lose its one and only
+   backup to a 30-day-style expiry it never had a chance to refresh.
 2. **Write to a temp file, then rename over the original** — never writes
    in place, so a crash mid-write can't leave a truncated/corrupt file.
 3. **Locked-file detection** — if the file is open in Excel (rename fails),
@@ -217,6 +221,29 @@ gives every entry.
   tab and the only place that reads across multiple concerns — via the one
   `/api/overview` aggregation endpoint, not multiple parallel fetches to
   each tab's own API.
+- **Code-splitting**: every tab except Dashboard (Expenses, Finances, Debts,
+  Credit Cards, EMI, Subscriptions) is `React.lazy`-loaded, wrapped in a
+  shared `<Suspense>` fallback in `App.tsx`. Dashboard stays eager since it's
+  the default tab — deferring it would just move its download earlier or
+  later without shrinking what a typical session actually loads, and would
+  add a loading flash to the first thing anyone sees. The other six are only
+  ever needed after an explicit tab click, so splitting them trims the
+  initial bundle by whatever they weigh (each one's own chunk is small,
+  1-8KB gzipped) — worth doing, but not the dominant factor in bundle size:
+  most of the ~570KB main chunk is `recharts` (Dashboard's charting library)
+  plus React itself, neither of which can be deferred without hurting the
+  default view.
+- **Reordering** (`RecentEntries.tsx`/`EntryRow.tsx`) is driven by Pointer
+  Events, not the HTML5 Drag and Drop API — the latter never fires on touch
+  input on mobile Safari/Chrome, silently breaking the feature on a phone.
+  The drag handle (`aria-hidden`, since it's a decorative grip icon) listens
+  for `pointerdown`, then tracks `pointermove`/`pointerup` on `window` and
+  hit-tests `document.elementFromPoint` against each row's `data-row`
+  attribute to find the current drop target — `touch-action: none` on the
+  handle stops the browser's own scroll gesture from competing with the
+  drag. The overflow menu's **Move up**/**Move down** items call the same
+  underlying `moveEntry` swap with an adjacent row's number computed
+  client-side, as a keyboard/no-touch-accessible equivalent to dragging.
 
 ## Testing
 

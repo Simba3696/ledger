@@ -330,6 +330,23 @@ async function main() {
       namesAfterDrag.indexOf("E2E Cash Entry Edited") !== -1 && namesAfterDrag.indexOf("E2E Card Entry") !== -1,
     );
 
+    // --- Move up / Move down via the overflow menu — the keyboard/no-touch
+    // fallback for reordering, since the drag handle is aria-hidden and
+    // pointer-only. "E2E Card Entry" is the newest/topmost entry at this
+    // point (the drag above moved it there), so Move up is correctly
+    // disabled for it — start with Move down instead, then reverse with
+    // Move up, and check the display order actually changed each time. ---
+    const namesBeforeMenuMove = await page.locator(".entry-remarks").allInnerTexts();
+    await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Card Entry" }), "Move down");
+    await page.waitForTimeout(400);
+    const namesAfterMoveDown = await page.locator(".entry-remarks").allInnerTexts();
+    check("Move down (menu) changed row order", namesAfterMoveDown.join(",") !== namesBeforeMenuMove.join(","));
+
+    await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Card Entry" }), "Move up");
+    await page.waitForTimeout(400);
+    const namesAfterMoveUp = await page.locator(".entry-remarks").allInnerTexts();
+    check("Move up (menu) reverses Move down", namesAfterMoveUp.join(",") === namesBeforeMenuMove.join(","));
+
     // --- Delete all three test entries (cleanup + verifies delete) ---
     await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" }), "Delete");
     await page.waitForTimeout(400);
@@ -453,6 +470,44 @@ async function main() {
       await page.click('.add-debt-form button:has-text("Add Debt")');
       await page.waitForSelector(`text=${name}`);
     }
+
+    // --- Duplicate-name consolidate-or-new prompt (self-contained: adds and
+    // fully cleans up its own throwaway entries before the rest of this
+    // suite's Debts flow, which assumes starting from an empty list) ---
+    await fillDebtForm("E2E Duplicate", "1000");
+    // Different case on the second entry to also exercise case-insensitive
+    // matching. The global dialog handler above accepts by default, so this
+    // exercises the *consolidate* path — the row keeps the original entry's
+    // name/casing, so wait on the merged amount rather than the typed name.
+    await page.fill('.add-debt-form input[type="text"]', "e2e duplicate");
+    await page.fill('.add-debt-form input[type="number"]', "500");
+    await page.click('.add-debt-form button:has-text("Add Debt")');
+    await page.waitForTimeout(400);
+    check(
+      "Duplicate debt name (dialog accepted) consolidates into one row",
+      (await page.locator(".debt-row", { hasText: "E2E Duplicate" }).count()) === 1 &&
+        (await page.locator(".debt-row", { hasText: "E2E Duplicate" }).innerText()).includes("1,500"),
+    );
+
+    // Swap to a one-shot dismiss handler to exercise the "separate entry" path.
+    page.removeAllListeners("dialog");
+    page.once("dialog", (d) => d.dismiss());
+    await page.fill('.add-debt-form input[type="text"]', "E2E Duplicate");
+    await page.fill('.add-debt-form input[type="number"]', "200");
+    await page.click('.add-debt-form button:has-text("Add Debt")');
+    await page.waitForTimeout(400);
+    page.on("dialog", (d) => d.accept()); // restore the default accept-everything handler
+    check(
+      "Duplicate debt name (dialog dismissed) adds a separate entry instead",
+      (await page.locator(".debt-row", { hasText: "E2E Duplicate" }).count()) === 2,
+    );
+
+    const dupeRows = page.locator(".debt-row", { hasText: "E2E Duplicate" });
+    while ((await dupeRows.count()) > 0) {
+      await clickMenuItem(dupeRows.first(), "Delete");
+      await page.waitForTimeout(400);
+    }
+    check("Debts back to empty after duplicate-name cleanup", (await page.locator(".debt-row").count()) === 0);
 
     await fillDebtForm("E2E Umma", "17700"); // positive = you owe
     check("Adding a debt shows it in the list", (await page.locator(".debt-row", { hasText: "E2E Umma" }).count()) === 1);
