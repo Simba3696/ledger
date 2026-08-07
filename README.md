@@ -71,10 +71,10 @@ weeks, above a yearly spending chart. Supports light and dark themes:
 convention the underlying spreadsheets already used), mark it cash or card,
 and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 
-| | Filling out the form | Saved, showing in the month's list |
+| | Light | Dark |
 |---|---|---|
-| Light | ![Add Expense form filled in, light theme](docs/screenshots/add-expense.png) | ![New entry appears in the list, light theme](docs/screenshots/recent-entries.png) |
-| Dark | ![Add Expense form filled in, dark theme](docs/screenshots/add-expense-dark.png) | ![New entry appears in the list, dark theme](docs/screenshots/recent-entries-dark.png) |
+| Filling out the form | ![Add Expense form filled in, light theme](docs/screenshots/add-expense.png) | ![Add Expense form filled in, dark theme](docs/screenshots/add-expense-dark.png) |
+| Saved, showing in the month's list | ![New entry appears in the list, light theme](docs/screenshots/recent-entries.png) | ![New entry appears in the list, dark theme](docs/screenshots/recent-entries-dark.png) |
 
 **Finances** — Salary/Other Income, and a delta-based Current Savings
 editor (type a deposit or withdrawal, not the running total — see
