@@ -466,6 +466,26 @@ Either way, to stop everything:
 npm run stop
 ```
 
+### Running a second checkout alongside an existing one
+
+Ports are overridable, for exactly this case: a separate clone/branch/`git
+worktree` you want to run at the same time as another checkout without the
+two colliding — e.g. experimenting on a feature branch while a stable branch
+stays running as the "real" instance elsewhere. Create `server/.env` with
+`PORT=4100` (or any free port), and `client/.env` with matching
+`VITE_DEV_PORT=5273` and `VITE_API_PROXY_TARGET=http://localhost:4100` (must
+point at the same value as `PORT` above, so the frontend's `/api` calls
+reach *this* checkout's server, not the other one's). Both `.env` files are
+gitignored — local to one checkout, never shared or committed.
+
+This matters specifically because `predev`/`prestart` run
+`scripts/kill-ports.js` automatically, which force-kills whatever's
+currently listening on the dev ports before starting — without an override,
+starting a second checkout would kill the *first* checkout's server, not
+just fail to bind. `kill-ports.js` reads the same `PORT`/`VITE_DEV_PORT`
+values from `server/.env`/`client/.env`, so once both are set it only ever
+targets its own checkout's ports.
+
 ## Remote access (Tailscale)
 
 Optional, and **Windows-only** (Scheduled Task + PowerShell firewall
