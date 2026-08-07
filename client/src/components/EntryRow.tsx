@@ -1,11 +1,11 @@
 import type { PointerEvent } from "react";
 import type { LedgerEntry } from "../api";
-import { CATEGORY_SWATCH } from "../categoryColors";
 import { OverflowMenu } from "./OverflowMenu";
 
 interface Props {
   entry: LedgerEntry;
   label: string;
+  swatch: { bg: string; fg: string } | null;
   amountText: string;
   editable: boolean;
   busy: boolean;
@@ -28,6 +28,7 @@ interface Props {
 export function EntryRow({
   entry,
   label,
+  swatch,
   amountText,
   editable,
   busy,
@@ -43,8 +44,6 @@ export function EntryRow({
   onEdit,
   onDelete,
 }: Props) {
-  const swatch = entry.category ? CATEGORY_SWATCH[entry.category] : null;
-
   return (
     <li
       className={`entry-row${isDragOver ? " drag-over" : ""}${isDragging ? " dragging" : ""}`}

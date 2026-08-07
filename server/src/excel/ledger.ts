@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { Category, CATEGORY_COLORS, colorToCategory } from "./categoryColors.js";
+import { Category, categoryArgb, colorToCategory, loadCategoryConfig } from "./categoryColors.js";
 import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
 
 export { DB_DIR, LedgerError };
@@ -204,6 +204,7 @@ export interface LedgerEntry {
 export async function listMonth(year: number, month: number): Promise<LedgerEntry[]> {
   const workbook = await loadWorkbook(year);
   const sheet = getSheet(workbook, year, month);
+  const categories = await loadCategoryConfig();
 
   const entries: LedgerEntry[] = [];
   sheet.eachRow((row, rowNumber) => {
@@ -225,7 +226,7 @@ export async function listMonth(year: number, month: number): Promise<LedgerEntr
       remarks,
       isCard: ccText.length > 0,
       cardNote: ccText.length > 0 ? ccText : null,
-      category: colorToCategory(argb),
+      category: colorToCategory(argb, categories),
     });
   });
 
@@ -234,10 +235,10 @@ export async function listMonth(year: number, month: number): Promise<LedgerEntr
 
 export interface MonthSummary {
   month: number; // 1-12
-  food: number;
-  transportation: number;
-  rent: number;
-  other: number;
+  /** Keyed by category id — always has every currently-configured category
+   * present (0 if unused that month), same "always present" shape the
+   * fixed-field version used to have, just with a dynamic key set. */
+  categoryTotals: Record<string, number>;
   total: number;
 }
 
@@ -247,10 +248,12 @@ export interface MonthSummary {
  * (e.g. 2018 only has Sep-Dec) degrades to a zero row instead of failing
  * the whole year. */
 export async function yearSummary(year: number): Promise<MonthSummary[]> {
+  const categories = await loadCategoryConfig();
+  const emptyTotals = () => Object.fromEntries(categories.map((c) => [c.id, 0]));
   const months: MonthSummary[] = [];
 
   for (let month = 1; month <= 12; month++) {
-    const summary: MonthSummary = { month, food: 0, transportation: 0, rent: 0, other: 0, total: 0 };
+    const summary: MonthSummary = { month, categoryTotals: emptyTotals(), total: 0 };
 
     let entries: LedgerEntry[];
     try {
@@ -261,7 +264,7 @@ export async function yearSummary(year: number): Promise<MonthSummary[]> {
     }
 
     for (const entry of entries) {
-      if (entry.category) summary[entry.category] += entry.amount;
+      if (entry.category) summary.categoryTotals[entry.category] = (summary.categoryTotals[entry.category] ?? 0) + entry.amount;
       summary.total += entry.amount;
     }
     months.push(summary);
@@ -342,7 +345,9 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
 
   if (!(amount > 0)) throw new LedgerError("Amount must be a positive number", 400);
   if (!remarks || !remarks.trim()) throw new LedgerError("Remarks are required", 400);
-  if (!CATEGORY_COLORS[category]) throw new LedgerError(`Unknown category: ${category}`, 400);
+  const categoryConfig = (await loadCategoryConfig()).find((c) => c.id === category);
+  if (!categoryConfig) throw new LedgerError(`Unknown category: ${category}`, 400);
+  const argb = categoryArgb(categoryConfig);
 
   const filePath = workbookPath(year);
   const workbook = await loadOrCreateWorkbook(year);
@@ -358,18 +363,18 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   detachStyle(cell1);
   cell1.value = -Math.abs(amount);
   cell1.numFmt = numFmt;
-  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
   cell1.border = { ...borders.a, bottom: borders.closingBottom };
   cell1.alignment = AMOUNT_ALIGNMENT;
 
   const cell2 = row.getCell(2);
   detachStyle(cell2);
   cell2.value = remarks.trim();
-  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
   cell2.border = { ...borders.b, bottom: borders.closingBottom };
   cell2.alignment = REMARKS_ALIGNMENT;
 
-  applyCcCell(row.getCell(3), isCard, { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } }, borders.c);
+  applyCcCell(row.getCell(3), isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, borders.c);
   row.commit();
 
   // The row we just displaced as "last" needs its closing bottom border
@@ -412,7 +417,9 @@ export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry>
 
   if (!(amount > 0)) throw new LedgerError("Amount must be a positive number", 400);
   if (!remarks || !remarks.trim()) throw new LedgerError("Remarks are required", 400);
-  if (!CATEGORY_COLORS[category]) throw new LedgerError(`Unknown category: ${category}`, 400);
+  const categoryConfig = (await loadCategoryConfig()).find((c) => c.id === category);
+  if (!categoryConfig) throw new LedgerError(`Unknown category: ${category}`, 400);
+  const argb = categoryArgb(categoryConfig);
 
   const filePath = workbookPath(year);
   const workbook = await loadWorkbook(year);
@@ -428,17 +435,17 @@ export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry>
   const cell1 = row.getCell(1);
   detachStyle(cell1); // preserves cell1's existing border (untouched by design) while breaking any shared reference
   cell1.value = -Math.abs(amount);
-  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
   cell1.alignment = AMOUNT_ALIGNMENT;
 
   const cell2 = row.getCell(2);
   detachStyle(cell2);
   cell2.value = remarks.trim();
-  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } };
+  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
   cell2.alignment = REMARKS_ALIGNMENT;
 
   const cell3 = row.getCell(3);
-  applyCcCell(cell3, isCard, { type: "pattern", pattern: "solid", fgColor: { argb: CATEGORY_COLORS[category] } }, cloneBorder(BORDER_FALLBACK.c));
+  applyCcCell(cell3, isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, cloneBorder(BORDER_FALLBACK.c));
   row.commit();
 
   await saveWorkbook(workbook, filePath);

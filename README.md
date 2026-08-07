@@ -15,6 +15,7 @@ covers what each part of the app does and why, domain-wise.
 - [How it works](#how-it-works)
 - [Project layout](#project-layout)
 - [Setup](#setup)
+- [Configuring categories](#configuring-categories)
 - [Running](#running)
 - [Remote access (Tailscale)](#remote-access-tailscale) — Windows-only, optional
 - [Testing](#testing)
@@ -80,12 +81,13 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 - Each month sheet has three columns: **Amount** (negative, ₹-formatted),
   **Remarks**, and an optional **CC** marker (blank = cash, `"CC"` = paid by
   credit card).
-- **Category isn't a column — it's the row's cell fill color**, matching the
-  scheme already used in the sheets:
-  - Yellow (`FFFFFF00`) = Food
-  - Blue (`FF00B0F0`) = Transportation
-  - Orange (`FFFFC000`) = Rent
-  - Red (`FFFF0000`) = Other / non-recurring
+- **Category isn't a column — it's the row's cell fill color.** The default
+  4 categories match the scheme already used in the sheets (Yellow = Food,
+  Blue = Transportation, Orange = Rent, Red = Other/non-recurring), but the
+  category set itself is **configurable**, not hardcoded — see
+  [Configuring categories](#configuring-categories) below. This is what
+  makes the app usable for a spreadsheet with a *similar*, not identical,
+  pre-existing color-coding scheme, rather than only this exact one.
 - There's no date column — rows are just chronological within a month sheet.
   New entries append to the bottom of the target month's sheet.
 - The app only ever touches columns A–C. Anything else on a sheet (e.g. old
@@ -359,7 +361,9 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 
 ```
 server/   Express API (TypeScript). All Excel reading/writing lives in
-          server/src/excel/ — categoryColors.ts (the color↔category map),
+          server/src/excel/ — categoryColors.ts (loads/creates
+          categories.json — see Configuring categories above — and derives
+          a readable text color for any category that doesn't specify one),
           workbookIO.ts (shared safe-write: backup + temp-file-then-rename,
           used by every file below), dateMath.ts (shared month/day
           arithmetic for EMI's decay and Subscriptions' renewal-advance),
@@ -428,15 +432,55 @@ Windows-specific, and it's entirely optional.
    plain environment variable instead of a `.env` file if you'd rather set
    it that way.
 
-   **This isn't a generic Excel importer.** The app only works against
-   `Expenses (YYYY).xlsx` files that already follow the exact layout
-   described in [How it works](#how-it-works) above — columns A–C, category
-   encoded as the cell's fill color, and so on. If your own spreadsheets
-   don't already look like that, either reshape a copy to match before
-   pointing `LEDGER_DB_DIR` at it, or treat this project as a reference for
-   the same *approach* applied to your own format instead — see
-   [Why this exists](#why-this-exists) and
+   **This still isn't a fully generic Excel importer.** The app only works
+   against `Expenses (YYYY).xlsx` files that already follow the column
+   layout described in [How it works](#how-it-works) above — Amount in
+   column A, Remarks in B, an optional CC marker in C. The *category set*
+   itself is configurable (see [Configuring categories](#configuring-categories)
+   below), so a spreadsheet using a similar color-coding scheme with
+   different categories/colors can now point `LEDGER_DB_DIR` at it directly
+   — but the column positions themselves are still fixed. If your own
+   spreadsheet's columns are laid out differently, either reshape a copy to
+   match before pointing `LEDGER_DB_DIR` at it, or treat this project as a
+   reference for the same *approach* applied to your own layout instead —
+   see [Why this exists](#why-this-exists) and
    [ARCHITECTURE.md](ARCHITECTURE.md) for what would need to change.
+
+## Configuring categories
+
+The default 4 categories (Food/Transportation/Rent/Other, matching the
+colors described in [How it works](#how-it-works)) are just that — a
+default, not a hardcoded limit. Categories live in `<LEDGER_DB_DIR>/categories.json`,
+auto-created with those 4 defaults the first time the server starts against
+a given data directory. Edit that file to add, remove, rename, or recolor
+categories for your own spreadsheet's scheme; changes take effect on the
+next request, no restart needed.
+
+Each entry:
+
+```json
+{ "id": "food", "label": "Food", "bg": "#FFFF00", "fg": "#3d3d00" }
+```
+
+- `id` — stable key stored in the app's own data (not in the `.xlsx` files
+  themselves, which only ever store the color) — avoid changing an existing
+  category's `id` once you've used it, or entries already categorized under
+  the old id will show as uncategorized.
+- `label` — display name shown in the picker, entry list, and dashboard
+  chart legend.
+- `bg` — the cell fill color, as plain CSS hex (`#RRGGBB`), not Excel's ARGB
+  format — the app converts internally wherever it writes to a workbook.
+- `fg` — text color shown on that background. **Optional** — if omitted,
+  the app computes a readable one automatically (darkens the same hue, or
+  falls back to whichever of black/white contrasts better for an
+  already-dark/saturated background) — so a hand-written entry only ever
+  needs `id`/`label`/`bg`.
+
+Adding a category is additive and safe — existing entries in your `.xlsx`
+files keep whatever color they already have regardless of what's in
+`categories.json` at the moment; a color that doesn't match any configured
+category's `bg` just reads back as "Uncategorized" in the app (the
+underlying cell and its fill color are untouched either way).
 
 ## Running
 
@@ -580,7 +624,7 @@ are just for managing/opening it conveniently once it's already running.
 
 Two suites, covering different layers:
 
-- **`npm test`** — vitest, nine files. `server/test/ledger.test.ts` covers
+- **`npm test`** — vitest, ten files. `server/test/ledger.test.ts` covers
   `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
   synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
   (never real data — nothing sensitive is committed), including a couple of
@@ -628,7 +672,16 @@ Two suites, covering different layers:
   `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
   one backup per file per process run (not one per save), pruning down to
   the most recent 10 per file, and that pruning one file's backups never
-  touches another file's.
+  touches another file's. `server/test/categoryColors.test.ts` covers
+  `categories.json`'s read-or-create behavior (auto-creates with the 4
+  defaults on first read, returns a saved custom config afterward),
+  `deriveForegroundColor`'s WCAG contrast math against a representative
+  range of backgrounds (verified independently, not just trusting the
+  implementation to grade its own homework) including the specific case
+  that motivated picking whichever of black/white contrasts better rather
+  than hardcoding white (pure red only reaches ~4:1 against white, short of
+  the 4.5:1 AA bar, but ~5.25:1 against black), and that an explicit `fg` in
+  the file is preserved rather than overwritten by the derivation.
   Fast (a few seconds), no browser or dev server needed — this is the one to
   run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
@@ -636,7 +689,11 @@ Two suites, covering different layers:
   a full year (so switching months never legitimately 404s), starts the real
   dev server against it, and drives an actual browser through the full app:
   Dashboard-is-default, chart click-through navigation (main chart and the
-  per-category mini-charts, including their synced hover), month/year
+  per-category mini-charts, including their synced hover), a custom 5th
+  category seeded into categories.json rendering correctly end to end (chip
+  color, saved entry's color, its own dashboard mini-chart — proof
+  categories.json actually drives the app, not just that the shipped
+  defaults still work), month/year
   selects, add (cash + card), edit, drag-reorder, Move up/Move down via the
   overflow menu, delete, Finances entry + persistence (including the
   savings delta editor's live total), Debts add/edit/delete/sort (including

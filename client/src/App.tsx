@@ -137,7 +137,9 @@ function App() {
         </button>
       </nav>
 
-      {tab === "dashboard" && <Dashboard onSelectMonth={goToMonth} onSelectUpcomingItem={goToUpcomingItem} />}
+      {tab === "dashboard" && (
+        <Dashboard categories={categories} onSelectMonth={goToMonth} onSelectUpcomingItem={goToUpcomingItem} />
+      )}
       {tab !== "dashboard" && tab !== "expenses" && (
         <Suspense fallback={<TabFallback />}>
           {tab === "creditCards" && <CreditCards year={year} month={month} />}

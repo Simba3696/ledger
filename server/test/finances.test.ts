@@ -2,15 +2,17 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { buildFixtureWorkbook } from "./fixtures.js";
 
 // Same pattern as ledger.test.ts: LEDGER_DB_DIR must be set before finances.ts's
 // (and ledger.ts's) top-level DB_DIR evaluates, so both are imported dynamically
 // after the env var is set rather than via a static top-level import.
+// fixtures.js transitively depends on DB_DIR too now (via categoryColors.ts),
+// so it needs the same dynamic-import treatment.
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-finance-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
 const finances = await import("../src/excel/finances.js");
+const { buildFixtureWorkbook } = await import("./fixtures.js");
 
 function workbookPath(year: number): string {
   return path.join(scratchDir, `Expenses (${year}).xlsx`);

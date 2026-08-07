@@ -26,6 +26,10 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
 
   const labelFor = (id: LedgerEntry["category"]) =>
     categories.find((c) => c.id === id)?.label ?? "Uncategorized";
+  const swatchFor = (id: LedgerEntry["category"]): { bg: string; fg: string } | null => {
+    const match = categories.find((c) => c.id === id);
+    return match ? { bg: match.bg, fg: match.fg } : null;
+  };
 
   const total = entries.reduce((sum, e) => sum + e.amount, 0);
   const canDrag = editable && busyRow === null;
@@ -172,6 +176,7 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
               key={entry.row}
               entry={entry}
               label={labelFor(entry.category)}
+              swatch={swatchFor(entry.category)}
               amountText={rupee.format(entry.amount)}
               editable={editable}
               busy={busyRow === entry.row}

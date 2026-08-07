@@ -1,8 +1,10 @@
-export type Category = "food" | "transportation" | "rent" | "other";
+export type Category = string;
 
 export interface CategoryOption {
   id: Category;
   label: string;
+  bg: string;
+  fg: string;
 }
 
 export interface LedgerEntry {
@@ -32,10 +34,7 @@ export interface EntryEdits {
 
 export interface MonthSummary {
   month: number; // 1-12
-  food: number;
-  transportation: number;
-  rent: number;
-  other: number;
+  categoryTotals: Record<string, number>;
   total: number;
 }
 

@@ -10,8 +10,7 @@ import {
   CartesianGrid,
   type MouseHandlerDataParam,
 } from "recharts";
-import { getYearSummary, type MonthSummary, type UpcomingItem } from "../api";
-import { CATEGORY_SWATCH } from "../categoryColors";
+import { getYearSummary, type CategoryOption, type MonthSummary, type UpcomingItem } from "../api";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { DashboardOverview } from "./DashboardOverview";
@@ -23,13 +22,13 @@ const MONTH_ABBR = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+// Keyed by category label (not id) since that's what's shown in the chart's
+// tooltip/legend — assumes labels are unique, same assumption the picker/
+// entry-list swatches already make.
 interface ChartRow {
   name: string;
   month: number;
-  Food: number;
-  Transportation: number;
-  Rent: number;
-  Other: number;
+  [categoryLabel: string]: number | string;
 }
 
 // Shared across every BarChart below so hovering a month in any one of them
@@ -37,13 +36,6 @@ interface ChartRow {
 // the others — they all plot the same chartData in the same month order, so
 // Recharts' default index-based sync lines them up correctly.
 const DASHBOARD_SYNC_ID = "dashboard-charts";
-
-const CATEGORY_CHARTS = [
-  { dataKey: "Food", color: CATEGORY_SWATCH.food.bg },
-  { dataKey: "Transportation", color: CATEGORY_SWATCH.transportation.bg },
-  { dataKey: "Rent", color: CATEGORY_SWATCH.rent.bg },
-  { dataKey: "Other", color: CATEGORY_SWATCH.other.bg },
-] as const;
 
 /** One category's monthly totals in isolation — each auto-scales to its own
  * range (rather than sharing the main chart's combined scale), so a lower-
@@ -59,7 +51,7 @@ function CategoryMiniChart({
   onBarClick,
 }: {
   data: ChartRow[];
-  dataKey: (typeof CATEGORY_CHARTS)[number]["dataKey"];
+  dataKey: string;
   color: string;
   onBarClick: (state: MouseHandlerDataParam) => void;
 }) {
@@ -83,11 +75,12 @@ function CategoryMiniChart({
 }
 
 interface Props {
+  categories: CategoryOption[];
   onSelectMonth: (year: number, month: number) => void;
   onSelectUpcomingItem: (item: UpcomingItem) => void;
 }
 
-export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
+export function Dashboard({ categories, onSelectMonth, onSelectUpcomingItem }: Props) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [data, setData] = useState<MonthSummary[]>([]);
@@ -103,13 +96,10 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
       .finally(() => setLoading(false));
   }, [year]);
 
-  const chartData = data.map((m) => ({
+  const chartData: ChartRow[] = data.map((m) => ({
     name: MONTH_ABBR[m.month - 1],
     month: m.month,
-    Food: m.food,
-    Transportation: m.transportation,
-    Rent: m.rent,
-    Other: m.other,
+    ...Object.fromEntries(categories.map((c) => [c.label, m.categoryTotals[c.id] ?? 0])),
   }));
 
   const yearTotal = data.reduce((sum, m) => sum + m.total, 0);
@@ -153,29 +143,24 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
                   contentStyle={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}
                 />
                 <Legend />
-                <Bar dataKey="Food" stackId="category" fill={CATEGORY_SWATCH.food.bg} className="dashboard-bar" />
-                <Bar
-                  dataKey="Transportation"
-                  stackId="category"
-                  fill={CATEGORY_SWATCH.transportation.bg}
-                  className="dashboard-bar"
-                />
-                <Bar dataKey="Rent" stackId="category" fill={CATEGORY_SWATCH.rent.bg} className="dashboard-bar" />
-                <Bar
-                  dataKey="Other"
-                  stackId="category"
-                  fill={CATEGORY_SWATCH.other.bg}
-                  radius={[4, 4, 0, 0]}
-                  className="dashboard-bar"
-                />
+                {categories.map((c, i) => (
+                  <Bar
+                    key={c.id}
+                    dataKey={c.label}
+                    stackId="category"
+                    fill={c.bg}
+                    radius={i === categories.length - 1 ? [4, 4, 0, 0] : undefined}
+                    className="dashboard-bar"
+                  />
+                ))}
               </BarChart>
             </ResponsiveContainer>
           </div>
           <p className="dashboard-hint">Click a month to view or add entries for it.</p>
 
           <div className="category-charts">
-            {CATEGORY_CHARTS.map((c) => (
-              <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} onBarClick={handleBarClick} />
+            {categories.map((c) => (
+              <CategoryMiniChart key={c.id} data={chartData} dataKey={c.label} color={c.bg} onBarClick={handleBarClick} />
             ))}
           </div>
         </div>

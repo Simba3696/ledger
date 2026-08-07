@@ -3,15 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import ExcelJS from "exceljs";
-import { buildFixtureWorkbook } from "./fixtures.js";
 
 // LEDGER_DB_DIR must be set before ledger.ts's top-level `const DB_DIR = ...`
 // evaluates, so the module is imported dynamically after the env var is set
-// rather than via a static top-level import.
+// rather than via a static top-level import. fixtures.js now transitively
+// depends on DB_DIR too (via categoryColors.ts), so it needs the same
+// treatment — a static import here would resolve DB_DIR against whatever
+// LEDGER_DB_DIR happened to be at process start (not this file's scratch
+// dir), and race other test files/workers over the same wrong shared path.
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
 const ledger = await import("../src/excel/ledger.js");
+const { buildFixtureWorkbook } = await import("./fixtures.js");
 
 function workbookPath(year: number): string {
   return path.join(scratchDir, `Expenses (${year}).xlsx`);
@@ -392,11 +396,19 @@ describe("yearSummary", () => {
   it("aggregates category totals per month", async () => {
     const summary = await ledger.yearSummary(YEAR);
     expect(summary).toHaveLength(12);
-    expect(summary[0]).toMatchObject({ month: 1, food: 150, transportation: 30, rent: 0, other: 0, total: 180 });
+    expect(summary[0]).toMatchObject({
+      month: 1,
+      categoryTotals: { food: 150, transportation: 30, rent: 0, other: 0 },
+      total: 180,
+    });
   });
 
   it("degrades to a zero row for a month with no sheet, instead of throwing", async () => {
     const summary = await ledger.yearSummary(YEAR);
-    expect(summary[1]).toMatchObject({ month: 2, food: 0, transportation: 0, rent: 0, other: 0, total: 0 });
+    expect(summary[1]).toMatchObject({
+      month: 2,
+      categoryTotals: { food: 0, transportation: 0, rent: 0, other: 0 },
+      total: 0,
+    });
   });
 });

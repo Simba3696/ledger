@@ -69,7 +69,7 @@ and writes the whole workbook back out.
 |---|---|---|
 | `workbookIO.ts` | — | Shared safe write path (see below) + `DB_DIR` resolution. Every other module imports `saveWorkbook`/`LedgerError`/`DB_DIR` from here — nothing else touches `fs`/`ExcelJS.writeFile` directly. |
 | `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
-| `categoryColors.ts` | — | The category ↔ ARGB fill-color map for Expenses rows (category is encoded as cell fill color, not a column). |
+| `categoryColors.ts` | — | Loads/creates `<DB_DIR>/categories.json` (`loadCategoryConfig`) — the configurable category id/label/color set Expenses rows are encoded against (category is a cell's fill color, not a column; see README's **Configuring categories**). Ships 4 defaults matching the app's original hardcoded scheme, auto-created on first read against a given `DB_DIR` so an unconfigured deployment behaves identically to before this was configurable. Also derives a WCAG-AA-readable text color for any category that doesn't specify one (`deriveForegroundColor`). |
 | `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. |
 | `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
 | `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
@@ -156,7 +156,7 @@ is a local/Tailscale-only single-user tool.
 
 | Method | Path | Module fn |
 |---|---|---|
-| GET | `/categories` | — (static list) |
+| GET | `/categories` | `categoryColors.loadCategoryConfig` |
 | GET | `/months/:year/:month` | `ledger.listMonth` |
 | GET | `/summary/:year` | `ledger.yearSummary` |
 | POST | `/entries` | `ledger.appendEntry` |
@@ -302,12 +302,14 @@ server/
   test/              vitest suite, one file per excel module
 client/
   src/
-    api.ts           Every backend call, typed — the only fetch() boundary
+    api.ts           Every backend call, typed — the only fetch() boundary.
+                     CategoryOption now carries bg/fg from GET /categories
+                     directly — no separate client-side color map to keep
+                     in sync with the server's by hand (there used to be one).
     App.tsx           Tab state + top-level layout
     components/        One directory-flat set of .tsx + co-located .css
-    format.ts, id.ts, categoryColors.ts, constants.ts (small shared
-      utilities: rupee formatting, client-generated row keys, the category
-      swatch map mirrored from the server, EARLIEST_YEAR, etc.)
+    format.ts, id.ts, constants.ts (small shared utilities: rupee
+      formatting, client-generated row keys, EARLIEST_YEAR, etc.)
 e2e/
   regression.ts      Full-stack Playwright script (see Testing above)
 scripts/

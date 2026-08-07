@@ -1,6 +1,6 @@
 import { Router, type ErrorRequestHandler } from "express";
 import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry, yearSummary } from "./excel/ledger.js";
-import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
+import { loadCategoryConfig } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
@@ -16,8 +16,12 @@ import { dashboardOverview } from "./excel/overview.js";
 
 export const router = Router();
 
-router.get("/categories", (_req, res) => {
-  res.json(CATEGORIES.map((id) => ({ id, label: CATEGORY_LABELS[id] })));
+router.get("/categories", async (_req, res, next) => {
+  try {
+    res.json(await loadCategoryConfig());
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get("/months/:year/:month", async (req, res, next) => {

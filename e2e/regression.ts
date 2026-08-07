@@ -14,10 +14,31 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { buildFixtureWorkbook } from "../server/test/fixtures.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
+
+// Same minimal .env reader as scripts/kill-ports.js, for the same reason:
+// this checkout's server/.env / client/.env may override the default dev
+// ports (e.g. to run alongside another checkout without colliding) — the
+// dev server this script spawns picks that up automatically via its own
+// dotenv/vite loading, so this script must read the same values itself or
+// it'll wait on the wrong port forever (or worse, silently fall back to
+// whatever's actually on 4000, which could be a *different* checkout's
+// live server entirely).
+function readEnvFile(filePath: string): Record<string, string> {
+  const vars: Record<string, string> = {};
+  if (!fs.existsSync(filePath)) return vars;
+  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
+    if (match) vars[match[1]] = match[2].replace(/^["']|["']$/g, "");
+  }
+  return vars;
+}
+const serverEnv = readEnvFile(path.join(ROOT, "server", ".env"));
+const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
+const SERVER_PORT = Number(serverEnv.PORT) || 4000;
+const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
 
 const results: { label: string; ok: boolean }[] = [];
 function check(label: string, ok: boolean) {
@@ -52,6 +73,27 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 async function main() {
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-e2e-"));
   console.log("Scratch data dir:", scratchDir);
+
+  // fixtures.js transitively reads DB_DIR (via categoryColors.ts's
+  // categories.json read-or-create) — set this script's own LEDGER_DB_DIR
+  // and import fixtures.js dynamically *after*, so buildFixtureWorkbook's
+  // categories.json write lands in the scratch dir the spawned server below
+  // also uses, not the real repo db/ folder (a static top-level import would
+  // have resolved DB_DIR before scratchDir even existed).
+  process.env.LEDGER_DB_DIR = scratchDir;
+  const { buildFixtureWorkbook } = await import("../server/test/fixtures.js");
+  const { DEFAULT_CATEGORIES } = await import("../server/src/excel/categoryColors.js");
+
+  // Seed a custom 5th category alongside the defaults — proves
+  // categories.json actually drives the running app end to end, not just
+  // that the shipped defaults still work (every other check in this file
+  // only ever exercises those). fg is deliberately omitted so this also
+  // exercises the server's auto-derivation path for a category that doesn't
+  // specify one, not just the explicit-fg default entries.
+  fs.writeFileSync(
+    path.join(scratchDir, "categories.json"),
+    JSON.stringify([...DEFAULT_CATEGORIES, { id: "health", label: "Health", bg: "#8B5CF6" }]),
+  );
 
   const now = new Date();
   const year = now.getFullYear();
@@ -95,8 +137,8 @@ async function main() {
   const consoleErrors: string[] = [];
 
   try {
-    await waitForServer("http://localhost:4000/api/categories", 30000);
-    await waitForServer("http://localhost:5173", 30000);
+    await waitForServer(`http://localhost:${SERVER_PORT}/api/categories`, 30000);
+    await waitForServer(`http://localhost:${CLIENT_PORT}`, 30000);
 
     const browser = await chromium.launch();
     const page = await browser.newPage();
@@ -117,7 +159,7 @@ async function main() {
       await page.waitForSelector(".loading-overlay", { state: "detached" });
     }
 
-    await page.goto("http://localhost:5173", { waitUntil: "networkidle" });
+    await page.goto(`http://localhost:${CLIENT_PORT}`, { waitUntil: "networkidle" });
     await waitForDashboardData();
 
     // --- Dashboard defaults + click-through navigation ---
@@ -240,6 +282,51 @@ async function main() {
       (await page.locator(".month-picker select").nth(1).inputValue()) === String(year),
     );
     check("Seeded entries loaded", (await page.locator(".entry-row").count()) === 2);
+
+    // --- Custom category (configurable categories) ---
+    // Proves categories.json actually drives the UI end to end, not just
+    // that the default 4 still work (every other check in this file only
+    // ever exercises the shipped defaults, which would keep passing even if
+    // the whole config-loading mechanism were silently broken).
+    // #8B5CF6 == rgb(139, 92, 246) — checked via computed style rather than
+    // the raw style attribute string, since Chromium normalizes an inline
+    // hex color to rgb(...) when it reflects the attribute back, so a
+    // substring match against "#8b5cf6" never matches even when correct.
+    const HEALTH_BG = "rgb(139, 92, 246)";
+    check(
+      "Custom category chip renders with its configured color",
+      (await page.locator('button.category-chip:has-text("Health")').evaluate((el) => getComputedStyle(el).backgroundColor)) ===
+        HEALTH_BG,
+    );
+    const beforeCustomCount = await page.locator(".entry-row").count();
+    await page.fill('input[type="number"]', "15");
+    await page.fill('input[type="text"]', "E2E Custom Category Entry");
+    await page.click('button.category-chip:has-text("Health")');
+    await page.click('button.submit-btn:has-text("Add Expense")');
+    await page.waitForSelector("text=E2E Custom Category Entry");
+    check(
+      "Custom category entry saved and rendered with its configured color",
+      (await page
+        .locator('.entry-row:has-text("E2E Custom Category Entry")')
+        .evaluate((el) => getComputedStyle(el).backgroundColor)) === HEALTH_BG &&
+        (await page.locator(".entry-row").count()) === beforeCustomCount + 1,
+    );
+
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    check(
+      "Dashboard renders a mini-chart for the custom category",
+      (await page.locator('.category-chart:has-text("Health")').count()) === 1,
+    );
+
+    // Clean up (via the same chart click-through Expenses always requires)
+    // so row-count assumptions in the rest of this file, which predate this
+    // section, still hold.
+    await clickChartMonth(monthIndex);
+    await page.waitForSelector(".add-expense-form");
+    await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Custom Category Entry" }), "Delete");
+    await page.waitForTimeout(400);
+    check("Custom category entry cleaned up", (await page.locator(".entry-row").count()) === beforeCustomCount);
 
     // --- Month/year selects (shared YearSelect component) ---
     const otherMonthValue = String(((monthIndex + 1) % 12) + 1);
