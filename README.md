@@ -76,6 +76,42 @@ and it's appended straight to the real `Expenses (YYYY).xlsx` file:
 | Light | ![Add Expense form filled in, light theme](docs/screenshots/add-expense.png) | ![New entry appears in the list, light theme](docs/screenshots/recent-entries.png) |
 | Dark | ![Add Expense form filled in, dark theme](docs/screenshots/add-expense-dark.png) | ![New entry appears in the list, dark theme](docs/screenshots/recent-entries-dark.png) |
 
+**Finances** — Salary/Other Income, and a delta-based Current Savings
+editor (type a deposit or withdrawal, not the running total — see
+[How it works](#how-it-works)):
+
+| Light | Dark |
+|---|---|
+| ![Finances tab, light theme](docs/screenshots/finances.png) | ![Finances tab, dark theme](docs/screenshots/finances-dark.png) |
+
+**Debts** — a sortable flat list of who owes whom, colored red/green by
+whether it's money you owe or money owed to you:
+
+| Light | Dark |
+|---|---|
+| ![Debts tab, light theme](docs/screenshots/debts.png) | ![Debts tab, dark theme](docs/screenshots/debts-dark.png) |
+
+**Credit Cards** — per-card monthly bills with a Settled checkbox, plus
+month and year-to-date totals:
+
+| Light | Dark |
+|---|---|
+| ![Credit Cards tab, light theme](docs/screenshots/credit-cards.png) | ![Credit Cards tab, dark theme](docs/screenshots/credit-cards-dark.png) |
+
+**EMI** — active loans with an auto-decaying Remaining balance (no manual
+monthly upkeep) and an estimated or bank-stated payoff date:
+
+| Light | Dark |
+|---|---|
+| ![EMI tab, light theme](docs/screenshots/emi.png) | ![EMI tab, dark theme](docs/screenshots/emi-dark.png) |
+
+**Subscriptions** — recurring services with a renewal date that
+auto-advances forward to the next real cycle, never silently going stale:
+
+| Light | Dark |
+|---|---|
+| ![Subscriptions tab, light theme](docs/screenshots/subscriptions.png) | ![Subscriptions tab, dark theme](docs/screenshots/subscriptions-dark.png) |
+
 ## How it works
 
 - Each month sheet has three columns: **Amount** (negative, ₹-formatted),
