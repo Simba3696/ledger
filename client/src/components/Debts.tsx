@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { addDebt, deleteDebt, getDebts, type DebtEntry } from "../api";
+import { addDebt, deleteDebt, getDebts, updateDebt, type DebtEntry } from "../api";
 import { DebtRow } from "./DebtRow";
 import { EditDebtRow } from "./EditDebtRow";
 import { LoadingOverlay } from "./LoadingOverlay";
@@ -84,10 +84,29 @@ export function Debts() {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!canAdd) return;
+    const trimmedName = name.trim();
+    const enteredAmount = Number(amount);
+
+    // Same name as an existing entry is almost always the same person/debt —
+    // ask whether to fold the new amount into it (net debt with them) rather
+    // than silently creating a second row for the same relationship.
+    const existing = debts.find((d) => d.name.trim().toLowerCase() === trimmedName.toLowerCase());
+    const consolidate =
+      existing &&
+      window.confirm(
+        `You already have a debt entry for "${existing.name}" (${rupee.format(existing.amount)}).\n\n` +
+          `Click OK to consolidate — adds ${rupee.format(enteredAmount)} to make ${rupee.format(existing.amount + enteredAmount)}.\n` +
+          `Click Cancel to add this as a separate new entry instead.`,
+      );
+
     setAdding(true);
     setError(null);
     try {
-      await addDebt({ name: name.trim(), amount: Number(amount) });
+      if (existing && consolidate) {
+        await updateDebt(existing.row, { name: existing.name, amount: existing.amount + enteredAmount });
+      } else {
+        await addDebt({ name: trimmedName, amount: enteredAmount });
+      }
       setName("");
       setAmount("");
       await refresh();

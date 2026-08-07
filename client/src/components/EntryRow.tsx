@@ -1,4 +1,4 @@
-import type { DragEvent } from "react";
+import type { PointerEvent } from "react";
 import type { LedgerEntry } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { OverflowMenu } from "./OverflowMenu";
@@ -10,12 +10,9 @@ interface Props {
   editable: boolean;
   busy: boolean;
   isDragOver: boolean;
+  isDragging: boolean;
   canDrag: boolean;
-  onDragStart: () => void;
-  onDragOver: (e: DragEvent<HTMLLIElement>) => void;
-  onDragLeave: () => void;
-  onDrop: (e: DragEvent<HTMLLIElement>) => void;
-  onDragEnd: () => void;
+  onHandlePointerDown: (e: PointerEvent<HTMLSpanElement>) => void;
   onCopy: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -28,12 +25,9 @@ export function EntryRow({
   editable,
   busy,
   isDragOver,
+  isDragging,
   canDrag,
-  onDragStart,
-  onDragOver,
-  onDragLeave,
-  onDrop,
-  onDragEnd,
+  onHandlePointerDown,
   onCopy,
   onEdit,
   onDelete,
@@ -42,18 +36,18 @@ export function EntryRow({
 
   return (
     <li
-      className={`entry-row${isDragOver ? " drag-over" : ""}`}
+      className={`entry-row${isDragOver ? " drag-over" : ""}${isDragging ? " dragging" : ""}`}
       style={swatch ? { background: swatch.bg, color: swatch.fg } : undefined}
       title={label}
-      draggable={canDrag}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      onDragEnd={onDragEnd}
+      data-row={entry.row}
     >
       {editable && (
-        <span className="drag-handle" aria-hidden="true" title="Drag to reorder">
+        <span
+          className="drag-handle"
+          aria-hidden="true"
+          title="Drag to reorder"
+          onPointerDown={canDrag ? onHandlePointerDown : undefined}
+        >
           ⠿
         </span>
       )}

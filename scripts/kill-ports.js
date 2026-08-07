@@ -22,7 +22,10 @@ function killPort(port) {
   for (const pid of pids) {
     if (!pid || pid === "0") continue;
     try {
-      execSync(`taskkill /F /PID ${pid}`, { stdio: "ignore" });
+      // /T also kills any children of this PID — the port holder itself is
+      // usually the deepest process in the tree (tsx/vite), but this is
+      // cheap insurance against leaving grandchildren behind.
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
       console.log(`Killed stale process ${pid} on port ${port}`);
     } catch {
       // already gone

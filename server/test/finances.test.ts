@@ -23,7 +23,7 @@ afterAll(() => {
 describe("getMonthIncome / setMonthIncome", () => {
   it("returns all-empty for a month that was never entered", async () => {
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: null, otherIncome: null, savings: [] });
+    expect(income).toEqual({ year: 2094, month: 6, salary: null, otherIncome: null, savings: [], previousSavings: [] });
   });
 
   it("round-trips a saved entry, including a multi-scheme savings breakdown", async () => {
@@ -33,13 +33,20 @@ describe("getMonthIncome / setMonthIncome", () => {
     ];
     await finances.setMonthIncome({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, savings });
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, savings });
+    expect(income).toEqual({ year: 2094, month: 6, salary: 50000, otherIncome: 2000, savings, previousSavings: [] });
   });
 
   it("overwrites an existing entry (including clearing savings) rather than duplicating a row", async () => {
     await finances.setMonthIncome({ year: 2094, month: 6, salary: 51000, otherIncome: null, savings: [] });
     const income = await finances.getMonthIncome(2094, 6);
-    expect(income).toEqual({ year: 2094, month: 6, salary: 51000, otherIncome: null, savings: [] });
+    expect(income).toEqual({
+      year: 2094,
+      month: 6,
+      salary: 51000,
+      otherIncome: null,
+      savings: [],
+      previousSavings: [],
+    });
   });
 
   it("rejects a year before EARLIEST_YEAR", async () => {
@@ -79,6 +86,65 @@ describe("getMonthIncome / setMonthIncome", () => {
         savings: [{ name: "PPF", amount: NaN }],
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("previousSavings (baseline the client computes deposit/withdrawal deltas against)", () => {
+  const YEAR = 2095;
+
+  it("is empty for the very first month EARLIEST_YEAR has no possible prior month", async () => {
+    const income = await finances.getMonthIncome(finances.EARLIEST_YEAR, 1);
+    expect(income.previousSavings).toEqual([]);
+  });
+
+  it("carries the last non-empty snapshot forward, skipping months left untouched", async () => {
+    await finances.setMonthIncome({
+      year: YEAR,
+      month: 1,
+      salary: null,
+      otherIncome: null,
+      savings: [{ name: "PPF", amount: 1000 }],
+    });
+
+    // February has no savings entry of its own — its baseline should still
+    // be January's snapshot, not empty.
+    const feb = await finances.getMonthIncome(YEAR, 2);
+    expect(feb.previousSavings).toEqual([{ name: "PPF", amount: 1000 }]);
+
+    // March re-enters savings — April's baseline should pick up March's
+    // snapshot, not January's stale one.
+    await finances.setMonthIncome({
+      year: YEAR,
+      month: 3,
+      salary: null,
+      otherIncome: null,
+      savings: [{ name: "PPF", amount: 1300 }],
+    });
+    const apr = await finances.getMonthIncome(YEAR, 4);
+    expect(apr.previousSavings).toEqual([{ name: "PPF", amount: 1300 }]);
+  });
+
+  it("carries forward across a year boundary", async () => {
+    await finances.setMonthIncome({
+      year: YEAR,
+      month: 12,
+      salary: null,
+      otherIncome: null,
+      savings: [{ name: "PPF", amount: 2000 }],
+    });
+    const nextJan = await finances.getMonthIncome(YEAR + 1, 1);
+    expect(nextJan.previousSavings).toEqual([{ name: "PPF", amount: 2000 }]);
+  });
+
+  it("reflects on setMonthIncome's own response too, not just getMonthIncome", async () => {
+    const result = await finances.setMonthIncome({
+      year: YEAR + 1,
+      month: 2,
+      salary: null,
+      otherIncome: null,
+      savings: [],
+    });
+    expect(result.previousSavings).toEqual([{ name: "PPF", amount: 2000 }]);
   });
 });
 

@@ -50,6 +50,9 @@ export interface MonthIncome {
   salary: number | null;
   otherIncome: number | null;
   savings: SavingsEntry[];
+  /** Last known per-scheme balances carried forward from before this month —
+   * the baseline "+ deposit / − withdrawal" deltas are computed against. */
+  previousSavings: SavingsEntry[];
 }
 
 export interface IncomeEdits {

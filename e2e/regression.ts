@@ -318,7 +318,9 @@ async function main() {
     check("Editing the copy left the original untouched", (await cashEntryRow().count()) === 1);
 
     // --- Drag reorder ---
-    const src = page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" });
+    // Grabs the handle specifically (not the row) — reordering is now driven
+    // by pointer events off the handle so it also works via touch on mobile.
+    const src = page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" }).locator(".drag-handle");
     const dst = page.locator(".entry-row", { hasText: "E2E Card Entry" });
     await src.dragTo(dst);
     await page.waitForTimeout(500);
@@ -975,7 +977,19 @@ async function main() {
     await browser.close();
   } finally {
     console.log("Stopping dev server...");
-    devProcess.kill();
+    // `npm run dev` was spawned with `shell: true` (needed to resolve `npm`
+    // via PATH on Windows), which makes `devProcess` a wrapper around cmd.exe
+    // — plain `.kill()` only kills that wrapper, not the concurrently/vite/
+    // tsx descendants it spawned, leaving them as orphaned background
+    // node.exe processes. `taskkill /T` kills the whole tree rooted at the
+    // wrapper's PID instead.
+    if (devProcess.pid) {
+      try {
+        execSync(`taskkill /PID ${devProcess.pid} /T /F`, { stdio: "ignore" });
+      } catch {
+        // already gone
+      }
+    }
     try {
       execSync("node scripts/kill-ports.js", { cwd: ROOT, stdio: "ignore" });
     } catch {

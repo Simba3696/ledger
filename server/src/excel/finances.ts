@@ -101,6 +101,43 @@ export interface MonthIncome {
   salary: number | null;
   otherIncome: number | null;
   savings: SavingsEntry[];
+  /** The last known per-scheme balances carried forward from before this
+   * month (i.e. what this month's savings would be if left untouched) — the
+   * baseline the client computes "+ deposit / − withdrawal" deltas against,
+   * so editing a month doesn't require retyping every scheme's balance from
+   * memory. Empty before any savings have ever been entered. */
+  previousSavings: SavingsEntry[];
+}
+
+function previousMonth(year: number, month: number): { year: number; month: number } | null {
+  if (year <= EARLIEST_YEAR && month <= 1) return null;
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
+
+function buildSavingsByKey(sheet: ExcelJS.Worksheet): Map<string, SavingsEntry[]> {
+  const map = new Map<string, SavingsEntry[]>();
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const y = row.getCell(1).value;
+    const m = row.getCell(2).value;
+    if (typeof y !== "number" || typeof m !== "number") return;
+    map.set(`${y}-${m}`, parseSavingsCell(row.getCell(5).value));
+  });
+  return map;
+}
+
+/** Last non-empty savings snapshot strictly before (year, month) — the same
+ * carry-forward rule `financeSummary` uses for display, reused here so the
+ * edit form's baseline always matches what the stats panel currently shows. */
+function savingsBaselineFrom(savingsByKey: Map<string, SavingsEntry[]>, year: number, month: number): SavingsEntry[] {
+  const prev = previousMonth(year, month);
+  if (!prev) return [];
+  let lastKnownSavings: SavingsEntry[] = [];
+  for (const { year: y, month: m } of monthsFromEarliestThrough(prev.year, prev.month)) {
+    const savings = savingsByKey.get(`${y}-${m}`) ?? [];
+    if (savings.length > 0) lastKnownSavings = savings;
+  }
+  return lastKnownSavings;
 }
 
 export async function getMonthIncome(year: number, month: number): Promise<MonthIncome> {
@@ -114,6 +151,7 @@ export async function getMonthIncome(year: number, month: number): Promise<Month
     salary: row ? numberOrNull(row.getCell(3).value) : null,
     otherIncome: row ? numberOrNull(row.getCell(4).value) : null,
     savings: row ? parseSavingsCell(row.getCell(5).value) : [],
+    previousSavings: savingsBaselineFrom(buildSavingsByKey(sheet), year, month),
   };
 }
 
@@ -140,6 +178,8 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
     row.getCell(1).value = year;
     row.getCell(2).value = month;
   }
+  const previousSavings = savingsBaselineFrom(buildSavingsByKey(sheet), year, month);
+
   row.getCell(3).value = salary;
   row.getCell(4).value = otherIncome;
   row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
@@ -147,7 +187,7 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
 
   await saveWorkbook(workbook, FINANCES_PATH);
 
-  return { year, month, salary, otherIncome, savings };
+  return { year, month, salary, otherIncome, savings, previousSavings };
 }
 
 export interface MonthFinanceSummary {

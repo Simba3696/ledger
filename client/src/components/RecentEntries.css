@@ -40,6 +40,10 @@
   border-style: dashed;
 }
 
+.entry-row.dragging {
+  opacity: 0.5;
+}
+
 .drag-handle {
   cursor: grab;
   color: inherit;
@@ -47,6 +51,7 @@
   font-size: 16px;
   line-height: 1;
   user-select: none;
+  touch-action: none;
 }
 
 .entry-remarks {

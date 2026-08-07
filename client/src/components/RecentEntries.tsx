@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { LedgerEntry, CategoryOption } from "../api";
 import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
@@ -73,11 +73,8 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
     }
   }
 
-  async function handleDrop(targetRow: number) {
-    const fromRow = draggedRow;
-    setDraggedRow(null);
-    setDragOverRow(null);
-    if (fromRow == null || fromRow === targetRow) return;
+  async function handleDrop(fromRow: number, targetRow: number) {
+    if (fromRow === targetRow) return;
 
     setBusyRow(fromRow);
     setError(null);
@@ -89,6 +86,40 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
     } finally {
       setBusyRow(null);
     }
+  }
+
+  // Pointer Events (not the HTML5 drag-and-drop API) so reordering works with
+  // touch input — native `draggable`/`ondragstart` never fires on mobile
+  // Safari/Chrome, which is why the handle was unresponsive on phones.
+  function handleHandlePointerDown(e: ReactPointerEvent<HTMLSpanElement>, row: number) {
+    if (!canDrag) return;
+    e.preventDefault();
+    setDraggedRow(row);
+
+    const rowAt = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-row]");
+      return el ? Number(el.dataset.row) : null;
+    };
+
+    const onMove = (ev: globalThis.PointerEvent) => {
+      setDragOverRow(rowAt(ev.clientX, ev.clientY));
+    };
+
+    const finish = (ev: globalThis.PointerEvent | null) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      setDraggedRow(null);
+      setDragOverRow(null);
+      const targetRow = ev ? rowAt(ev.clientX, ev.clientY) : null;
+      if (targetRow != null) handleDrop(row, targetRow);
+    };
+    const onUp = (ev: globalThis.PointerEvent) => finish(ev);
+    const onCancel = () => finish(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   }
 
   return (
@@ -127,22 +158,9 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
               editable={editable}
               busy={busyRow === entry.row}
               isDragOver={dragOverRow === entry.row}
+              isDragging={draggedRow === entry.row}
               canDrag={canDrag}
-              onDragStart={() => setDraggedRow(entry.row)}
-              onDragOver={(e) => {
-                if (!canDrag) return;
-                e.preventDefault();
-                if (dragOverRow !== entry.row) setDragOverRow(entry.row);
-              }}
-              onDragLeave={() => setDragOverRow((r) => (r === entry.row ? null : r))}
-              onDrop={(e) => {
-                e.preventDefault();
-                handleDrop(entry.row);
-              }}
-              onDragEnd={() => {
-                setDraggedRow(null);
-                setDragOverRow(null);
-              }}
+              onHandlePointerDown={(e) => handleHandlePointerDown(e, entry.row)}
               onCopy={() => handleCopy(entry)}
               onEdit={() => setEditingRow(entry.row)}
               onDelete={() => handleDelete(entry.row)}

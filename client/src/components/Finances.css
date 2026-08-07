@@ -41,11 +41,30 @@
 
 .savings-row {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.savings-row-main {
+  display: flex;
   gap: 8px;
   align-items: center;
 }
 
-.savings-row input {
+.savings-row-detail {
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  opacity: 0.75;
+  padding-left: 2px;
+}
+
+.savings-row-detail .new-balance {
+  color: var(--text-h);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.savings-row-main input {
   font-size: var(--font-size-base);
   padding: 8px 10px;
   border-radius: 8px;
@@ -54,12 +73,12 @@
   color: var(--text-h);
 }
 
-.savings-row input[type="text"] {
+.savings-row-main input[type="text"] {
   flex: 1;
   min-width: 0;
 }
 
-.savings-row input[type="number"] {
+.savings-row-main input[type="number"] {
   width: 110px;
 }
 
