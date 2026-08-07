@@ -1,7 +1,33 @@
 const { execSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 
-// Server (PORT) and Vite client (fixed via strictPort in vite.config.ts).
-const PORTS = [4000, 5173];
+// Minimal .env reader (no dependency) — just enough to pick up PORT/
+// VITE_DEV_PORT overrides from server/.env and client/.env, so a separate
+// checkout/worktree of this repo (e.g. one used for experimentation) can
+// target its own dev ports instead of force-killing whatever's listening on
+// the *other* checkout's ports — this script's whole job is to kill
+// anything already listening, so getting this wrong would kill a
+// completely unrelated running server. Defaults (4000/5173) are unchanged
+// for any checkout with no .env override, e.g. the main production one.
+function readEnvFile(filePath) {
+  const vars = {};
+  if (!fs.existsSync(filePath)) return vars;
+  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
+    if (match) vars[match[1]] = match[2].replace(/^["']|["']$/, "").replace(/["']$/, "");
+  }
+  return vars;
+}
+
+const serverEnv = readEnvFile(path.join(__dirname, "..", "server", ".env"));
+const clientEnv = readEnvFile(path.join(__dirname, "..", "client", ".env"));
+
+// Server (PORT) and Vite client (VITE_DEV_PORT) — overridable per-checkout.
+const PORTS = [
+  Number(process.env.PORT || serverEnv.PORT) || 4000,
+  Number(process.env.VITE_DEV_PORT || clientEnv.VITE_DEV_PORT) || 5173,
+];
 
 function killPort(port) {
   let output;

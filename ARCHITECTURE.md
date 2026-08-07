@@ -294,6 +294,23 @@ this runs as a Windows **Scheduled Task** ("Ledger"), reachable over
 **Tailscale** as well as `localhost`. See `README.md`'s **Remote access** and
 **Running** sections for the exact setup.
 
+**Ports are overridable, not hardcoded**, so a second checkout (a different
+clone, branch, or `git worktree`) can run at the same time as an existing
+one without colliding. The server reads `PORT` (`server/src/index.ts`,
+default 4000); `client/vite.config.ts` reads `VITE_DEV_PORT` (default 5173)
+and `VITE_API_PROXY_TARGET` (default `http://localhost:4000`, must match
+whatever `PORT` the paired server checkout uses) via Vite's `loadEnv`.
+`scripts/kill-ports.js` reads the same two values from `server/.env`/
+`client/.env` (a small dependency-free parser, since it's invoked directly
+by `predev`/`prestart` rather than through a workspace that has `dotenv`
+available) — this matters because it unconditionally force-kills whatever's
+listening on its target ports before every `dev`/`start`, so an unaware
+second checkout would otherwise kill the *first* checkout's server on
+startup rather than just failing to bind. Both `.env` files are gitignored
+(checkout-local, never shared) and unset by default, so a single checkout's
+behavior is completely unchanged unless it opts in. See README's **Running**
+section for the exact setup steps.
+
 ## Directory structure
 
 ```
@@ -315,7 +332,9 @@ client/
 e2e/
   regression.ts      Full-stack Playwright script (see Testing above)
 scripts/
-  kill-ports.js         Frees dev ports 4000/5173 before/on demand
+  kill-ports.js         Frees dev ports before/on demand — 4000/5173 by
+                         default, overridable per-checkout via server/.env's
+                         PORT and client/.env's VITE_DEV_PORT (see Deployment)
   run-server.bat,
   run-server-hidden.vbs  Scheduled Task launch chain for always-on use
                          (see README's Remote access section) — both
