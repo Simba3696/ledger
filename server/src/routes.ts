@@ -4,7 +4,15 @@ import { loadCategoryConfig } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
-import { addEmi, deleteEmi, listEmis, recordEmiPayment, updateEmi, type EmiEditsInput } from "./excel/emi.js";
+import {
+  addEmi,
+  deleteEmi,
+  emiMonthlyProjection,
+  listEmis,
+  recordEmiPayment,
+  updateEmi,
+  type EmiEditsInput,
+} from "./excel/emi.js";
 import {
   addSubscription,
   deleteSubscription,
@@ -291,6 +299,14 @@ router.patch("/emi/:row/pay", async (req, res, next) => {
     const { amount } = req.body ?? {};
     const entry = await recordEmiPayment(Number(req.params.row), Number(amount));
     res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/emi-monthly-projection", async (_req, res, next) => {
+  try {
+    res.json(await emiMonthlyProjection());
   } catch (err) {
     next(err);
   }

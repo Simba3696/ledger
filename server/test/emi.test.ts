@@ -314,3 +314,103 @@ describe("emi until-target (bank-stated Duration)", () => {
     });
   });
 });
+
+describe("emiMonthlyProjection", () => {
+  // The EMI.xlsx workbook is shared across this whole test file (one scratch
+  // dir, created once at the top), so by the time this block runs it already
+  // holds EMIs from every earlier describe block. Rather than asserting an
+  // exact full result (which every prior test's leftover data would break),
+  // each test here snapshots the projection *before* adding its own EMI(s)
+  // and asserts the delta — robust regardless of whatever else is already
+  // in the workbook.
+  it("returns exactly `months` entries, one per calendar month starting this month", async () => {
+    const result = await emi.emiMonthlyProjection(5, new Date(2026, 0, 1));
+    expect(result.map((m) => m.month)).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05"]);
+  });
+
+  it("buckets a fresh loan's full-size installments by their real due month, including a smaller final one", async () => {
+    const before = await emi.emiMonthlyProjection(4, new Date(2026, 0, 1));
+    await emi.addEmi(
+      // 2 full ₹1000 installments + one ₹500 final one (2500 remaining).
+      { cardOrBank: "Proj Fresh", emiAmount: 1000, dueDay: 15, totalAmount: 2500, remarks: "", remainingAsOf: 2500 },
+      new Date(2026, 0, 1),
+    );
+    const after = await emi.emiMonthlyProjection(4, new Date(2026, 0, 1));
+    const delta = after.map((m, i) => ({
+      month: m.month,
+      count: m.count - before[i].count,
+      totalAmount: m.totalAmount - before[i].totalAmount,
+    }));
+    expect(delta).toEqual([
+      { month: "2026-01", count: 1, totalAmount: 1000 },
+      { month: "2026-02", count: 1, totalAmount: 1000 },
+      { month: "2026-03", count: 1, totalAmount: 500 }, // final partial installment
+      { month: "2026-04", count: 0, totalAmount: 0 }, // already paid off by then
+    ]);
+  });
+
+  it("sums multiple active EMIs due in the same month", async () => {
+    const before = await emi.emiMonthlyProjection(1, new Date(2026, 0, 1));
+    await emi.addEmi(
+      { cardOrBank: "Proj A", emiAmount: 500, dueDay: 10, totalAmount: 500, remarks: "", remainingAsOf: 500 },
+      new Date(2026, 0, 1),
+    );
+    await emi.addEmi(
+      { cardOrBank: "Proj B", emiAmount: 700, dueDay: 20, totalAmount: 700, remarks: "", remainingAsOf: 700 },
+      new Date(2026, 0, 1),
+    );
+    const after = await emi.emiMonthlyProjection(1, new Date(2026, 0, 1));
+    expect(after[0].count - before[0].count).toBe(2);
+    expect(after[0].totalAmount - before[0].totalAmount).toBe(1200);
+  });
+
+  it("excludes an already-paid-off EMI entirely", async () => {
+    const before = await emi.emiMonthlyProjection(2, new Date(2026, 0, 1));
+    const added = await emi.addEmi(
+      { cardOrBank: "Proj PaidOff", emiAmount: 500, dueDay: 5, totalAmount: 500, remarks: "", remainingAsOf: 500 },
+      new Date(2026, 0, 1),
+    );
+    await emi.recordEmiPayment(added.row, 500, new Date(2026, 0, 1));
+    const after = await emi.emiMonthlyProjection(2, new Date(2026, 0, 1));
+    expect(after).toEqual(before);
+  });
+
+  it("doesn't include a due date that falls outside the requested window", async () => {
+    // dueDay 25, anchored the 26th — that month's 25th has already passed
+    // relative to the anchor, so the *next* real due date is next month's
+    // 25th, which a 1-month (this-month-only) window must not include.
+    const before = await emi.emiMonthlyProjection(1, new Date(2026, 0, 26));
+    await emi.addEmi(
+      { cardOrBank: "Proj OutOfWindow", emiAmount: 400, dueDay: 25, totalAmount: 400, remarks: "", remainingAsOf: 400 },
+      new Date(2026, 0, 26),
+    );
+    const after = await emi.emiMonthlyProjection(1, new Date(2026, 0, 26));
+    expect(after).toEqual(before);
+  });
+
+  it("doesn't crash when an EMI's asOfDate is stale (no payment recorded in a while)", async () => {
+    // Regression test for a real reported crash: added back in January with
+    // no payment recorded since, so by June this asOfDate is 5 months stale.
+    // nextDueDateAfter(asOfDate, dueDay) landed in a month *before* the
+    // projection window (whose first month is June, where "today" is), so
+    // the bucket lookup for it returned undefined and threw
+    // "Cannot read properties of undefined (reading 'count')" — this must
+    // instead anchor on "today" here, not the stale stored date.
+    const before = await emi.emiMonthlyProjection(3, new Date(2026, 5, 15)); // Jun 15, 2026
+    await emi.addEmi(
+      { cardOrBank: "Proj Stale", emiAmount: 500, dueDay: 10, totalAmount: 5000, remarks: "", remainingAsOf: 5000 },
+      new Date(2026, 0, 1), // Jan 1, 2026
+    );
+    const after = await emi.emiMonthlyProjection(3, new Date(2026, 5, 15));
+    const delta = after.map((m, i) => ({
+      month: m.month,
+      count: m.count - before[i].count,
+      totalAmount: m.totalAmount - before[i].totalAmount,
+    }));
+    expect(delta).toEqual([
+      { month: "2026-06", count: 0, totalAmount: 0 }, // this month's own 10th already passed by the 15th
+      { month: "2026-07", count: 1, totalAmount: 500 },
+      { month: "2026-08", count: 1, totalAmount: 500 },
+    ]);
+  });
+});
