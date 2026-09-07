@@ -70,11 +70,11 @@ and writes the whole workbook back out.
 | `workbookIO.ts` | — | Shared safe write path (see below) + `DB_DIR` resolution. Every other module imports `saveWorkbook`/`LedgerError`/`DB_DIR` from here — nothing else touches `fs`/`ExcelJS.writeFile` directly. |
 | `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
 | `categoryColors.ts` | — | The category ↔ ARGB fill-color map for Expenses rows (category is encoded as cell fill color, not a column). |
-| `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. |
+| `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`), `yearSummary` (category totals per month for the dashboard chart), and per-month locking (`isMonthLocked`/`setMonthLocked`, via real Excel sheet protection — the same mechanism `assertWritable` already enforced for a manually-protected past year, so both are indistinguishable and rejected the same way). One workbook per year, one sheet per month. |
 | `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
 | `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
-| `creditCardBills.ts` | `CreditCardBills.xlsx` | Per-card bill entries per month (due/paid/dueDate/settled), stored as a JSON array in one cell per month-row (card count isn't fixed). |
-| `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total) and payment recording. |
+| `creditCardBills.ts` | `CreditCardBills.xlsx` | Per-card bill entries per month (due/paid/dueDate/settled), stored as a JSON array in one cell per month-row (card count isn't fixed, and array order is the user's own drag-reordered display order). `overpaidOrSaved` sums only Settled cards' (due − paid) gaps. |
+| `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total), payment recording, and `emiMonthlyProjection` (walks every active loan's future installments forward for the Upcoming EMIs dashboard chart, anchored on whichever is later — the loan's own `asOfDate` or today — so a stale anchor can't walk the projection into an already-decayed past month). Also carries two optional display-only fields, `interestRate`/`foreclosureCharge`. |
 | `subscriptions.ts` | `Subscriptions.xlsx` | Recurring subscriptions with an auto-advancing `nextExpiry` (never written back — always derived fresh). |
 | `overview.ts` | *(none — read-only)* | Cross-module aggregation for the Dashboard's Net Worth + Upcoming widget. Calls into every module above via `Promise.all`, never writes anywhere itself. |
 
@@ -112,6 +112,21 @@ Every write goes through `saveWorkbook(workbook, filePath)`:
 3. **Locked-file detection** — if the file is open in Excel (rename fails),
    this surfaces as a clear `LedgerError` ("close it and try again"), not a
    raw stack trace.
+
+Separately, `workbookIO.ts`'s `withFileLock(filePath, fn)` serializes every
+read-modify-write call *per file path* — a per-path promise chain ensuring
+a call for a given file only starts once the previous call for that same
+file has finished. Every exported function across every `excel/*.ts` module
+wraps its whole body (not just the final `saveWorkbook` call) in this,
+since the underlying bug it fixes is a stale *read*, not just a racing
+write: two overlapping requests against the same file (e.g. phone and
+laptop both adding an expense in the same second) used to both read the
+same pre-write state and both save, with the second silently discarding the
+first. Not reentrant — a call from inside another call already holding the
+same key's lock would wait on itself and deadlock, which is why
+`emi.ts`'s `recordEmiPayment` (needing its own read plus a nested write)
+acquires the lock once around both rather than twice. Different files'
+locks never block each other.
 
 ### 3. Computed, never stored, derived values
 
@@ -158,6 +173,8 @@ is a local/Tailscale-only single-user tool.
 |---|---|---|
 | GET | `/categories` | — (static list) |
 | GET | `/months/:year/:month` | `ledger.listMonth` |
+| GET | `/months/:year/:month/lock` | `ledger.isMonthLocked` |
+| PUT | `/months/:year/:month/lock` | `ledger.setMonthLocked` |
 | GET | `/summary/:year` | `ledger.yearSummary` |
 | POST | `/entries` | `ledger.appendEntry` |
 | PUT | `/entries/:year/:month/:row` | `ledger.updateEntry` |
@@ -178,6 +195,7 @@ is a local/Tailscale-only single-user tool.
 | PUT | `/emi/:row` | `emi.updateEmi` |
 | DELETE | `/emi/:row` | `emi.deleteEmi` |
 | PATCH | `/emi/:row/pay` | `emi.recordEmiPayment` |
+| GET | `/emi-monthly-projection` | `emi.emiMonthlyProjection` |
 | GET | `/subscriptions` | `subscriptions.listSubscriptions` |
 | POST | `/subscriptions` | `subscriptions.addSubscription` |
 | PUT | `/subscriptions/:row` | `subscriptions.updateSubscription` |
@@ -217,10 +235,13 @@ gives every entry.
   `index.css`; `ThemeToggle.tsx` sets `data-theme` on `<html>` and persists
   the choice to `localStorage`, falling back to `prefers-color-scheme` until
   an explicit choice is made.
-- **Dashboard** (`Dashboard.tsx` + `DashboardOverview.tsx`) is the default
-  tab and the only place that reads across multiple concerns — via the one
-  `/api/overview` aggregation endpoint, not multiple parallel fetches to
-  each tab's own API.
+- **Dashboard** (`Dashboard.tsx` + `DashboardOverview.tsx` +
+  `EmiProjectionChart.tsx`) is the default tab and the only place that reads
+  across multiple concerns — via the one `/api/overview` aggregation
+  endpoint, not multiple parallel fetches to each tab's own API. The
+  Upcoming EMIs chart is the one exception to "single aggregation fetch,"
+  since it's EMI-only (not a cross-concern aggregation) — it calls
+  `/api/emi-monthly-projection` directly.
 - **Code-splitting**: every tab except Dashboard (Expenses, Finances, Debts,
   Credit Cards, EMI, Subscriptions) is `React.lazy`-loaded, wrapped in a
   shared `<Suspense>` fallback in `App.tsx`. Dashboard stays eager since it's

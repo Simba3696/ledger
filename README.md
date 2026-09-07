@@ -134,9 +134,18 @@ auto-advances forward to the next real cycle, never silently going stale:
 - Amount is right-aligned and Remarks is left-aligned, both vertically
   centered, matching every existing row (ExcelJS otherwise defaults to bottom
   alignment for cells with no explicit alignment set).
-- Copying, editing, deleting, and reordering are only available for the
-  **current calendar month** in the UI (and blocked server-side for any
-  protected sheet regardless). Copy/Edit/Delete live under a "⋮" menu on each
+- Copying, editing, deleting, and reordering are only available for an
+  **unlocked** month. Locking replaces an earlier "only the current calendar
+  month is editable" rule — nothing auto-locks on the 1st anymore, so a month
+  you haven't finished entering (away from your laptop around month-end,
+  say) stays editable until you explicitly say you're done with it. Locking
+  reuses real Excel sheet protection (the same mechanism a manually
+  protected past year already used, so a month locked by hand in Excel and
+  one locked via the app's own toggle are indistinguishable — both are
+  rejected the same way) and is enforced server-side too: a direct API write
+  against a locked month gets a 403, not just a disabled button in the UI.
+  A `MonthLockToggle` banner above the Add Expense form shows the current
+  month's lock state and toggles it. Copy/Edit/Delete live under a "⋮" menu on each
   entry. Deleting actually removes the row and shifts everything below it up,
   rather than just blanking it, so row numbers stay meaningful. Reordering
   (drag the ⠿ handle) similarly moves the row for real rather than just
@@ -295,19 +304,22 @@ auto-advances forward to the next real cycle, never silently going stale:
   named entry per month (due amount, paid amount, that card's own due date,
   and a **Settled** checkbox) in its own app-owned `CreditCardBills.xlsx` —
   the number of cards isn't fixed, so adding or paying off one is just
-  adding/removing an entry, never touching a formula. From those entries it
-  computes Total Due, Total Paid, the Earliest Due Date across all cards
+  adding/removing an entry, never touching a formula. Rows have a drag
+  handle so cards can be entered in any order and rearranged afterward
+  (client-side display order only — no separate backend concept of card
+  order). From those entries it computes Total Due, Total Paid (both sum
+  every card regardless of Settled), the Earliest Due Date across all cards
   that month (so you know when to arrange funds), and Overpaid/Saved
-  (Due − Paid: negative means you paid more than billed, positive means a
-  payment app rounded a few rupees in your favor) — colored red when
-  Overpaid, green when Saved, for at-a-glance visibility, though a positive
-  "Saved" figure can just as easily mean a bill that's genuinely still
-  unpaid rather than real savings — these stats are still computed from the
-  raw figures regardless of Settled, since they're about what actually
-  happened with the money, not whether it's been marked done. Settled only
-  affects the Dashboard Overview widget's Net Worth/Upcoming (see above). It
+  (Due − Paid, summed only across **Settled** cards — an unsettled card's
+  raw gap no longer counts here at all, matching the Dashboard Overview
+  widget's own settled-aware Net Worth logic, so the two never disagree):
+  negative means you paid more than billed (Overpaid, red), positive means a
+  payment app rounded a few rupees in your favor (Saved, green). It
   also shows yearly totals — Total Spent This Year, Total Paid This Year,
-  and Net Overpaid/Saved This Year (same red/green coloring) — summed across
+  and Net Overpaid/Saved This Year (sum of each month's own already-settled-
+  gated Overpaid/Saved, so the yearly figure always agrees with what the 12
+  monthly ones would sum to — not recomputed from raw yearly Due/Paid, which
+  would let an unsettled bill inflate it) — summed across
   all 12 months of the selected year. Historical Due/Paid amounts were backfilled
   from `Expense Summary.xlsm`'s Credit Card Bills sheet, whose own
   `=a+b+c+...` formulas turned out to be literally one term per card (in the
@@ -356,13 +368,34 @@ auto-advances forward to the next real cycle, never silently going stale:
   you happen to click, so paying a few days before the due date doesn't get
   double-subtracted once that date actually passes, and paying the standard
   amount *after* the due date has already passed is correctly a no-op (the
-  automatic decay already assumed it).
+  automatic decay already assumed it). Each row shows **Balance as of
+  &lt;date&gt;** — the decay anchor everything since is auto-projected from, not
+  a confirmed payment — so it's obvious before reaching for "Paid this
+  month" whether that cycle is already covered. Sortable by Name, Due Day,
+  EMI Amount, Remaining, or **% Paid** (`(Total Amount − Remaining) / Total
+  Amount`) — % Paid in particular surfaces a good "quick win" foreclosure
+  candidate better than sorting by raw Remaining does, since a loan that
+  started small can have a low balance without being anywhere near paid
+  off. Two more optional fields support that same foreclosure decision:
+  **Interest Rate** (% p.a.) and **Foreclosure Charge** (%), both plain
+  overwritable fields (not sticky like Duration/Until Target) where `0` is a
+  real, distinct-from-empty value (an interest-free conversion, or a real
+  0%-charge loan) — currently display-only, since `remaining` already
+  includes future interest, a genuinely different (larger) number than the
+  true foreclosure payoff for any loan with real interest. A dashboard-level
+  **EMI-Free On** stat shows the *latest* payoff date across every active
+  loan — the day your last loan actually clears, not any individual loan's
+  own date — and the Dashboard itself has an **Upcoming EMIs** chart
+  (count + total amount per month, next 12 months) below the Net Worth/
+  Upcoming widget, walking every active loan's future installments forward
+  the same way the Upcoming list's own due-date math already does.
 - The **Subscriptions** tab is a flat list (Service, Amount, Monthly/Yearly,
   Card/Bank) in its own app-owned `Subscriptions.xlsx`. The renewal date you
   enter is never treated as stale — the app auto-advances it forward by
   whole Monthly/Yearly cycles until it's on or after today, so a
   long-untouched entry always shows its real next renewal rather than a date
-  that's quietly fallen into the past. Shows an approximate combined
+  that's quietly fallen into the past. Sortable by Next Renewal (the
+  default, soonest first), Service, or Amount. Shows an approximate combined
   Monthly Cost (Yearly subscriptions divided by 12). Backfilled from
   `Expense Summary.xlsm`'s Subscriptions sheet (10 entries; one stray row
   with a date instead of an amount was correctly excluded, same as the rest
@@ -613,17 +646,26 @@ Two suites, covering different layers:
   `server/test/debts.test.ts` covers add/update/
   delete and the sign convention. `server/test/creditCardBills.test.ts`
   covers per-card entries summing correctly into totals, the earliest-due-
-  date computation, and Overpaid/Saved. `server/test/dateMath.test.ts` covers
+  date computation, and that Overpaid/Saved sums only Settled cards' gaps —
+  an unsettled card's raw due/paid gap must leave both the monthly and
+  yearly figure at ₹0. `server/test/dateMath.test.ts` covers
   the shared month/day arithmetic (day-of-month clamping, year rollover, leap
   years). `server/test/emi.test.ts` covers the Remaining snapshot-decay math
   (including a due-day clamp and the paid-off floor at zero), the
-  estimated-payoff-month calculation and how a stored Duration overrides it,
-  that a Duration survives edits/payments that don't resupply it but gets
-  replaced by a fresh one that does, and `recordEmiPayment`'s due-date
+  estimated-payoff-month/date calculation and how a stored Duration overrides
+  it — including `dueDateOnOrAfter`'s rollover fix, since a bank-stated
+  target's day-of-month has nothing to do with `dueDay` — that a Duration
+  survives edits/payments that don't resupply it but gets
+  replaced by a fresh one that does, `recordEmiPayment`'s due-date
   anchoring — specifically that an early payment isn't later double-decayed
   once the due date passes, that paying the standard amount after the due
   date is a no-op, and that several unrecorded months get caught up
-  correctly in one payment. `server/test/subscriptions.test.ts`
+  correctly in one payment — Interest Rate/Foreclosure Charge validation
+  (0-100%, `0` distinct from `null`), and `emiMonthlyProjection`'s month-by-
+  month bucketing for the Upcoming EMIs chart, including a regression test
+  for a real crash reproduced against actual data (a stale `asOfDate` walking
+  the projection backward into an already-decayed past month outside the
+  window). `server/test/subscriptions.test.ts`
   covers the Expiry auto-advance for both Monthly and Yearly cycles.
   `server/test/overview.test.ts` covers the Net Worth arithmetic (savings
   minus debt minus EMI remaining minus this month's unpaid credit cards,
@@ -643,7 +685,17 @@ Two suites, covering different layers:
   `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
   one backup per file per process run (not one per save), pruning down to
   the most recent 10 per file, and that pruning one file's backups never
-  touches another file's.
+  touches another file's — plus `withFileLock`'s own serialization
+  guarantees: calls for the same key run strictly in order, a call that
+  throws doesn't jam the queue for the next one, and different keys never
+  block each other. `server/test/ledger.test.ts` additionally covers
+  `isMonthLocked`/`setMonthLocked` (including that a locked month rejects
+  every write path with a clear error) and a regression test firing 8
+  concurrent `appendEntry` calls at the same month, asserting all 8 land on
+  distinct rows with none lost — the exact bug `withFileLock` fixes (two
+  overlapping requests, e.g. phone + laptop both adding an expense in the
+  same second, used to both read the same stale state and silently
+  discard one save).
   Fast (a few seconds), no browser or dev server needed — this is the one to
   run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
@@ -651,24 +703,36 @@ Two suites, covering different layers:
   a full year (so switching months never legitimately 404s), starts the real
   dev server against it, and drives an actual browser through the full app:
   Dashboard-is-default, chart click-through navigation (main chart and the
-  per-category mini-charts, including their synced hover), month/year
+  per-category mini-charts, including their synced hover), the Upcoming
+  EMIs chart (empty state, bars once an active loan exists, legend), month/year
   selects, add (cash + card), edit, drag-reorder, Move up/Move down via the
-  overflow menu, delete, Finances entry + persistence (including the
+  overflow menu, delete, month-locking (default-unlocked banner, locking
+  disables the Add Expense form and strips entries' drag handle/overflow
+  menu, a locked month rejects a direct API write with 403 not just the UI,
+  unlocking restores everything), Finances entry + persistence (including the
   savings delta editor's live total), Debts add/edit/delete/sort (including
   the duplicate-name consolidate-or-new prompt), EMI add/edit/delete
   (including the
   Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
-  payoff estimate and surviving edits, and the "Paid this month"/"Record
-  payment" quick actions), Subscriptions add/edit/delete
-  (including the stale-anchor auto-advance), Credit Cards add/edit/
-  persistence, the Dashboard Overview widget (Net Worth combining figures
+  payoff estimate and surviving edits, the "Paid this month"/"Record
+  payment" quick actions and the Balance-as-of anchor they advance, sorting
+  by every column including % Paid, Interest Rate/Foreclosure Charge
+  entry/edit/clear including a real 0%, and the EMI-Free On stat picking the
+  *latest* payoff date across loans rather than the most recently added
+  one), Subscriptions add/edit/delete
+  (including the stale-anchor auto-advance and sorting by Next Renewal/
+  Service/Amount), Credit Cards add/edit/
+  persistence (including drag-reorder of card rows persisting across reload,
+  and Saved/Overpaid — both monthly and yearly — staying ₹0 until a card is
+  actually marked Settled), the Dashboard Overview widget (Net Worth combining figures
   from Finances/Debts/EMI/Credit Cards, the Upcoming list surfacing an
   EMI and a credit card bill both due the same day, and the Upcoming
   fold/collapse toggle defaulting open and persisting its state across a
   reload), and theme toggle + persistence — failing loudly on both
   failed assertions and any browser console error. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
-  enabled in the UI for the actual current month. Slower (~20–25s) and needs
+  enabled in the UI for an unlocked month (always true for a freshly-seeded
+  month in the scratch data this suite builds). Slower (~20–25s) and needs
   the dev ports free — this is the one to run after any client-side change,
   or before considering a session's changes done.
 
@@ -700,6 +764,26 @@ and never touch the real `Expenses` folder.
   both run `scripts/kill-ports.js` automatically before starting, so the
   *next* launch always clears anything left over. Run `npm run stop`
   directly if you want to clean up without immediately restarting.
+- Every write to a given `.xlsx` file is serialized per-path
+  (`workbookIO.ts`'s `withFileLock`) — two overlapping requests against the
+  *same* file (the phone and the laptop both adding an expense in the same
+  second, reachable exactly because the app is meant to be usable from both
+  over Tailscale) used to both read the same pre-write state and both save,
+  with the second save silently discarding the first (sharpest for
+  `appendEntry`, where both calls would compute the same next row number and
+  collide on it). Every exported read-modify-write function across every
+  `excel/*.ts` module now runs its whole body — not just the final save —
+  inside this per-file lock, so a second concurrent request for the same
+  file always waits for the first to finish rather than racing it. Different
+  files' writes are never blocked by each other.
+- Running `npm run dev` in a checkout where `npm run build`/`npm start` has
+  ever also been run (e.g. testing a change locally, then wanting hot-reload
+  again) used to silently keep serving that stale production build on
+  `:4000` right alongside Vite's live one on `:5173`, since the static-
+  serving check only asked "does `client/dist` exist," not "is this actually
+  running from a built `server/dist`." Fixed to check the latter — dev mode
+  never serves a stale build no matter what was previously built in the
+  same checkout.
 
 ## History: retiring Expense Summary.xlsm
 
