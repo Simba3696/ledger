@@ -777,6 +777,20 @@ async function main() {
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("0% foreclosure fee"),
     );
 
+    // Foreclosure payoff: with a real 10.5% interest rate on record, the true
+    // early-payoff cost (outstanding principal) must show up as its own line,
+    // distinct from — and less than — `remaining` (₹3,000), which still
+    // includes interest that hasn't accrued yet.
+    const coralForeclosurePayoffText = await page
+      .locator(".emi-row", { hasText: "E2E Coral" })
+      .locator(".emi-foreclosure-payoff")
+      .innerText();
+    const coralForeclosurePayoffAmount = Number(coralForeclosurePayoffText.replace(/[^0-9.]/g, ""));
+    check(
+      "EMI: row shows a foreclosure payoff distinct from (and less than) remaining, when an interest rate is on record",
+      coralForeclosurePayoffAmount > 0 && coralForeclosurePayoffAmount < 3000,
+    );
+
     // Interest Rate genuinely is clearable, though — an explicit blank on a
     // later edit removes it rather than leaving the old value stuck forever.
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Edit");
@@ -792,6 +806,10 @@ async function main() {
     check(
       "EMI: clearing Foreclosure Charge on an edit removes it from the row",
       !(await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("foreclosure fee"),
+    );
+    check(
+      "EMI: clearing Interest Rate also removes the foreclosure payoff line (it's equal to remaining again)",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-foreclosure-payoff").count()) === 0,
     );
 
     // --- Reload persistence ---

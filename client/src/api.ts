@@ -138,6 +138,11 @@ export interface EmiEntryComputed extends EmiEntry {
   estimatedPayoffMonth: string | null;
   /** Same estimate as estimatedPayoffMonth, as a full YYYY-MM-DD. */
   estimatedPayoffDate: string | null;
+  /** True cost to close this loan today (outstanding principal + any
+   * foreclosure charge) — equals `remaining` exactly when no interestRate
+   * is on record, since `remaining` already double-counts future interest
+   * once a real rate exists. */
+  foreclosurePayoff: number;
 }
 
 export interface EmiEdits {
@@ -376,7 +381,7 @@ export function deleteSubscription(row: number): Promise<void> {
   return fetch(`${BASE}/subscriptions/${row}`, { method: "DELETE" }).then((r) => handle(r));
 }
 
-export type UpcomingSource = "EMI" | "Subscription" | "Credit Card";
+export type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
 
 export interface UpcomingItem {
   source: UpcomingSource;
