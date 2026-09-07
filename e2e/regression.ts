@@ -717,6 +717,11 @@ async function main() {
       "EMI: row shows remaining equal to total for a fresh loan",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("12,000"),
     );
+    const todayDateText = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    check(
+      "EMI: shows Balance as of today's date for a freshly added loan",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes(`Balance as of ${todayDateText}`),
+    );
     check(
       "EMI: Duration overrides the derived payoff estimate",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes(expectedFinishes),
@@ -771,12 +776,21 @@ async function main() {
     // "₹1,000.00" regardless of the actual balance, so a looser match here
     // would pass even if the payment logic were broken. ---
     const coralRemaining = () => page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-remaining");
+    const coralAsOf = () => page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-as-of");
 
+    const asOfBeforePayment = await coralAsOf().innerText();
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Paid this month");
     await page.waitForTimeout(400);
     check(
       "EMI: \"Paid this month\" subtracts one EMI amount",
       (await coralRemaining().innerText()).includes("₹2,000"),
+    );
+    check(
+      // Exact resulting date depends on recordEmiPayment's own settle-date
+      // logic (already covered by server unit tests) — this just confirms
+      // the displayed anchor actually reacts to a payment, not a fixed date.
+      "EMI: \"Paid this month\" advances the Balance-as-of anchor",
+      (await coralAsOf().innerText()) !== asOfBeforePayment,
     );
 
     // The global dialog handler accepts every prompt with an *empty* string

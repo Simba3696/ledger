@@ -138,6 +138,7 @@
 }
 
 .emi-schedule,
+.emi-as-of,
 .emi-payoff {
   font-size: var(--font-size-xs);
   opacity: 0.7;
