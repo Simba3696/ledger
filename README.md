@@ -237,7 +237,15 @@ auto-advances forward to the next real cycle, never silently going stale:
   on their own due day without any click needed, but this still matters for
   an early/manual payment made outside that automatic schedule — the same
   reason a standalone EMI item is worth clicking through to at all, even
-  though its own tab would eventually reflect the payment regardless. Below
+  though its own tab would eventually reflect the payment regardless.
+  Upcoming also carries a **salary reminder**, separate from the three due-
+  date-driven sources above: since salary is logged under the month it was
+  *earned* (see the Finances entry below), a new calendar month starting
+  means last month's entry should already exist — if it doesn't, a reminder
+  to log it appears (sorting first, ahead of everything else) for the first
+  two weeks of the new month, then goes quiet either way rather than nagging
+  for the rest of the month. Clicking it jumps to Finances with last month
+  selected. Below
   that widget, an **Upcoming EMIs** chart plots every active loan's future
   installments for the next year — installment count and total ₹ due per
   calendar month — so the debt load's actual monthly taper is visible at a
@@ -398,11 +406,14 @@ auto-advances forward to the next real cycle, never silently going stale:
     and **Foreclosure Charge (%)** fields are editable per loan and shown
     alongside its schedule (`0` is a real, distinct-from-blank value — an
     interest-free EMI conversion, or a genuine 0%-foreclosure-fee loan).
-    Both are currently **display-only** — `remaining` is total future
-    payments if paid on schedule (interest included), which is a genuinely
-    larger number than the true foreclosure payoff (outstanding principal
-    only) for any loan with real interest; netting that out properly is a
-    natural follow-up once rates/charges are backfilled across more loans.
+    Once an Interest Rate is on record, each row also shows a **Foreclosure
+    payoff** figure — the true cost to close that loan today (standard
+    reducing-balance amortization of the outstanding principal, plus any
+    Foreclosure Charge), shown only when it actually differs from Remaining:
+    `remaining` is total future payments if paid on schedule (interest
+    included), a genuinely larger number than the true payoff for any loan
+    with real interest, so showing an identical second figure for a rate-less
+    loan would just be noise.
   - The Dashboard's **Upcoming EMIs** chart (below the Net Worth/Upcoming
     widget) projects every active loan's future installments forward for the
     next year, as a dual-axis bar (installment count) + line (total ₹ due)
@@ -505,7 +516,8 @@ Windows-specific, and it's entirely optional.
    to see how it behaves before trusting it with your real spreadsheets.
 
 4. **Point it at your real Excel files**, once you're ready, by creating
-   `server/.env`:
+   `server/.env` (copy from `server/.env.example`, which documents every
+   variable both `server/.env` and `client/.env` support):
 
    ```
    LEDGER_DB_DIR=C:/path/to/your/Expenses/folder
@@ -767,7 +779,11 @@ Two suites, covering different layers:
   `estimatedPayoffDate` across every loan rather than just the most recently
   added one, that optional `interestRate`/`foreclosureCharge` round-trip
   correctly (including that `0` is preserved as a real value distinct from
-  omitted/`null`), and `emiMonthlyProjection` bucketing installment
+  omitted/`null`), the true foreclosure payoff (standard reducing-balance
+  amortization of the outstanding principal, plus any foreclosure charge —
+  verified against a hand-computed example, that it gracefully equals
+  `remaining` exactly when no interest rate is on record, and the
+  zero-division guards), and `emiMonthlyProjection` bucketing installment
   count/total correctly by month — including a regression test for the
   exact stale-`asOfDate` crash reproduced against real data (anchoring the
   projection on `asOfDate` alone, rather than whichever is later of
@@ -788,7 +804,11 @@ Two suites, covering different layers:
   **Settled** checkbox (not a raw due/paid gap) is what zeroes out its
   contribution to Net Worth and drops it from Upcoming — an unsettled card
   counts its full gap even if tiny, and a settled card contributes exactly 0
-  even if it was overpaid on paper.
+  even if it was overpaid on paper. It also covers the salary reminder — a
+  nudge to log last month's salary that appears only during the first two
+  weeks of a new month if last month's Finances entry has no salary on
+  record, sorting first regardless of other items' due dates, and gone
+  entirely once that salary is logged or once the two-week window passes.
   `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
   one backup per file per process run (not one per save), pruning down to
   the most recent 10 per file, and that pruning one file's backups never
@@ -836,23 +856,29 @@ Two suites, covering different layers:
   (by Name, Due Day, EMI Amount, Remaining, and % Paid — ascending then
   descending on each) (including the
   Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
-  payoff estimate and surviving edits, and the "Paid this month"/"Record
-  payment" quick actions), Subscriptions add/edit/delete/sort (by Next
+  payoff estimate and surviving edits, the "Paid this month"/"Record
+  payment" quick actions, and the true foreclosure payoff line appearing
+  (and being less than Remaining) once an interest rate is on record and
+  disappearing once it's cleared), Subscriptions add/edit/delete/sort (by Next
   Renewal, Service, and Amount) (including the stale-anchor auto-advance),
   Credit Cards add/edit/persistence and drag-reorder (including that the
   reordered order survives a reload), the Dashboard Overview widget (Net
   Worth combining figures from Finances/Debts/EMI/Credit Cards, the
   Upcoming list surfacing an EMI and a credit card bill both due the same
-  day, and the Upcoming fold/collapse toggle defaulting open and persisting
-  its state across a reload), the Upcoming EMIs chart (empty state with no
+  day, the Upcoming fold/collapse toggle defaulting open and persisting
+  its state across a reload, and — only when the suite happens to run
+  within the first two weeks of a month — the salary reminder naming last
+  month, jumping to Finances on click, and disappearing once that salary is
+  logged), the Upcoming EMIs chart (empty state with no
   active EMIs, bars rendering once one exists, and its legend showing both
   series), and theme toggle + persistence — failing loudly on both
   failed assertions and any browser console error. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
   enabled in the UI for a month that isn't locked, and a freshly-seeded
   month never is by default. Slower (~20–25s) and needs
-  the dev ports free — this is the one to run after any client-side change,
-  or before considering a session's changes done.
+  its own dev ports free (overridable via `.env`, see "Running a second
+  checkout alongside an existing one" above) — this is the one to run after
+  any client-side change, or before considering a session's changes done.
 
 Both suites are self-contained: they create their own temp data directories
 and never touch the real `Expenses` folder.
