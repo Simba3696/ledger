@@ -62,6 +62,14 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
         <span className="emi-remaining">
           {rupee.format(emi.remaining)} <span className="emi-of-total">of {rupee.format(emi.totalAmount)}</span>
         </span>
+        {/* Only shown when it actually differs from `remaining` (i.e. an
+            interestRate is on record) — otherwise it's an identical second
+            number and just noise. `remaining` includes interest that hasn't
+            accrued yet once a real rate exists, so this is the number that
+            actually matters for a foreclosure decision. */}
+        {emi.foreclosurePayoff !== emi.remaining && (
+          <span className="emi-foreclosure-payoff">Foreclosure payoff: {rupee.format(emi.foreclosurePayoff)}</span>
+        )}
         <span className="emi-schedule">
           {rupee.format(emi.emiAmount)}/mo, due {ordinal(emi.dueDay)}
           {emi.interestRate !== null && ` · ${emi.interestRate}% p.a.`}

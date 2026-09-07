@@ -565,3 +565,82 @@ describe("emiMonthlyProjection", () => {
     ]);
   });
 });
+
+describe("emi foreclosurePayoff", () => {
+  it("matches a hand-computed present-value example (12% p.a., 5 installments left)", async () => {
+    // emiAmount 1000, remainingAsOf 5000 (== 5 future installments), 12% p.a.
+    // → monthly rate 0.01. Standard amortization present-value formula,
+    // computed independently by hand: A*(1-(1+r)^-n)/r
+    // = 1000 * (1 - 1.01^-5) / 0.01 ≈ 4853.43 (outstanding principal —
+    // genuinely less than the 5000 `remaining` represents, since that
+    // figure still includes ~146.57 of interest that hasn't accrued yet).
+    const added = await emi.addEmi({
+      cardOrBank: "PV Test",
+      emiAmount: 1000,
+      dueDay: 10,
+      totalAmount: 10000,
+      remarks: "",
+      remainingAsOf: 5000,
+      interestRate: 12,
+    });
+    expect(added.remaining).toBe(5000);
+    expect(added.foreclosurePayoff).toBeCloseTo(4853.43, 1);
+    expect(added.foreclosurePayoff).toBeLessThan(added.remaining);
+  });
+
+  it("equals remaining exactly when no interestRate is on record (graceful r→0 degradation)", async () => {
+    const added = await emi.addEmi({
+      cardOrBank: "No Rate Test",
+      emiAmount: 500,
+      dueDay: 10,
+      totalAmount: 5000,
+      remarks: "",
+      remainingAsOf: 3500,
+    });
+    expect(added.interestRate).toBeNull();
+    expect(added.foreclosurePayoff).toBe(added.remaining);
+  });
+
+  it("equals remaining exactly when interestRate is explicitly 0", async () => {
+    const added = await emi.addEmi({
+      cardOrBank: "Zero Rate Test",
+      emiAmount: 500,
+      dueDay: 10,
+      totalAmount: 5000,
+      remarks: "",
+      remainingAsOf: 3500,
+      interestRate: 0,
+    });
+    expect(added.foreclosurePayoff).toBe(added.remaining);
+  });
+
+  it("applies foreclosureCharge as a percentage on top of the outstanding principal", async () => {
+    // No interestRate, so principal == remaining == 1000 exactly; a 5%
+    // foreclosure charge should bring the payoff to exactly 1050.
+    const added = await emi.addEmi({
+      cardOrBank: "Charge Payoff Test",
+      emiAmount: 500,
+      dueDay: 10,
+      totalAmount: 5000,
+      remarks: "",
+      remainingAsOf: 1000,
+      foreclosureCharge: 5,
+    });
+    expect(added.foreclosurePayoff).toBe(1050);
+  });
+
+  it("is 0 for a fully paid-off loan, never negative or NaN", async () => {
+    const added = await emi.addEmi({
+      cardOrBank: "Paid Off Test",
+      emiAmount: 500,
+      dueDay: 10,
+      totalAmount: 5000,
+      remarks: "",
+      remainingAsOf: 0,
+      interestRate: 15,
+      foreclosureCharge: 3,
+    });
+    expect(added.remaining).toBe(0);
+    expect(added.foreclosurePayoff).toBe(0);
+  });
+});

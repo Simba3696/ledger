@@ -87,6 +87,37 @@ export interface EmiEntryComputed extends EmiEntry {
    * "EMI-Free On" stat, which needs an exact date to compare across loans,
    * not just a month. */
   estimatedPayoffDate: string | null;
+  /** What it would actually cost to close this loan today — the true
+   * outstanding principal (via standard reducing-balance amortization, the
+   * same shape a bank's own early-closure quote uses), plus
+   * `foreclosureCharge`% if one is on record. Deliberately *not* the same as
+   * `remaining`: that figure is `emiAmount` × cycles-left, which includes
+   * interest that hasn't accrued yet for any loan with a real
+   * `interestRate` — a genuinely bigger number than what foreclosing today
+   * would cost. Equals `remaining` exactly when no `interestRate` is on
+   * record (see `computeOutstandingPrincipal`), so an entry with no rate
+   * behaves exactly as it always has. */
+  foreclosurePayoff: number;
+}
+
+/** Present value of the remaining payment stream — `n` level payments of
+ * `emiAmount` at monthly rate `r` — which is the true outstanding
+ * principal, as opposed to `remaining` (`emiAmount` × cycles-left), which
+ * double-counts interest that hasn't accrued yet for any loan with a real
+ * `interestRate`. Gracefully reduces to exactly `remaining` when `r` is 0
+ * (no rate on record): the formula's mathematical limit as `r → 0` is `A ×
+ * n`, i.e. `remaining` itself, but that limit isn't safe to evaluate
+ * directly (literal division by `r = 0`), so it's special-cased. */
+function computeOutstandingPrincipal(remaining: number, emiAmount: number, interestRate: number | null): number {
+  if (remaining <= 0 || emiAmount <= 0) return 0;
+  const monthlyRate = (interestRate ?? 0) / 12 / 100;
+  if (monthlyRate === 0) return remaining;
+  const n = remaining / emiAmount;
+  return round2((emiAmount * (1 - Math.pow(1 + monthlyRate, -n))) / monthlyRate);
+}
+
+function computeForeclosurePayoff(outstandingPrincipal: number, foreclosureCharge: number | null): number {
+  return round2(outstandingPrincipal * (1 + (foreclosureCharge ?? 0) / 100));
 }
 
 function round2(n: number): number {
@@ -191,7 +222,9 @@ export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntr
       : nthFutureDueDate(entry.dueDay, Math.ceil(remaining / entry.emiAmount), startOfDay(today));
   const estimatedPayoffMonth = payoffDate ? toMonthOnly(payoffDate) : null;
   const estimatedPayoffDate = payoffDate ? formatDate(payoffDate) : null;
-  return { ...entry, remaining, isPaidOff, estimatedPayoffMonth, estimatedPayoffDate };
+  const outstandingPrincipal = computeOutstandingPrincipal(remaining, entry.emiAmount, entry.interestRate);
+  const foreclosurePayoff = computeForeclosurePayoff(outstandingPrincipal, entry.foreclosureCharge);
+  return { ...entry, remaining, isPaidOff, estimatedPayoffMonth, estimatedPayoffDate, foreclosurePayoff };
 }
 
 function validateEntry(cardOrBank: string, emiAmount: number, dueDay: number, totalAmount: number, remainingAsOf: number) {
