@@ -465,7 +465,11 @@ async function main() {
     );
 
     await page.click(".month-lock-toggle"); // Lock this month
-    await page.waitForTimeout(400);
+    // Locking is 3 sequential round-trips under the hood (PUT lock, then
+    // GET lock + GET month entries to refresh) — waiting for the button's
+    // own label to actually flip is a real completion signal, unlike a
+    // fixed delay that assumes all three finish inside some guessed window.
+    await page.locator(".month-lock-toggle", { hasText: "Unlock" }).waitFor({ timeout: 5000 });
     check(
       "Locking the month updates the banner and button label",
       (await page.locator(".month-lock-status").innerText()).includes("is locked") &&
@@ -504,7 +508,7 @@ async function main() {
     if (expected403 !== -1) consoleErrors.splice(expected403, 1);
 
     await page.click(".month-lock-toggle"); // Unlock again
-    await page.waitForTimeout(400);
+    await page.locator(".month-lock-toggle", { hasText: "Lock this month" }).waitFor({ timeout: 5000 });
     check(
       "Unlocking restores the unlocked banner, re-enables the form, and restores entry controls",
       (await page.locator(".month-lock-status").innerText()).includes("is unlocked") &&
