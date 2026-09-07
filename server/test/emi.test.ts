@@ -215,10 +215,11 @@ describe("emi until-target (bank-stated Duration)", () => {
     );
     expect(added.estimatedPayoffMonth).toBe("2026-11");
     expect(added.untilTarget).toBe("2026-11-01");
-    // The bank-stated target is the exact date, not just re-derived from
-    // dueDay — its day-of-month (1st) comes from *when the loan was added*
-    // (Jan 1 + 10 months), not from dueDay (15th).
-    expect(added.estimatedPayoffDate).toBe("2026-11-01");
+    // untilTarget's day-of-month (1st) comes from *when the loan was added*
+    // (Jan 1 + 10 months) and has nothing to do with dueDay — the real final
+    // installment is the first actual due date (15th) on or after that
+    // target, i.e. Nov 15 here (15th >= 1st, so it lands the same month).
+    expect(added.estimatedPayoffDate).toBe("2026-11-15");
   });
 
   it("without a Duration, falls back to the derived remaining/emiAmount estimate as before", async () => {
@@ -240,7 +241,7 @@ describe("emi until-target (bank-stated Duration)", () => {
     );
     expect(updated.untilTarget).toBe("2026-11-01"); // unchanged
     expect(updated.estimatedPayoffMonth).toBe("2026-11");
-    expect(updated.estimatedPayoffDate).toBe("2026-11-01");
+    expect(updated.estimatedPayoffDate).toBe("2026-11-15"); // resolved against dueDay, same as above
   });
 
   it("preserves the stored until-target across recordEmiPayment (never touches it)", async () => {
@@ -263,6 +264,33 @@ describe("emi until-target (bank-stated Duration)", () => {
       new Date(2026, 2, 1), // Mar 1, 2026
     );
     expect(updated.untilTarget).toBe("2026-09-01"); // Mar 1 + 6 months
+  });
+
+  it("rolls the until-target forward to next month's due date when dueDay falls before the target's day-of-month", async () => {
+    // Regression test for a real reported bug: a loan added/edited on the
+    // 23rd with dueDay 9 and a Duration landing on "the 23rd, N months out"
+    // — since the 9th of that target month already passed relative to the
+    // 23rd, the loan doesn't actually finish until the 9th of the *next*
+    // month, not that (already-passed) month's 9th.
+    const added = await emi.addEmi(
+      { cardOrBank: "Moneyback+", emiAmount: 621, dueDay: 9, totalAmount: 20660, remarks: "", remainingAsOf: 27965, durationMonths: 45 },
+      new Date(2026, 7, 23), // Aug 23, 2026
+    );
+    expect(added.untilTarget).toBe("2030-05-23"); // Aug 23, 2026 + 45 months
+    expect(added.estimatedPayoffMonth).toBe("2030-06"); // rolled forward a month, not May
+    expect(added.estimatedPayoffDate).toBe("2030-06-09");
+  });
+
+  it("keeps the until-target's own month when dueDay falls on or after the target's day-of-month", async () => {
+    // Symmetric case: dueDay 25 with a target of the 10th — this month's
+    // 25th is still on/after the 10th, so no roll-forward is needed.
+    const added = await emi.addEmi(
+      { cardOrBank: "Same Month", emiAmount: 500, dueDay: 25, totalAmount: 6000, remarks: "", remainingAsOf: 6000, durationMonths: 12 },
+      new Date(2026, 0, 10), // Jan 10, 2026
+    );
+    expect(added.untilTarget).toBe("2027-01-10"); // Jan 10, 2026 + 12 months
+    expect(added.estimatedPayoffMonth).toBe("2027-01");
+    expect(added.estimatedPayoffDate).toBe("2027-01-25");
   });
 
   it("until-target is ignored once the loan is actually paid off", async () => {

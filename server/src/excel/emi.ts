@@ -56,17 +56,19 @@ export interface EmiEntryComputed extends EmiEntry {
    * of sync the way a manually-typed running balance could. */
   remaining: number;
   isPaidOff: boolean;
-  /** YYYY-MM this loan is expected to finish. Comes straight from
-   * `untilTarget` when one is on record (the bank's own stated schedule);
-   * otherwise falls back to an estimate — the `ceil(remaining/emiAmount)`-th
-   * future due date. Null once already paid off, regardless of which source
-   * it would otherwise have used. */
+  /** YYYY-MM this loan is expected to finish. When a bank-stated `untilTarget`
+   * is on record, this is the month of the first real due date (on `dueDay`)
+   * on or after it — `untilTarget` itself is just a calendar-month milestone,
+   * not necessarily a real payment date, so it's resolved via
+   * `dueDateOnOrAfter` rather than used verbatim. Otherwise falls back to an
+   * estimate — the `ceil(remaining/emiAmount)`-th future due date. Null once
+   * already paid off, regardless of which source it would otherwise have
+   * used. */
   estimatedPayoffMonth: string | null;
   /** The same payoff estimate as `estimatedPayoffMonth`, but as a full
-   * YYYY-MM-DD rather than truncated to the month — either the bank-stated
-   * `untilTarget` itself, or the actual `dueDay`-th-of-the-month date of the
-   * derived final installment. Powers the EMI tab's "EMI-Free On" stat,
-   * which needs an exact date to compare across loans, not just a month. */
+   * YYYY-MM-DD rather than truncated to the month. Powers the EMI tab's
+   * "EMI-Free On" stat, which needs an exact date to compare across loans,
+   * not just a month. */
   estimatedPayoffDate: string | null;
 }
 
@@ -118,6 +120,28 @@ export function nextDueDateAfter(anchor: Date, dueDay: number): Date {
   throw new Error("nextDueDateAfter: no due date found within 100 years");
 }
 
+/** Finds the first real due date (on `dueDay`) on or after `target`.
+ *
+ * `untilTarget` (a bank-stated tenure resolved to `addMonths(asOfDate,
+ * durationMonths)`) is just a calendar-month milestone, not itself
+ * necessarily a real payment date — it keeps whatever day-of-month the loan
+ * happened to be added/edited on, which has nothing to do with `dueDay`.
+ * If `dueDay` falls *earlier* in the target's month than the target's own
+ * day, that month's due date has already passed relative to the target, so
+ * the loan doesn't actually finish paying until the following month's due
+ * date instead (e.g. target day 23 with dueDay 9: the 9th of that month is
+ * before the 23rd, so the real final installment is the 9th of the *next*
+ * month, not that month's 9th). If `dueDay` falls on or after the target's
+ * day, that month's own due date already covers it, unchanged.
+ *
+ * Exported so the e2e regression suite can reuse this exact logic when
+ * computing its own expected finish date, rather than risking a
+ * hand-rolled equivalent silently drifting from this one. */
+export function dueDateOnOrAfter(target: Date, dueDay: number): Date {
+  const sameMonth = makeDate(target.getFullYear(), target.getMonth() + 1, dueDay);
+  return sameMonth >= target ? sameMonth : addMonths(sameMonth, 1);
+}
+
 /** Finds the Nth monthly due date (on `dueDay`) strictly after `today`. */
 function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   let year = today.getFullYear();
@@ -146,7 +170,7 @@ export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntr
   const payoffDate = isPaidOff
     ? null
     : entry.untilTarget
-      ? parseDate(entry.untilTarget)
+      ? dueDateOnOrAfter(parseDate(entry.untilTarget), entry.dueDay)
       : nthFutureDueDate(entry.dueDay, Math.ceil(remaining / entry.emiAmount), startOfDay(today));
   const estimatedPayoffMonth = payoffDate ? toMonthOnly(payoffDate) : null;
   const estimatedPayoffDate = payoffDate ? formatDate(payoffDate) : null;
