@@ -1,6 +1,11 @@
 node_modules/
 dist/
-db/.backups/
+# The whole scratch db/ folder (see README's Setup step 3) — not just its
+# .backups/ subfolder — since it's real (if throwaway) financial data the
+# moment anything's added through the app. A `git worktree`/second clone has
+# no server/.env (gitignored, checkout-local) and falls back to this folder,
+# so this also guards against accidentally committing real data that way.
+db/
 *.tmp-*
 .env
 .backups/
