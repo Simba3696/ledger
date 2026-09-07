@@ -1,0 +1,41 @@
+.month-lock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.month-lock.locked {
+  border-color: var(--danger);
+}
+
+.month-lock-status {
+  flex: 1;
+  color: var(--text-h);
+  font-size: var(--font-size-sm);
+}
+
+.month-lock-toggle {
+  flex-shrink: 0;
+  font-size: var(--font-size-sm);
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.month-lock.locked .month-lock-toggle {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.month-lock-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

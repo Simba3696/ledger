@@ -1,11 +1,20 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from "react";
 import "./App.css";
 import "./shared.css";
-import { addEntry, getCategories, getMonth, type CategoryOption, type LedgerEntry, type UpcomingItem } from "./api";
+import {
+  addEntry,
+  getCategories,
+  getMonth,
+  getMonthLock,
+  type CategoryOption,
+  type LedgerEntry,
+  type UpcomingItem,
+} from "./api";
 import { MonthYearPicker } from "./components/MonthYearPicker";
 import { Dashboard } from "./components/Dashboard";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { LoadingOverlay } from "./components/LoadingOverlay";
+import { MonthLockToggle } from "./components/MonthLockToggle";
 import logoIcon from "./assets/logo-icon.png";
 
 // Dashboard is the default tab (needed on first paint, so it stays eager);
@@ -41,8 +50,11 @@ function App() {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+  // Nothing auto-locks on the 1st of the month anymore — a month stays
+  // editable (default false, i.e. unlocked) until explicitly locked via
+  // MonthLockToggle, backed by real server-side enforcement (a locked
+  // month's sheet rejects writes regardless of what the UI shows).
+  const [locked, setLocked] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -61,6 +73,19 @@ function App() {
     }
   }, [year, month]);
 
+  const refreshLock = useCallback(async () => {
+    try {
+      const { locked } = await getMonthLock(year, month);
+      setLocked(locked);
+    } catch {
+      // A missing year/workbook (e.g. browsing to a future month before
+      // adding anything) has nothing to lock — default to unlocked rather
+      // than surfacing this as an error; getMonth's own fetch already
+      // reports the real "nothing here yet" state via loadError.
+      setLocked(false);
+    }
+  }, [year, month]);
+
   useEffect(() => {
     getCategories().then(setCategories).catch((err) => setLoadError((err as Error).message));
   }, []);
@@ -68,6 +93,10 @@ function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    refreshLock();
+  }, [refreshLock]);
 
   function goToMonth(y: number, m: number) {
     setYear(y);
@@ -152,8 +181,18 @@ function App() {
       {/* Expenses has no nav button — only reachable via a Dashboard chart click (goToMonth). */}
       {tab === "expenses" && (
         <Suspense fallback={<TabFallback />}>
+          <MonthLockToggle
+            year={year}
+            month={month}
+            locked={locked}
+            onChanged={async () => {
+              await refreshLock();
+              await refresh();
+            }}
+          />
           <AddExpenseForm
             categories={categories}
+            disabled={locked}
             onSubmit={async (input) => {
               await addEntry({ year, month, ...input });
               await refresh();
@@ -167,7 +206,7 @@ function App() {
             loading={loading}
             year={year}
             month={month}
-            editable={isCurrentMonth}
+            editable={!locked}
             onChanged={refresh}
           />
         </Suspense>

@@ -233,6 +233,22 @@ export function moveEntry(year: number, month: number, fromRow: number, toRow: n
   }).then((r) => handle(r));
 }
 
+export interface MonthLock {
+  locked: boolean;
+}
+
+export function getMonthLock(year: number, month: number): Promise<MonthLock> {
+  return fetch(`${BASE}/months/${year}/${month}/lock`).then((r) => handle(r));
+}
+
+export function setMonthLock(year: number, month: number, locked: boolean): Promise<MonthLock> {
+  return fetch(`${BASE}/months/${year}/${month}/lock`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ locked }),
+  }).then((r) => handle(r));
+}
+
 export function getYearSummary(year: number): Promise<MonthSummary[]> {
   return fetch(`${BASE}/summary/${year}`).then((r) => handle(r));
 }
