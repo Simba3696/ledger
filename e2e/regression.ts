@@ -1401,6 +1401,61 @@ async function main() {
       (await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).count()) === 0,
     );
 
+    // --- Salary reminder (Upcoming) ---
+    // No income has ever been entered for *last* month in this fixture (only
+    // this month's salary was set, in the Finances section above) — so the
+    // reminder should be showing right now if and only if today falls within
+    // its first-two-weeks-of-the-month window, same gate the server applies.
+    const lastMonthIndex = monthIndex === 0 ? 11 : monthIndex - 1; // 0-based
+    const lastMonthYear = monthIndex === 0 ? year - 1 : year;
+    const lastMonthName = ALL_MONTHS[lastMonthIndex];
+    const withinSalaryReminderWindow = now.getDate() <= 14;
+    const salaryReminderVisible = (await page.locator(".upcoming-item", { hasText: "Salary" }).count()) === 1;
+    check(
+      "Dashboard Overview: salary reminder shows only during the first two weeks of a new month",
+      salaryReminderVisible === withinSalaryReminderWindow,
+    );
+
+    if (withinSalaryReminderWindow) {
+      const reminderItem = page.locator(".upcoming-item", { hasText: "Salary" });
+      check(
+        "Dashboard Overview: salary reminder names last month",
+        (await reminderItem.innerText()).includes(`${lastMonthName} ${lastMonthYear}`),
+      );
+      check(
+        "Dashboard Overview: salary reminder shows a prompt instead of a rupee amount",
+        (await reminderItem.innerText()).includes("Not logged yet"),
+      );
+
+      await reminderItem.click();
+      await page.waitForSelector(".finance-stats");
+      check(
+        "Dashboard Overview: clicking the salary reminder navigates to Finances",
+        (await page.locator(".tabs button.selected").innerText()) === "Finances",
+      );
+      check(
+        "Dashboard Overview: clicking the salary reminder selects last month",
+        (await page.locator(".month-picker select").nth(0).inputValue()) === String(lastMonthIndex + 1) &&
+          (await page.locator(".month-picker select").nth(1).inputValue()) === String(lastMonthYear),
+      );
+
+      // Logging last month's salary should make the reminder disappear.
+      await page.waitForSelector(".loading-overlay", { state: "detached" });
+      await page.locator('.income-form input[type="number"]').nth(0).fill("60000");
+      await page.click(".income-form button.submit-btn");
+      await page.waitForTimeout(300);
+
+      await page.click('.tabs button:has-text("Dashboard")');
+      await waitForDashboardData();
+      await page.waitForTimeout(400);
+      check(
+        "Dashboard Overview: reminder disappears once last month's salary is logged",
+        (await page.locator(".upcoming-item", { hasText: "Salary" }).count()) === 0,
+      );
+    } else {
+      console.log("SKIP: salary reminder detail checks (today is outside its first-two-weeks window)");
+    }
+
     // Upcoming defaults open (it's the actionable part of the dashboard),
     // collapses on click, and remembers that choice across a reload.
     check(

@@ -8,6 +8,7 @@ const SOURCE_LABEL: Record<UpcomingItem["source"], string> = {
   EMI: "EMI",
   Subscription: "Sub",
   "Credit Card": "Card",
+  Salary: "Salary",
 };
 
 const UPCOMING_COLLAPSED_KEY = "ledger-upcoming-collapsed";
@@ -114,12 +115,29 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
                         type="button"
                         className="upcoming-item"
                         onClick={() => onSelectUpcomingItem(item)}
-                        title={`Go to ${item.source === "EMI" ? "EMI" : item.source === "Subscription" ? "Subscriptions" : "Credit Cards"}`}
+                        title={`Go to ${
+                          item.source === "EMI"
+                            ? "EMI"
+                            : item.source === "Subscription"
+                              ? "Subscriptions"
+                              : item.source === "Salary"
+                                ? "Finances"
+                                : "Credit Cards"
+                        }`}
                       >
                         <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
                         <span className="upcoming-name">{item.name}</span>
-                        <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
-                        <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                        {item.source === "Salary" ? (
+                          <>
+                            <span className="upcoming-date">Overdue</span>
+                            <span className="upcoming-amount">Not logged yet</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
+                            <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                          </>
+                        )}
                       </button>
                     </li>
                   ))}

@@ -20,6 +20,23 @@ afterAll(() => {
   fs.rmSync(scratchDir, { recursive: true, force: true });
 });
 
+// Every other test below exercises a "today" date whose *previous* month
+// would otherwise trip the salary reminder further down this file — nothing
+// seeds that month's income, so getMonthIncome would report salary: null and
+// the reminder would sneak into their exact-match `upcoming` assertions.
+// Seeding a real salary for each of those months once here, up front, keeps
+// every pre-existing assertion exact without re-litigating the reminder in
+// each of them. The reminder's own describe block below deliberately uses
+// months left unseeded here.
+for (const { year, month } of [
+  { year: 2025, month: 12 }, // "last month" for the Jan 2026 tests
+  { year: 2026, month: 2 }, // "last month" for the Mar 2026 tests
+  { year: 2026, month: 6 }, // "last month" for the Jul 30 2026 tests
+  { year: 2026, month: 7 }, // "last month" for the Aug 26 2026 test
+]) {
+  await finances.setMonthIncome({ year, month, salary: 50000, otherIncome: null, savings: [] });
+}
+
 describe("dashboardOverview", () => {
   it("returns zeroed net worth and no upcoming items when nothing is tracked yet", async () => {
     const result = await overview.dashboardOverview(new Date(2026, 0, 1));
@@ -310,5 +327,49 @@ describe("dashboardOverview", () => {
 
     await emi.deleteEmi(emiEntry.row);
     await subscriptions.deleteSubscription(sub.row);
+  });
+});
+
+describe("dashboardOverview salary reminder", () => {
+  it("shows a reminder when last month has no salary on record, sorting first regardless of other items' due dates", async () => {
+    // Oct 1 2026 → last month is Sep 2026, deliberately left unseeded by the
+    // setup block above. An EMI due well within the window is added too, to
+    // confirm the reminder sorts ahead of it despite its own dueDate (the
+    // 1st of last month) being chronologically earlier anyway.
+    const soon = await emi.addEmi(
+      { cardOrBank: "Due Soon", emiAmount: 1500, dueDay: 10, totalAmount: 5000, remarks: "", remainingAsOf: 5000 },
+      new Date(2026, 9, 1),
+    );
+
+    const result = await overview.dashboardOverview(new Date(2026, 9, 1));
+    expect(result.upcoming).toEqual([
+      { source: "Salary", name: "September 2026", amount: 0, dueDate: "2026-09-01" },
+      { source: "EMI", name: "Due Soon", amount: 1500, dueDate: "2026-10-10" },
+    ]);
+
+    await emi.deleteEmi(soon.row);
+  });
+
+  it("shows no reminder once last month's salary is on record", async () => {
+    await finances.setMonthIncome({
+      year: 2026,
+      month: 9,
+      salary: 60000,
+      otherIncome: null,
+      savings: [],
+    });
+
+    const result = await overview.dashboardOverview(new Date(2026, 9, 1));
+    expect(result.upcoming).toEqual([]);
+  });
+
+  it("stops showing the reminder after the first two weeks of the new month, even with last month's salary still missing", async () => {
+    // Nov 20 2026 → last month is Oct 2026, left deliberately unseeded — but
+    // day-of-month 20 is well past the 14-day reminder window, so no nudge
+    // should appear even though the underlying condition (no salary on
+    // record) still holds. A reminder that just kept nagging all month would
+    // read as stale rather than actionable.
+    const result = await overview.dashboardOverview(new Date(2026, 10, 20));
+    expect(result.upcoming).toEqual([]);
   });
 });
