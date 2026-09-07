@@ -15,6 +15,10 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { buildFixtureWorkbook } from "../server/test/fixtures.js";
+// Reused (not reimplemented) for the EMI Duration test below — computing
+// "10 months from today" independently here risks silently drifting from
+// addMonths' actual clamp-at-month-end behavior on an edge-case day.
+import { addMonths, startOfDay, formatDate } from "../server/src/excel/dateMath.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -603,6 +607,15 @@ async function main() {
       "en-IN",
       { month: "short", year: "numeric" },
     );
+    // The exact date (not just month) the "EMI-Free On" stat should show —
+    // via the real addMonths, not a hand-rolled equivalent, so this can't
+    // silently drift from the server's own clamp-at-month-end behavior.
+    const expectedFinishDate = formatDate(addMonths(startOfDay(new Date()), 10));
+    const expectedFinishDateText = new Date(`${expectedFinishDate}T00:00:00`).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
 
     await page.fill('.add-emi-form input[placeholder="Optional"]', "E2E Loan");
     await page.click('.add-emi-form button:has-text("Add EMI")');
@@ -627,6 +640,10 @@ async function main() {
     check(
       "EMI: Active Loans stat is 1",
       (await page.locator(".emi-stat", { hasText: "Active Loans" }).innerText()).includes("1"),
+    );
+    check(
+      "EMI: EMI-Free On stat shows this loan's exact finish date",
+      (await page.locator(".emi-stat", { hasText: "EMI-Free On" }).innerText()).includes(expectedFinishDateText),
     );
 
     // --- Edit an EMI entry (correcting drift in the current balance) ---
@@ -689,6 +706,15 @@ async function main() {
     await emiNumberInputs.nth(2).fill("2000"); // Total Amount
     await page.click('.add-emi-form button:has-text("Add EMI")');
     await page.waitForSelector('.emi-row:has-text("E2E Amber")');
+
+    // Amber (fresh ₹2,000/₹500 loan, due the 5th) finishes in only ~4 months —
+    // well before Coral's 10-month target — so EMI-Free On, the *latest*
+    // across all active loans, must stay on Coral's date, not jump to
+    // Amber's sooner one just because it was added more recently.
+    check(
+      "EMI: EMI-Free On stays on the later loan's date after adding an earlier-finishing one",
+      (await page.locator(".emi-stat", { hasText: "EMI-Free On" }).innerText()).includes(expectedFinishDateText),
+    );
 
     async function emiNames(): Promise<string[]> {
       return page.locator(".emi-card").allInnerTexts();
