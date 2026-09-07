@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import { DB_DIR } from "./workbookIO.js";
+import { DB_DIR, LedgerError } from "./workbookIO.js";
 
 export type Category = string;
 
@@ -113,13 +113,32 @@ export function deriveForegroundColor(bg: string): string {
   return contrastRatio(bg, "#ffffff") >= contrastRatio(bg, "#000000") ? "#ffffff" : "#000000";
 }
 
-function readCategoriesFile(): CategoryConfig[] | null {
-  if (!fs.existsSync(CATEGORIES_PATH)) return null;
-  const raw = JSON.parse(fs.readFileSync(CATEGORIES_PATH, "utf8"));
-  if (!Array.isArray(raw)) return null;
-  return raw
+/** `null` means "the file doesn't exist yet" (safe to auto-create defaults);
+ * an unusable-but-present file is a distinct case the caller must NOT treat
+ * the same way — see loadCategoryConfig. */
+function readCategoriesFile(): CategoryConfig[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(CATEGORIES_PATH, "utf8"));
+  } catch (err) {
+    throw new LedgerError(
+      `categories.json exists but isn't valid JSON (${(err as Error).message}) — fix or delete it`,
+      500,
+    );
+  }
+  if (!Array.isArray(raw)) {
+    throw new LedgerError("categories.json exists but isn't a JSON array — fix or delete it", 500);
+  }
+  const parsed = raw
     .filter((e): e is Partial<CategoryConfig> => e && typeof e.id === "string" && typeof e.label === "string" && typeof e.bg === "string")
     .map((e) => ({ id: e.id!, label: e.label!, bg: e.bg!, fg: typeof e.fg === "string" ? e.fg : deriveForegroundColor(e.bg!) }));
+  if (parsed.length === 0) {
+    throw new LedgerError(
+      "categories.json exists but has no usable entries (each needs at least id/label/bg) — fix or delete it",
+      500,
+    );
+  }
+  return parsed;
 }
 
 /** Read-or-create `<DB_DIR>/categories.json`, same pattern every other
@@ -127,14 +146,24 @@ function readCategoriesFile(): CategoryConfig[] | null {
  * defaults on first use). Read fresh on every call — no caching — so a
  * hand-edit while the server is running takes effect on the next request,
  * consistent with how every other data file here is already re-read per
- * call rather than cached. */
+ * call rather than cached.
+ *
+ * Defaults are only ever written when the file is genuinely missing — a
+ * *present* file that fails to parse (bad JSON, wrong shape, or every entry
+ * missing a required field) throws instead of being silently overwritten.
+ * This used to auto-heal by replacing an unusable file with the 4 defaults,
+ * which meant one typo while hand-editing (categories.json is the
+ * documented customization path — see README's Configuring categories)
+ * destroyed the real config with no backup (unlike the .xlsx files, this
+ * file isn't covered by workbookIO's backup-on-write) and silently
+ * recategorized every existing entry as "Uncategorized". */
 export async function loadCategoryConfig(): Promise<CategoryConfig[]> {
-  const existing = readCategoriesFile();
-  if (existing && existing.length > 0) return existing;
-
-  fs.mkdirSync(DB_DIR, { recursive: true });
-  fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(DEFAULT_CATEGORIES, null, 2) + "\n");
-  return DEFAULT_CATEGORIES;
+  if (!fs.existsSync(CATEGORIES_PATH)) {
+    fs.mkdirSync(DB_DIR, { recursive: true });
+    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(DEFAULT_CATEGORIES, null, 2) + "\n");
+    return DEFAULT_CATEGORIES;
+  }
+  return readCategoriesFile();
 }
 
 export function colorToCategory(argb: string | null | undefined, categories: CategoryConfig[]): Category | null {
