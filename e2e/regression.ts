@@ -769,9 +769,37 @@ async function main() {
       (await coralRemaining().innerText()).includes("₹2,000"),
     );
 
+    // --- Sorting (E2E Coral: ₹2,000 remaining/₹1,000 EMI; E2E Amber: fresh ₹500 EMI, ₹2,000 remaining) ---
+    await page.fill('.add-emi-form input[placeholder="Who\'s it with?"]', "E2E Amber");
+    await emiNumberInputs.nth(0).fill("500"); // EMI Amount
+    await emiNumberInputs.nth(1).fill("5"); // Due Day
+    await emiNumberInputs.nth(2).fill("2000"); // Total Amount
+    await page.click('.add-emi-form button:has-text("Add EMI")');
+    await page.waitForSelector('.emi-row:has-text("E2E Amber")');
+
+    async function emiNames(): Promise<string[]> {
+      return page.locator(".emi-card").allInnerTexts();
+    }
+    await page.click('.emi-sort button:has-text("EMI Amount")'); // ascending: lowest first
+    const emiAmountAsc = await emiNames();
+    check(
+      "Sorting by EMI Amount ascending puts the ₹500/mo entry first",
+      emiAmountAsc.indexOf("E2E Amber") < emiAmountAsc.indexOf("E2E Coral"),
+    );
+    await page.click('.emi-sort button:has-text("EMI Amount")'); // descending: highest first
+    const emiAmountDesc = await emiNames();
+    check(
+      "Sorting by EMI Amount descending puts the ₹1,000/mo entry first",
+      emiAmountDesc.indexOf("E2E Coral") < emiAmountDesc.indexOf("E2E Amber"),
+    );
+    await page.click('.emi-sort button:has-text("Name")'); // back to default for the rest of the flow
+    await page.waitForTimeout(200);
+
     // Clean up so the suite is idempotent across runs — via the real
     // "Foreclose EMI" action (matches the user's actual workflow: once a
     // loan is fully paid off, it comes off the list entirely).
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Amber" }), "Foreclose EMI");
+    await page.waitForTimeout(400);
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Foreclose EMI");
     await page.waitForTimeout(400);
     check("EMI back to empty after cleanup (foreclosure)", (await page.locator(".emi-row").count()) === 0);

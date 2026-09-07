@@ -1,10 +1,32 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../api";
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./EMI.css";
+
+type SortField = "name" | "dueDay" | "emiAmount" | "remaining";
+type SortDir = "asc" | "desc";
+
+const SORT_OPTIONS: { field: SortField; label: string }[] = [
+  { field: "name", label: "Name" },
+  { field: "dueDay", label: "Due Day" },
+  { field: "emiAmount", label: "EMI Amount" },
+  { field: "remaining", label: "Remaining" },
+];
+
+function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): EmiEntryComputed[] {
+  const sorted = [...emis].sort((a, b) => {
+    let cmp = 0;
+    if (field === "name") cmp = a.cardOrBank.localeCompare(b.cardOrBank);
+    else if (field === "dueDay") cmp = a.dueDay - b.dueDay;
+    else if (field === "emiAmount") cmp = a.emiAmount - b.emiAmount;
+    else cmp = a.remaining - b.remaining;
+    return dir === "asc" ? cmp : -cmp;
+  });
+  return sorted;
+}
 
 export function EMI() {
   const [emis, setEmis] = useState<EmiEntryComputed[]>([]);
@@ -21,6 +43,20 @@ export function EMI() {
   const [remainingAsOf, setRemainingAsOf] = useState("");
   const [durationMonths, setDurationMonths] = useState("");
   const [adding, setAdding] = useState(false);
+
+  const [sortField, setSortField] = useState<SortField>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function toggleSort(field: SortField) {
+    if (field === sortField) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  }
+
+  const sortedEmis = useMemo(() => sortEmis(emis, sortField, sortDir), [emis, sortField, sortDir]);
 
   // A brand-new EMI hasn't had any payments yet, so Current Balance starts
   // out equal to Total Amount — only auto-filled while Current Balance is
@@ -257,13 +293,30 @@ export function EMI() {
 
       {error && <p className="error">{error}</p>}
 
+      {emis.length > 1 && (
+        <div className="emi-sort">
+          <span>Sort by</span>
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              type="button"
+              key={opt.field}
+              className={sortField === opt.field ? "selected" : ""}
+              onClick={() => toggleSort(opt.field)}
+            >
+              {opt.label}
+              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="emi-body">
         <LoadingOverlay active={loading} />
 
         {!loading && emis.length === 0 && <p className="empty">No EMIs tracked yet.</p>}
 
         <ul className="emi-list">
-          {emis.map((emi) =>
+          {sortedEmis.map((emi) =>
             editingRow === emi.row ? (
               <EditEmiRow
                 key={emi.row}
