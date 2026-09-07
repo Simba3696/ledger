@@ -114,12 +114,12 @@ export async function dashboardOverview(today: Date = new Date()): Promise<Dashb
   // ahead of every genuinely-upcoming item, without needing separate
   // priority logic. amount is 0 since nothing is actually "owed" here — the
   // client hides the amount for this source.
-  if (day.getDate() <= UPCOMING_WINDOW_DAYS && lastMonthIncome && lastMonthIncome.salary === null) {
+  if (lastMonth && lastMonthIncome?.salary === null && day.getDate() <= UPCOMING_WINDOW_DAYS) {
     upcoming.push({
       source: "Salary",
-      name: `${MONTH_NAMES[lastMonth!.month - 1]} ${lastMonth!.year}`,
+      name: `${MONTH_NAMES[lastMonth.month - 1]} ${lastMonth.year}`,
       amount: 0,
-      dueDate: formatDate(makeDate(lastMonth!.year, lastMonth!.month, 1)),
+      dueDate: formatDate(makeDate(lastMonth.year, lastMonth.month, 1)),
     });
   }
 
