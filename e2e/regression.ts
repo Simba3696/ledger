@@ -24,6 +24,28 @@ import { dueDateOnOrAfter } from "../server/src/excel/emi.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
+// Same minimal .env reader as scripts/kill-ports.js, for the same reason:
+// this checkout's server/.env / client/.env may override the default dev
+// ports (e.g. to run alongside another checkout without colliding) — the
+// dev server this script spawns picks that up automatically via its own
+// dotenv/vite loading, so this script must read the same values itself or
+// it'll wait on the wrong port forever (or worse, silently fall back to
+// whatever's actually on 4000, which could be a *different* checkout's
+// live server entirely).
+function readEnvFile(filePath: string): Record<string, string> {
+  const vars: Record<string, string> = {};
+  if (!fs.existsSync(filePath)) return vars;
+  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
+    if (match) vars[match[1]] = match[2].replace(/^["']|["']$/g, "");
+  }
+  return vars;
+}
+const serverEnv = readEnvFile(path.join(ROOT, "server", ".env"));
+const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
+const SERVER_PORT = Number(serverEnv.PORT) || 4000;
+const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
+
 const results: { label: string; ok: boolean }[] = [];
 function check(label: string, ok: boolean) {
   results.push({ label, ok });
@@ -100,8 +122,8 @@ async function main() {
   const consoleErrors: string[] = [];
 
   try {
-    await waitForServer("http://localhost:4000/api/categories", 30000);
-    await waitForServer("http://localhost:5173", 30000);
+    await waitForServer(`http://localhost:${SERVER_PORT}/api/categories`, 30000);
+    await waitForServer(`http://localhost:${CLIENT_PORT}`, 30000);
 
     const browser = await chromium.launch();
     const page = await browser.newPage();
@@ -122,7 +144,7 @@ async function main() {
       await page.waitForSelector(".loading-overlay", { state: "detached" });
     }
 
-    await page.goto("http://localhost:5173", { waitUntil: "networkidle" });
+    await page.goto(`http://localhost:${CLIENT_PORT}`, { waitUntil: "networkidle" });
     await waitForDashboardData();
 
     // --- Dashboard defaults + click-through navigation ---
