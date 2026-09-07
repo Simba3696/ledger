@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import ExcelJS from "exceljs";
 
 // Same pattern as debts.test.ts: LEDGER_DB_DIR must be set before emi.ts's
 // top-level DB_DIR evaluates, so it's imported dynamically after the env var
@@ -312,6 +313,156 @@ describe("emi until-target (bank-stated Duration)", () => {
     await expect(emi.addEmi({ ...durationInput, remainingAsOf: 12000, durationMonths: 601 })).rejects.toMatchObject({
       status: 400,
     });
+  });
+});
+
+describe("emi interest rate (optional)", () => {
+  const rateInput = { cardOrBank: "Rate Test", emiAmount: 500, dueDay: 10, totalAmount: 6000, remarks: "" };
+
+  it("defaults to null when not supplied at all", async () => {
+    const added = await emi.addEmi({ ...rateInput, remainingAsOf: 6000 });
+    expect(added.interestRate).toBeNull();
+  });
+
+  it("stores and round-trips an interest rate", async () => {
+    const added = await emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: 12.5 });
+    expect(added.interestRate).toBe(12.5);
+    const [listed] = await emi.listEmis().then((all) => all.filter((e) => e.row === added.row));
+    expect(listed.interestRate).toBe(12.5);
+  });
+
+  it("allows 0% (an interest-free EMI conversion)", async () => {
+    const added = await emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: 0 });
+    expect(added.interestRate).toBe(0);
+  });
+
+  it("rejects a negative or out-of-range interest rate", async () => {
+    await expect(emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: -1 })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: 101 })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: NaN })).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it("is a plain overwritable field on edit — updates, clears, and doesn't need to be resupplied to keep other fields", async () => {
+    const added = await emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: 10 });
+
+    const updated = await emi.updateEmi(added.row, { ...rateInput, remainingAsOf: 5000, interestRate: 15 });
+    expect(updated.interestRate).toBe(15);
+
+    // Omitting it on a later edit clears it (unlike durationMonths/
+    // untilTarget, there's no "preserve if omitted" behavior for this field).
+    const cleared = await emi.updateEmi(added.row, { ...rateInput, remainingAsOf: 4000 });
+    expect(cleared.interestRate).toBeNull();
+  });
+
+  it("survives recordEmiPayment unchanged", async () => {
+    const added = await emi.addEmi({ ...rateInput, remainingAsOf: 6000, interestRate: 18 });
+    const paid = await emi.recordEmiPayment(added.row, 500);
+    expect(paid.interestRate).toBe(18);
+  });
+
+  it("defaults a legacy entry with no interest-rate column (pre-dating the field) to null rather than rejecting it", async () => {
+    // Simulates a real pre-existing EMI.xlsx written before this column
+    // existed: only 8 columns, no 9th at all.
+    const emiPath = path.join(scratchDir, "EMI.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(emiPath);
+    const sheet = workbook.getWorksheet("EMI")!;
+    const row = sheet.getRow(sheet.rowCount + 1);
+    row.getCell(1).value = "Legacy Loan";
+    row.getCell(2).value = 500;
+    row.getCell(3).value = 10;
+    row.getCell(4).value = 5000;
+    row.getCell(5).value = "";
+    row.getCell(6).value = 5000;
+    row.getCell(7).value = "2026-01-01";
+    // No cell 8 (untilTarget) or 9 (interestRate) at all.
+    row.commit();
+    await workbook.xlsx.writeFile(emiPath);
+
+    const all = await emi.listEmis(new Date(2026, 0, 1));
+    const legacy = all.find((e) => e.cardOrBank === "Legacy Loan");
+    expect(legacy?.interestRate).toBeNull();
+  });
+});
+
+describe("emi foreclosure charge (optional)", () => {
+  const chargeInput = { cardOrBank: "Charge Test", emiAmount: 500, dueDay: 10, totalAmount: 6000, remarks: "" };
+
+  it("defaults to null when not supplied at all", async () => {
+    const added = await emi.addEmi({ ...chargeInput, remainingAsOf: 6000 });
+    expect(added.foreclosureCharge).toBeNull();
+  });
+
+  it("stores and round-trips a foreclosure charge", async () => {
+    const added = await emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: 2.5 });
+    expect(added.foreclosureCharge).toBe(2.5);
+    const [listed] = await emi.listEmis().then((all) => all.filter((e) => e.row === added.row));
+    expect(listed.foreclosureCharge).toBe(2.5);
+  });
+
+  it("allows 0% (e.g. this CRED/IDFC FIRST loan, which charges no foreclosure fee)", async () => {
+    const added = await emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: 0 });
+    expect(added.foreclosureCharge).toBe(0);
+  });
+
+  it("rejects a negative or out-of-range foreclosure charge", async () => {
+    await expect(emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: -1 })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: 101 })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: NaN })).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it("is a plain overwritable field on edit — updates, clears, and doesn't need to be resupplied to keep other fields", async () => {
+    const added = await emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: 3 });
+
+    const updated = await emi.updateEmi(added.row, { ...chargeInput, remainingAsOf: 5000, foreclosureCharge: 4 });
+    expect(updated.foreclosureCharge).toBe(4);
+
+    // Omitting it on a later edit clears it — same plain-field semantics as
+    // interestRate, unlike durationMonths/untilTarget's preserve-if-omitted.
+    const cleared = await emi.updateEmi(added.row, { ...chargeInput, remainingAsOf: 4000 });
+    expect(cleared.foreclosureCharge).toBeNull();
+  });
+
+  it("survives recordEmiPayment unchanged", async () => {
+    const added = await emi.addEmi({ ...chargeInput, remainingAsOf: 6000, foreclosureCharge: 5 });
+    const paid = await emi.recordEmiPayment(added.row, 500);
+    expect(paid.foreclosureCharge).toBe(5);
+  });
+
+  it("defaults a legacy entry with no foreclosure-charge column (pre-dating the field) to null rather than rejecting it", async () => {
+    // Simulates a real pre-existing EMI.xlsx written before this column
+    // existed: 9 columns (interestRate already existed), no 10th at all.
+    const emiPath = path.join(scratchDir, "EMI.xlsx");
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(emiPath);
+    const sheet = workbook.getWorksheet("EMI")!;
+    const row = sheet.getRow(sheet.rowCount + 1);
+    row.getCell(1).value = "Legacy Loan 2";
+    row.getCell(2).value = 500;
+    row.getCell(3).value = 10;
+    row.getCell(4).value = 5000;
+    row.getCell(5).value = "";
+    row.getCell(6).value = 5000;
+    row.getCell(7).value = "2026-01-01";
+    row.getCell(9).value = 15; // interestRate present, foreclosureCharge (10) not
+    row.commit();
+    await workbook.xlsx.writeFile(emiPath);
+
+    const all = await emi.listEmis(new Date(2026, 0, 1));
+    const legacy = all.find((e) => e.cardOrBank === "Legacy Loan 2");
+    expect(legacy).toMatchObject({ interestRate: 15, foreclosureCharge: null });
   });
 });
 

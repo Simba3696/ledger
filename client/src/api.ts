@@ -124,6 +124,12 @@ export interface EmiEntry {
   remainingAsOf: number;
   asOfDate: string;
   untilTarget: string | null;
+  /** Annual interest rate as a percentage (e.g. 12.5 for 12.5% p.a.), or null
+   * if not entered. Purely informational for now — display only. */
+  interestRate: number | null;
+  /** Early-closure fee as a percentage of the outstanding balance, or null if
+   * not entered. Purely informational for now — display only. */
+  foreclosureCharge: number | null;
 }
 
 export interface EmiEntryComputed extends EmiEntry {
@@ -144,6 +150,13 @@ export interface EmiEdits {
   /** Bank-stated months until payoff — optional; omitting it on an edit
    * preserves whatever until-target is already on record. */
   durationMonths?: number | null;
+  /** Annual interest rate as a percentage, or null to leave/clear it — a
+   * plain overwritable field (like emiAmount/totalAmount), not sticky like
+   * durationMonths. */
+  interestRate: number | null;
+  /** Early-closure fee as a percentage, or null to leave/clear it — same
+   * plain-overwritable-field semantics as interestRate. */
+  foreclosureCharge: number | null;
 }
 
 export type SubscriptionDuration = "Monthly" | "Yearly";

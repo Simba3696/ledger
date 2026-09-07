@@ -119,6 +119,35 @@
   opacity: 0.7;
 }
 
+.emi-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  max-width: 220px;
+}
+
+.emi-progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.emi-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.emi-progress-label {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
 .emi-figures {
   display: flex;
   flex-direction: column;

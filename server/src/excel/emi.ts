@@ -15,6 +15,8 @@ const HEADERS = [
   "Remaining As Of",
   "As Of Date",
   "Until Target",
+  "Interest Rate (%)",
+  "Foreclosure Charge (%)",
 ];
 
 /** A loan/EMI plan, tracked flat (not month-indexed) like Debts — there's no
@@ -47,6 +49,21 @@ export interface EmiEntry {
    * reproduce. Sticky across edits/payments unless a new Duration is
    * explicitly given — routine balance corrections shouldn't perturb it. */
   untilTarget: string | null; // YYYY-MM-DD
+  /** Annual interest rate as a percentage (e.g. 12.5 for 12.5% p.a.), if the
+   * user has entered one — optional since plenty of entries (an interest-
+   * free EMI conversion, or just not knowing the rate) legitimately have
+   * none. Purely informational for now: nothing in this file's amortization
+   * (a fixed `emiAmount` per cycle, no interest/principal split) depends on
+   * it yet. */
+  interestRate: number | null;
+  /** Early-closure fee as a percentage of the outstanding balance (e.g. 2 for
+   * 2%), if known — optional for the same reasons as `interestRate`, and
+   * likewise purely informational for now: the foreclosure-hint progress bar
+   * only compares raw percent-paid, it doesn't yet net this out against a
+   * loan's remaining balance to find the actual cheapest-to-close loan. A
+   * loan with a small remaining balance but a stiff prepayment penalty can
+   * be worse to foreclose than one with a bigger balance and 0% charge. */
+  foreclosureCharge: number | null;
 }
 
 export interface EmiEntryComputed extends EmiEntry {
@@ -192,6 +209,20 @@ function validateDurationMonths(durationMonths: number | null | undefined) {
   }
 }
 
+function validateInterestRate(interestRate: number | null | undefined) {
+  if (interestRate === null || interestRate === undefined) return;
+  if (!Number.isFinite(interestRate) || interestRate < 0 || interestRate > 100) {
+    throw new LedgerError("Interest Rate must be a number between 0 and 100", 400);
+  }
+}
+
+function validateForeclosureCharge(foreclosureCharge: number | null | undefined) {
+  if (foreclosureCharge === null || foreclosureCharge === undefined) return;
+  if (!Number.isFinite(foreclosureCharge) || foreclosureCharge < 0 || foreclosureCharge > 100) {
+    throw new LedgerError("Foreclosure Charge must be a number between 0 and 100", 400);
+  }
+}
+
 function resolveNumber(value: ExcelJS.CellValue): number | null {
   if (typeof value === "number") return value;
   if (value && typeof value === "object" && "result" in value && typeof value.result === "number") {
@@ -245,6 +276,8 @@ export async function listEmis(today: Date = new Date()): Promise<EmiEntryComput
     const remainingAsOf = resolveNumber(row.getCell(6).value);
     const asOfDate = row.getCell(7).value;
     const untilTargetRaw = row.getCell(8).value;
+    const interestRate = resolveNumber(row.getCell(9).value);
+    const foreclosureCharge = resolveNumber(row.getCell(10).value);
     if (
       typeof cardOrBank === "string" &&
       cardOrBank.trim() &&
@@ -264,6 +297,8 @@ export async function listEmis(today: Date = new Date()): Promise<EmiEntryComput
         remainingAsOf,
         asOfDate,
         untilTarget: typeof untilTargetRaw === "string" && untilTargetRaw ? untilTargetRaw : null,
+        interestRate,
+        foreclosureCharge,
       });
     }
   });
@@ -354,12 +389,25 @@ export interface EmiEditsInput {
    * whatever target was already on record rather than clearing it; there's
    * no direct way to blank it out again short of re-adding the entry. */
   durationMonths?: number | null;
+  /** Annual interest rate as a percentage, or null/omitted to leave it
+   * unset (or clear it, on an edit) — unlike `durationMonths`, this is a
+   * plain overwritable field (like `emiAmount`/`totalAmount`): whatever is
+   * passed here (including omitted, treated the same as null) is exactly
+   * what gets stored, with no "preserve if omitted" behavior. */
+  interestRate?: number | null;
+  /** Early-closure fee as a percentage, or null/omitted to leave/clear it —
+   * same plain-overwritable-field semantics as `interestRate`. */
+  foreclosureCharge?: number | null;
 }
 
 export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Promise<EmiEntryComputed> {
   const cardOrBank = input.cardOrBank.trim();
   validateEntry(cardOrBank, input.emiAmount, input.dueDay, input.totalAmount, input.remainingAsOf);
   validateDurationMonths(input.durationMonths);
+  validateInterestRate(input.interestRate);
+  validateForeclosureCharge(input.foreclosureCharge);
+  const interestRate = input.interestRate ?? null;
+  const foreclosureCharge = input.foreclosureCharge ?? null;
 
   const workbook = await loadOrCreateWorkbook();
   const sheet = getEmiSheet(workbook);
@@ -375,6 +423,8 @@ export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Pr
   row.getCell(6).value = input.remainingAsOf;
   row.getCell(7).value = asOfDate;
   row.getCell(8).value = untilTarget;
+  row.getCell(9).value = interestRate;
+  row.getCell(10).value = foreclosureCharge;
   row.commit();
 
   await saveWorkbook(workbook, EMI_PATH);
@@ -388,6 +438,8 @@ export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Pr
     remainingAsOf: input.remainingAsOf,
     asOfDate,
     untilTarget,
+    interestRate,
+    foreclosureCharge,
   };
   return withComputed(entry, today);
 }
@@ -400,6 +452,10 @@ export async function updateEmi(
   const cardOrBank = input.cardOrBank.trim();
   validateEntry(cardOrBank, input.emiAmount, input.dueDay, input.totalAmount, input.remainingAsOf);
   validateDurationMonths(input.durationMonths);
+  validateInterestRate(input.interestRate);
+  validateForeclosureCharge(input.foreclosureCharge);
+  const interestRate = input.interestRate ?? null;
+  const foreclosureCharge = input.foreclosureCharge ?? null;
 
   const workbook = await loadOrCreateWorkbook();
   const sheet = getEmiSheet(workbook);
@@ -419,6 +475,8 @@ export async function updateEmi(
   row.getCell(6).value = input.remainingAsOf;
   row.getCell(7).value = asOfDate;
   row.getCell(8).value = untilTarget;
+  row.getCell(9).value = interestRate;
+  row.getCell(10).value = foreclosureCharge;
   row.commit();
 
   await saveWorkbook(workbook, EMI_PATH);
@@ -432,6 +490,8 @@ export async function updateEmi(
     remainingAsOf: input.remainingAsOf,
     asOfDate,
     untilTarget,
+    interestRate,
+    foreclosureCharge,
   };
   return withComputed(entry, today);
 }
@@ -499,6 +559,8 @@ export async function recordEmiPayment(
       remarks: entry.remarks,
       remainingAsOf: newRemainingAsOf,
       durationMonths: null, // preserve whatever until-target was already on record
+      interestRate: entry.interestRate, // preserve whatever rate was already on record
+      foreclosureCharge: entry.foreclosureCharge, // preserve whatever charge was already on record
     },
     dueToSettle,
   );
