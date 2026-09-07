@@ -1061,6 +1061,16 @@ async function main() {
       "Credit Cards: Saved/Overpaid stays ₹0 while no card is marked Settled",
       (await monthStat("Overpaid").count()) === 0 && (await monthStat("Saved").innerText()).includes("0.00"),
     );
+    // The yearly figure must agree with the month figure right above it —
+    // summing every month's own (settled-only) overpaidOrSaved, not a naive
+    // yearTotalDue - yearTotalPaid across every card regardless of Settled,
+    // which would already show "Overpaid ₹40" here from OneCard's raw gap
+    // even though nothing is settled yet.
+    check(
+      "Credit Cards: yearly Overpaid/Saved also stays ₹0 while no card is marked Settled",
+      (await yearStat("Net Overpaid This Year").count()) === 0 &&
+        (await yearStat("Net Saved This Year").innerText()).includes("0.00"),
+    );
 
     await cardRows.nth(0).locator('input[type="checkbox"]').check(); // settle E2E Coral
     await cardRows.nth(1).locator('input[type="checkbox"]').check(); // settle E2E OneCard
