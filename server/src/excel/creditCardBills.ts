@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
+import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
 export const EARLIEST_YEAR = 2018;
 
@@ -128,19 +128,21 @@ export async function setMonthBills(input: SetMonthBillsInput): Promise<MonthBil
   validateYearMonth(year, month);
   validateCards(cards);
 
-  const workbook = await loadOrCreateWorkbook();
-  const sheet = getBillsSheet(workbook);
-  let row = findMonthRow(sheet, year, month);
-  if (!row) {
-    row = sheet.getRow(sheet.rowCount + 1);
-    row.getCell(1).value = year;
-    row.getCell(2).value = month;
-  }
-  row.getCell(3).value = cards.length > 0 ? JSON.stringify(cards) : null;
-  row.commit();
+  return withFileLock(BILLS_PATH, async () => {
+    const workbook = await loadOrCreateWorkbook();
+    const sheet = getBillsSheet(workbook);
+    let row = findMonthRow(sheet, year, month);
+    if (!row) {
+      row = sheet.getRow(sheet.rowCount + 1);
+      row.getCell(1).value = year;
+      row.getCell(2).value = month;
+    }
+    row.getCell(3).value = cards.length > 0 ? JSON.stringify(cards) : null;
+    row.commit();
 
-  await saveWorkbook(workbook, BILLS_PATH);
-  return { year, month, cards };
+    await saveWorkbook(workbook, BILLS_PATH);
+    return { year, month, cards };
+  });
 }
 
 export interface MonthBillsSummary extends MonthBills {

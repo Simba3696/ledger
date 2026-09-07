@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
 import { Category, categoryArgb, colorToCategory, loadCategoryConfig } from "./categoryColors.js";
-import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
+import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
 export { DB_DIR, LedgerError };
 
@@ -128,14 +128,16 @@ export async function isMonthLocked(year: number, month: number): Promise<boolea
  * rather than something the calendar decides for you. */
 export async function setMonthLocked(year: number, month: number, locked: boolean): Promise<void> {
   const filePath = workbookPath(year);
-  const workbook = await loadWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  if (locked) {
-    await sheet.protect(MONTH_LOCK_PASSWORD, {});
-  } else {
-    sheet.unprotect();
-  }
-  await saveWorkbook(workbook, filePath);
+  await withFileLock(filePath, async () => {
+    const workbook = await loadWorkbook(year);
+    const sheet = getSheet(workbook, year, month);
+    if (locked) {
+      await sheet.protect(MONTH_LOCK_PASSWORD, {});
+    } else {
+      sheet.unprotect();
+    }
+    await saveWorkbook(workbook, filePath);
+  });
 }
 
 /** Last row (1-based) that has a numeric Amount value in column A. */
@@ -397,56 +399,58 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
   const argb = categoryArgb(categoryConfig);
 
   const filePath = workbookPath(year);
-  const workbook = await loadOrCreateWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  assertWritable(sheet, year, month);
+  return withFileLock(filePath, async () => {
+    const workbook = await loadOrCreateWorkbook(year);
+    const sheet = getSheet(workbook, year, month);
+    assertWritable(sheet, year, month);
 
-  const numFmt = findAmountNumFmt(sheet);
-  const previousLastRow = lastDataRow(sheet);
-  const rowNumber = previousLastRow + 1;
-  const borders = getBorderTemplate(sheet, previousLastRow);
-  const row = sheet.getRow(rowNumber);
-  const cell1 = row.getCell(1);
-  detachStyle(cell1);
-  cell1.value = -Math.abs(amount);
-  cell1.numFmt = numFmt;
-  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
-  cell1.border = { ...borders.a, bottom: borders.closingBottom };
-  cell1.alignment = AMOUNT_ALIGNMENT;
+    const numFmt = findAmountNumFmt(sheet);
+    const previousLastRow = lastDataRow(sheet);
+    const rowNumber = previousLastRow + 1;
+    const borders = getBorderTemplate(sheet, previousLastRow);
+    const row = sheet.getRow(rowNumber);
+    const cell1 = row.getCell(1);
+    detachStyle(cell1);
+    cell1.value = -Math.abs(amount);
+    cell1.numFmt = numFmt;
+    cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+    cell1.border = { ...borders.a, bottom: borders.closingBottom };
+    cell1.alignment = AMOUNT_ALIGNMENT;
 
-  const cell2 = row.getCell(2);
-  detachStyle(cell2);
-  cell2.value = remarks.trim();
-  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
-  cell2.border = { ...borders.b, bottom: borders.closingBottom };
-  cell2.alignment = REMARKS_ALIGNMENT;
+    const cell2 = row.getCell(2);
+    detachStyle(cell2);
+    cell2.value = remarks.trim();
+    cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+    cell2.border = { ...borders.b, bottom: borders.closingBottom };
+    cell2.alignment = REMARKS_ALIGNMENT;
 
-  applyCcCell(row.getCell(3), isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, borders.c);
-  row.commit();
+    applyCcCell(row.getCell(3), isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, borders.c);
+    row.commit();
 
-  // The row we just displaced as "last" needs its closing bottom border
-  // demoted back to the normal interior pattern.
-  if (previousLastRow >= 2) {
-    const oldLastRow = sheet.getRow(previousLastRow);
-    const oldCell1 = oldLastRow.getCell(1);
-    const oldCell2 = oldLastRow.getCell(2);
-    detachStyle(oldCell1);
-    detachStyle(oldCell2);
-    oldCell1.border = borders.a;
-    oldCell2.border = borders.b;
-    oldLastRow.commit();
-  }
+    // The row we just displaced as "last" needs its closing bottom border
+    // demoted back to the normal interior pattern.
+    if (previousLastRow >= 2) {
+      const oldLastRow = sheet.getRow(previousLastRow);
+      const oldCell1 = oldLastRow.getCell(1);
+      const oldCell2 = oldLastRow.getCell(2);
+      detachStyle(oldCell1);
+      detachStyle(oldCell2);
+      oldCell1.border = borders.a;
+      oldCell2.border = borders.b;
+      oldLastRow.commit();
+    }
 
-  await saveWorkbook(workbook, filePath);
+    await saveWorkbook(workbook, filePath);
 
-  return {
-    row: rowNumber,
-    amount: Math.abs(amount),
-    remarks: remarks.trim(),
-    isCard,
-    cardNote: isCard ? "CC" : null,
-    category,
-  };
+    return {
+      row: rowNumber,
+      amount: Math.abs(amount),
+      remarks: remarks.trim(),
+      isCard,
+      cardNote: isCard ? "CC" : null,
+      category,
+    };
+  });
 }
 
 export interface UpdateEntryInput {
@@ -469,42 +473,44 @@ export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry>
   const argb = categoryArgb(categoryConfig);
 
   const filePath = workbookPath(year);
-  const workbook = await loadWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  assertWritable(sheet, year, month);
-  assertRealEntryRow(sheet, rowNumber, year, month);
+  return withFileLock(filePath, async () => {
+    const workbook = await loadWorkbook(year);
+    const sheet = getSheet(workbook, year, month);
+    assertWritable(sheet, year, month);
+    assertRealEntryRow(sheet, rowNumber, year, month);
 
-  // Editing never changes position, so the Amount/Remarks borders are left
-  // untouched. The CC cell's border is tied to isCard rather than position
-  // though, so it still needs to be (re)applied or cleared via applyCcCell.
-  const row = sheet.getRow(rowNumber);
+    // Editing never changes position, so the Amount/Remarks borders are left
+    // untouched. The CC cell's border is tied to isCard rather than position
+    // though, so it still needs to be (re)applied or cleared via applyCcCell.
+    const row = sheet.getRow(rowNumber);
 
-  const cell1 = row.getCell(1);
-  detachStyle(cell1); // preserves cell1's existing border (untouched by design) while breaking any shared reference
-  cell1.value = -Math.abs(amount);
-  cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
-  cell1.alignment = AMOUNT_ALIGNMENT;
+    const cell1 = row.getCell(1);
+    detachStyle(cell1); // preserves cell1's existing border (untouched by design) while breaking any shared reference
+    cell1.value = -Math.abs(amount);
+    cell1.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+    cell1.alignment = AMOUNT_ALIGNMENT;
 
-  const cell2 = row.getCell(2);
-  detachStyle(cell2);
-  cell2.value = remarks.trim();
-  cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
-  cell2.alignment = REMARKS_ALIGNMENT;
+    const cell2 = row.getCell(2);
+    detachStyle(cell2);
+    cell2.value = remarks.trim();
+    cell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+    cell2.alignment = REMARKS_ALIGNMENT;
 
-  const cell3 = row.getCell(3);
-  applyCcCell(cell3, isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, cloneBorder(BORDER_FALLBACK.c));
-  row.commit();
+    const cell3 = row.getCell(3);
+    applyCcCell(cell3, isCard, { type: "pattern", pattern: "solid", fgColor: { argb } }, cloneBorder(BORDER_FALLBACK.c));
+    row.commit();
 
-  await saveWorkbook(workbook, filePath);
+    await saveWorkbook(workbook, filePath);
 
-  return {
-    row: rowNumber,
-    amount: Math.abs(amount),
-    remarks: remarks.trim(),
-    isCard,
-    cardNote: isCard ? "CC" : null,
-    category,
-  };
+    return {
+      row: rowNumber,
+      amount: Math.abs(amount),
+      remarks: remarks.trim(),
+      isCard,
+      cardNote: isCard ? "CC" : null,
+      category,
+    };
+  });
 }
 
 export interface DeleteEntryInput {
@@ -517,15 +523,17 @@ export async function deleteEntry(input: DeleteEntryInput): Promise<void> {
   const { year, month, row: rowNumber } = input;
 
   const filePath = workbookPath(year);
-  const workbook = await loadWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  assertWritable(sheet, year, month);
-  assertRealEntryRow(sheet, rowNumber, year, month);
+  await withFileLock(filePath, async () => {
+    const workbook = await loadWorkbook(year);
+    const sheet = getSheet(workbook, year, month);
+    assertWritable(sheet, year, month);
+    assertRealEntryRow(sheet, rowNumber, year, month);
 
-  sheet.spliceRows(rowNumber, 1); // shifts every row below up by one, carrying its formatting with it
-  fixClosingBorder(sheet);
+    sheet.spliceRows(rowNumber, 1); // shifts every row below up by one, carrying its formatting with it
+    fixClosingBorder(sheet);
 
-  await saveWorkbook(workbook, filePath);
+    await saveWorkbook(workbook, filePath);
+  });
 }
 
 export interface MoveEntryInput {
@@ -551,67 +559,69 @@ export async function moveEntry(input: MoveEntryInput): Promise<void> {
   const { year, month, fromRow, toRow } = input;
 
   const filePath = workbookPath(year);
-  const workbook = await loadWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  assertWritable(sheet, year, month);
-  assertRealEntryRow(sheet, fromRow, year, month);
+  await withFileLock(filePath, async () => {
+    const workbook = await loadWorkbook(year);
+    const sheet = getSheet(workbook, year, month);
+    assertWritable(sheet, year, month);
+    assertRealEntryRow(sheet, fromRow, year, month);
 
-  const last = lastDataRow(sheet);
-  if (!Number.isInteger(toRow) || toRow < 2 || toRow > last) {
-    throw new LedgerError(`Invalid target row: ${toRow}`, 400);
-  }
-  if (fromRow === toRow) return;
-
-  const snapshots: RowSnapshot[] = [];
-  for (let r = 2; r <= last; r++) {
-    const row = sheet.getRow(r);
-    const amount = row.getCell(1).value;
-    if (typeof amount !== "number") {
-      throw new LedgerError(`Unexpected non-entry row at ${r}; reordering aborted`, 500);
+    const last = lastDataRow(sheet);
+    if (!Number.isInteger(toRow) || toRow < 2 || toRow > last) {
+      throw new LedgerError(`Invalid target row: ${toRow}`, 400);
     }
-    const remarksValue = row.getCell(2).value;
-    const ccValue = row.getCell(3).value;
-    snapshots.push({
-      amount,
-      remarks: typeof remarksValue === "string" ? remarksValue : String(remarksValue ?? ""),
-      ccValue: typeof ccValue === "string" && ccValue.trim() ? ccValue : null,
-      fill: cloneBorder(row.getCell(1).fill),
-      numFmt: row.getCell(1).numFmt ?? FALLBACK_AMOUNT_NUMFMT,
+    if (fromRow === toRow) return;
+
+    const snapshots: RowSnapshot[] = [];
+    for (let r = 2; r <= last; r++) {
+      const row = sheet.getRow(r);
+      const amount = row.getCell(1).value;
+      if (typeof amount !== "number") {
+        throw new LedgerError(`Unexpected non-entry row at ${r}; reordering aborted`, 500);
+      }
+      const remarksValue = row.getCell(2).value;
+      const ccValue = row.getCell(3).value;
+      snapshots.push({
+        amount,
+        remarks: typeof remarksValue === "string" ? remarksValue : String(remarksValue ?? ""),
+        ccValue: typeof ccValue === "string" && ccValue.trim() ? ccValue : null,
+        fill: cloneBorder(row.getCell(1).fill),
+        numFmt: row.getCell(1).numFmt ?? FALLBACK_AMOUNT_NUMFMT,
+      });
+    }
+
+    const [moved] = snapshots.splice(fromRow - 2, 1);
+    snapshots.splice(toRow - 2, 0, moved);
+
+    snapshots.forEach((snap, i) => {
+      const row = sheet.getRow(i + 2);
+      const fill = snap.fill ?? { type: "pattern", pattern: "none" };
+
+      // Every property is rewritten from the snapshot regardless of what this
+      // row position previously held, so a full style reset (rather than
+      // detachStyle's preserve-and-clone) is correct here.
+      const cell1 = row.getCell(1);
+      cell1.style = {};
+      cell1.value = snap.amount;
+      cell1.numFmt = snap.numFmt;
+      cell1.fill = fill;
+      cell1.alignment = AMOUNT_ALIGNMENT;
+      cell1.border = cloneBorder(BORDER_FALLBACK.a);
+
+      const cell2 = row.getCell(2);
+      cell2.style = {};
+      cell2.value = snap.remarks;
+      cell2.fill = fill;
+      cell2.alignment = REMARKS_ALIGNMENT;
+      cell2.border = cloneBorder(BORDER_FALLBACK.b);
+
+      applyCcCell(row.getCell(3), !!snap.ccValue, fill, cloneBorder(BORDER_FALLBACK.c));
+      if (snap.ccValue) row.getCell(3).value = snap.ccValue; // preserve notes like "CC (200)"
+
+      row.commit();
     });
-  }
 
-  const [moved] = snapshots.splice(fromRow - 2, 1);
-  snapshots.splice(toRow - 2, 0, moved);
+    fixClosingBorder(sheet);
 
-  snapshots.forEach((snap, i) => {
-    const row = sheet.getRow(i + 2);
-    const fill = snap.fill ?? { type: "pattern", pattern: "none" };
-
-    // Every property is rewritten from the snapshot regardless of what this
-    // row position previously held, so a full style reset (rather than
-    // detachStyle's preserve-and-clone) is correct here.
-    const cell1 = row.getCell(1);
-    cell1.style = {};
-    cell1.value = snap.amount;
-    cell1.numFmt = snap.numFmt;
-    cell1.fill = fill;
-    cell1.alignment = AMOUNT_ALIGNMENT;
-    cell1.border = cloneBorder(BORDER_FALLBACK.a);
-
-    const cell2 = row.getCell(2);
-    cell2.style = {};
-    cell2.value = snap.remarks;
-    cell2.fill = fill;
-    cell2.alignment = REMARKS_ALIGNMENT;
-    cell2.border = cloneBorder(BORDER_FALLBACK.b);
-
-    applyCcCell(row.getCell(3), !!snap.ccValue, fill, cloneBorder(BORDER_FALLBACK.c));
-    if (snap.ccValue) row.getCell(3).value = snap.ccValue; // preserve notes like "CC (200)"
-
-    row.commit();
+    await saveWorkbook(workbook, filePath);
   });
-
-  fixClosingBorder(sheet);
-
-  await saveWorkbook(workbook, filePath);
 }

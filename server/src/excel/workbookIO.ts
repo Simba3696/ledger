@@ -19,6 +19,45 @@ export class LedgerError extends Error {
 
 const backedUpThisRun = new Set<string>();
 
+/** Per-file chain of promises — every call for the same `filePath` runs
+ * strictly after the previous one finishes, so two overlapping requests
+ * against the same workbook (e.g. an add-expense from the phone and one from
+ * the desktop landing in the same second) can never both read the same
+ * pre-write state and then both save, silently dropping whichever one wrote
+ * second. Without this, two concurrent `appendEntry` calls both compute the
+ * same "next row number" and one entry is lost entirely.
+ *
+ * `filePath` is always an absolute, fully-resolved path (see each module's
+ * own `workbookPath`/`FILE_PATH`), so the same workbook is never
+ * accidentally tracked under two different map keys. Locks are per-process,
+ * in-memory only — this doesn't protect against a second server process (or
+ * Excel itself) writing concurrently, which `saveWorkbook`'s locked-file
+ * detection and backup-on-write already cover. */
+const fileLocks = new Map<string, Promise<unknown>>();
+
+/** Runs `fn` only after every previously-queued call for this same
+ * `filePath` has settled (succeeded or thrown) — the standard promise-chain
+ * mutex pattern. Every exported read-modify-write function in the
+ * `excel/*.ts` modules wraps its whole body (load, mutate, save) in this,
+ * not just the final `saveWorkbook` call, since the race is between one
+ * request's *read* and another's *write*, not just between two writes. */
+export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = fileLocks.get(filePath) ?? Promise.resolve();
+  const next = previous.then(fn, fn);
+  // Swallow rejection here so one failed call doesn't poison the chain for
+  // every call after it — the caller of withFileLock still gets the real
+  // rejection via `next` (or `result` below), this is only to keep the map's
+  // stored promise itself always resolved.
+  fileLocks.set(
+    filePath,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /** Per-file cap, not a time cutoff — a rarely-touched file (e.g. Debts, only
  * edited every few months) would otherwise lose its one and only backup to a
  * 30-day-style expiry despite never having accumulated any clutter at all. */

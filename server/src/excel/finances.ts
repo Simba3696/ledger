@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
+import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 import { yearExpenseTotals } from "./ledger.js";
 
 export const EARLIEST_YEAR = 2018;
@@ -170,24 +170,26 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
   validateAmount(otherIncome, "Other income");
   validateSavings(savings);
 
-  const workbook = await loadOrCreateFinancesWorkbook();
-  const sheet = getFinancesSheet(workbook);
-  let row = findIncomeRow(sheet, year, month);
-  if (!row) {
-    row = sheet.getRow(sheet.rowCount + 1);
-    row.getCell(1).value = year;
-    row.getCell(2).value = month;
-  }
-  const previousSavings = savingsBaselineFrom(buildSavingsByKey(sheet), year, month);
+  return withFileLock(FINANCES_PATH, async () => {
+    const workbook = await loadOrCreateFinancesWorkbook();
+    const sheet = getFinancesSheet(workbook);
+    let row = findIncomeRow(sheet, year, month);
+    if (!row) {
+      row = sheet.getRow(sheet.rowCount + 1);
+      row.getCell(1).value = year;
+      row.getCell(2).value = month;
+    }
+    const previousSavings = savingsBaselineFrom(buildSavingsByKey(sheet), year, month);
 
-  row.getCell(3).value = salary;
-  row.getCell(4).value = otherIncome;
-  row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
-  row.commit();
+    row.getCell(3).value = salary;
+    row.getCell(4).value = otherIncome;
+    row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
+    row.commit();
 
-  await saveWorkbook(workbook, FINANCES_PATH);
+    await saveWorkbook(workbook, FINANCES_PATH);
 
-  return { year, month, salary, otherIncome, savings, previousSavings };
+    return { year, month, salary, otherIncome, savings, previousSavings };
+  });
 }
 
 export interface MonthFinanceSummary {
