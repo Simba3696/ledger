@@ -70,11 +70,11 @@ and writes the whole workbook back out.
 | `workbookIO.ts` | — | Shared safe write path (see below) + `DB_DIR` resolution. Every other module imports `saveWorkbook`/`LedgerError`/`DB_DIR` from here — nothing else touches `fs`/`ExcelJS.writeFile` directly. |
 | `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
 | `categoryColors.ts` | — | Loads/creates `<DB_DIR>/categories.json` (`loadCategoryConfig`) — the configurable category id/label/color set Expenses rows are encoded against (category is a cell's fill color, not a column; see README's **Configuring categories**). Ships 4 defaults matching the app's original hardcoded scheme, auto-created on first read against a given `DB_DIR` so an unconfigured deployment behaves identically to before this was configurable. Also derives a WCAG-AA-readable text color for any category that doesn't specify one (`deriveForegroundColor`). |
-| `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. |
+| `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. Also `isMonthLocked`/`setMonthLocked`, reusing Excel's native sheet-protection (`sheet.protect()`/`unprotect()`) as a real, per-month write lock — every mutating function above already calls the same `assertWritable` check a manually-protected sheet was already subject to, so locking a month enforces it with no separate code path. |
 | `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
 | `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
 | `creditCardBills.ts` | `CreditCardBills.xlsx` | Per-card bill entries per month (due/paid/dueDate/settled), stored as a JSON array in one cell per month-row (card count isn't fixed). |
-| `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total) and payment recording. |
+| `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total) and payment recording. Also `emiMonthlyProjection` — walks every active loan's future installments forward (reusing the same `nextDueDateAfter` due-date logic as the payoff estimate), bucketing installment count + total amount by calendar month for the Dashboard's Upcoming EMIs chart. Optional `interestRate`/`foreclosureCharge` fields are stored and returned but not yet used in any amortization/foreclosure math — display-only for now (see README's EMI section). |
 | `subscriptions.ts` | `Subscriptions.xlsx` | Recurring subscriptions with an auto-advancing `nextExpiry` (never written back — always derived fresh). |
 | `overview.ts` | *(none — read-only)* | Cross-module aggregation for the Dashboard's Net Worth + Upcoming widget. Calls into every module above via `Promise.all`, never writes anywhere itself. |
 
@@ -97,8 +97,26 @@ all, so the isolation guarantee for the other six is untouched.
 
 ### 2. Safe writes (`workbookIO.ts`)
 
-Every write goes through `saveWorkbook(workbook, filePath)`:
+Every mutating call — `appendEntry`, `setMonthLocked`, `addEmi`, `setMonthBills`,
+and every other exported read-modify-write function across `excel/*.ts` — runs
+its entire body (load, mutate, `saveWorkbook`) inside `withFileLock(filePath, fn)`:
 
+0. **Serialized per file** — every call for the same absolute `filePath` runs
+   strictly after the previous one for that same file finishes, via an
+   in-memory per-path promise chain. Without this, two overlapping requests
+   against the same workbook (the phone and the desktop both adding an
+   expense in the same second, reachable precisely because the app is meant
+   to be usable from both over Tailscale) could both read the same
+   pre-write state and both save — the second save wins outright, silently
+   discarding the first. `appendEntry` was the sharpest case: both calls
+   would compute the same "next row number" from the same stale read and
+   write to that same row. This is in-memory and per-process only — it
+   doesn't (and isn't meant to) protect against a second server process, or
+   Excel itself, writing concurrently; that's what points 2-3 below already
+   cover. A handful of functions (`recordEmiPayment`, in `emi.ts`) need their
+   own read *and* a nested write to happen under one lock acquisition rather
+   than two separate ones — see the comment on `updateEmiUnlocked` for why
+   `withFileLock` is deliberately not reentrant and how that's worked around.
 1. **Backup once per process run** — before the *first* write to a given file
    in a server run, it's copied to `<DB_DIR>/.backups/<file>.<ISO
    timestamp>.xlsx`. Cheap insurance against a bad edit, given this is
@@ -112,6 +130,16 @@ Every write goes through `saveWorkbook(workbook, filePath)`:
 3. **Locked-file detection** — if the file is open in Excel (rename fails),
    this surfaces as a clear `LedgerError` ("close it and try again"), not a
    raw stack trace.
+
+One residual, accepted risk: `saveWorkbook` round-trips the *entire* workbook
+through ExcelJS on every write (12 sheets, to change a handful of cells), and
+that round-trip is lossy for Excel features this app never reads or writes
+itself — charts, pivot tables, conditional formatting, data validation, some
+defined names. The app is careful to only ever *touch* columns A-C (see
+README's How it works), but every write still *rewrites* every other column
+and sheet through ExcelJS's model. The `.backups/` mechanism above is the
+mitigation, not a fix — worth knowing before adding, say, conditional
+formatting to a sheet this app writes to.
 
 ### 3. Computed, never stored, derived values
 
@@ -158,6 +186,8 @@ is a local/Tailscale-only single-user tool.
 |---|---|---|
 | GET | `/categories` | `categoryColors.loadCategoryConfig` |
 | GET | `/months/:year/:month` | `ledger.listMonth` |
+| GET | `/months/:year/:month/lock` | `ledger.isMonthLocked` |
+| PUT | `/months/:year/:month/lock` | `ledger.setMonthLocked` |
 | GET | `/summary/:year` | `ledger.yearSummary` |
 | POST | `/entries` | `ledger.appendEntry` |
 | PUT | `/entries/:year/:month/:row` | `ledger.updateEntry` |
@@ -178,6 +208,7 @@ is a local/Tailscale-only single-user tool.
 | PUT | `/emi/:row` | `emi.updateEmi` |
 | DELETE | `/emi/:row` | `emi.deleteEmi` |
 | PATCH | `/emi/:row/pay` | `emi.recordEmiPayment` |
+| GET | `/emi-monthly-projection` | `emi.emiMonthlyProjection` |
 | GET | `/subscriptions` | `subscriptions.listSubscriptions` |
 | POST | `/subscriptions` | `subscriptions.addSubscription` |
 | PUT | `/subscriptions/:row` | `subscriptions.updateSubscription` |
@@ -243,7 +274,23 @@ gives every entry.
   handle stops the browser's own scroll gesture from competing with the
   drag. The overflow menu's **Move up**/**Move down** items call the same
   underlying `moveEntry` swap with an adjacent row's number computed
-  client-side, as a keyboard/no-touch-accessible equivalent to dragging.
+  client-side, as a keyboard/no-touch-accessible equivalent to dragging. The
+  Credit Cards tab reuses the same Pointer-Events drag mechanism for its own
+  rows, but purely client-side — that array's saved order is already what
+  persists, so no backend counterpart to `moveEntry` was needed there.
+- **Sorting** (Debts, EMI, Subscriptions) follows one shared shape: a
+  `SortField` union type, a `SORT_OPTIONS: {field, label}[]` array driving a
+  row of buttons, and clicking the already-active field's button flips
+  `SortDir` instead of picking a new one — no dedicated sort component, each
+  tab just repeats the same few lines rather than sharing an abstraction for
+  what's a handful of lines each time.
+- **`MonthLockToggle.tsx`** shows/toggles the current month's lock state
+  (`GET`/`PUT /api/months/:year/:month/lock`) above the Add Expense form.
+  `App.tsx` also passes the fetched `locked` boolean down to disable the
+  form (a `<fieldset disabled>` wrapping every field, rather than disabling
+  each input individually) and to hide `RecentEntries`' drag handle/overflow
+  menu — the same 403 the server would return either way, surfaced ahead of
+  time instead of only after a failed request.
 
 ## Testing
 
