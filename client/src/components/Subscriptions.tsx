@@ -1,10 +1,34 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { addSubscription, deleteSubscription, getSubscriptions, type SubscriptionDuration, type SubscriptionEntryComputed } from "../api";
 import { SubscriptionRow } from "./SubscriptionRow";
 import { EditSubscriptionRow } from "./EditSubscriptionRow";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./Subscriptions.css";
+
+type SortField = "nextExpiry" | "service" | "amount";
+type SortDir = "asc" | "desc";
+
+const SORT_OPTIONS: { field: SortField; label: string }[] = [
+  { field: "nextExpiry", label: "Next Renewal" },
+  { field: "service", label: "Service" },
+  { field: "amount", label: "Amount" },
+];
+
+function sortSubscriptions(
+  subscriptions: SubscriptionEntryComputed[],
+  field: SortField,
+  dir: SortDir,
+): SubscriptionEntryComputed[] {
+  const sorted = [...subscriptions].sort((a, b) => {
+    let cmp = 0;
+    if (field === "nextExpiry") cmp = a.nextExpiry.localeCompare(b.nextExpiry);
+    else if (field === "service") cmp = a.service.localeCompare(b.service);
+    else cmp = a.amount - b.amount;
+    return dir === "asc" ? cmp : -cmp;
+  });
+  return sorted;
+}
 
 export function Subscriptions() {
   const [subscriptions, setSubscriptions] = useState<SubscriptionEntryComputed[]>([]);
@@ -19,6 +43,26 @@ export function Subscriptions() {
   const [expiryAnchor, setExpiryAnchor] = useState("");
   const [cardOrBank, setCardOrBank] = useState("");
   const [adding, setAdding] = useState(false);
+
+  // Defaults to soonest-renewal-first — the whole point of tracking these is
+  // knowing what's coming up next, so that should be the view you land on,
+  // not one more click away behind an alphabetical default.
+  const [sortField, setSortField] = useState<SortField>("nextExpiry");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  function toggleSort(field: SortField) {
+    if (field === sortField) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("asc");
+    }
+  }
+
+  const sortedSubscriptions = useMemo(
+    () => sortSubscriptions(subscriptions, sortField, sortDir),
+    [subscriptions, sortField, sortDir],
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -151,13 +195,30 @@ export function Subscriptions() {
 
       {error && <p className="error">{error}</p>}
 
+      {subscriptions.length > 1 && (
+        <div className="subscriptions-sort">
+          <span>Sort by</span>
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              type="button"
+              key={opt.field}
+              className={sortField === opt.field ? "selected" : ""}
+              onClick={() => toggleSort(opt.field)}
+            >
+              {opt.label}
+              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="subscriptions-body">
         <LoadingOverlay active={loading} />
 
         {!loading && subscriptions.length === 0 && <p className="empty">No subscriptions tracked yet.</p>}
 
         <ul className="subscriptions-list">
-          {subscriptions.map((s) =>
+          {sortedSubscriptions.map((s) =>
             editingRow === s.row ? (
               <EditSubscriptionRow
                 key={s.row}

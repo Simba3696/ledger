@@ -41,6 +41,38 @@
   gap: 16px;
 }
 
+.subscriptions-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: var(--font-size-xs);
+  color: var(--text);
+}
+
+.subscriptions-sort button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.subscriptions-sort button.selected {
+  border-color: var(--accent);
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.subscriptions-sort .sort-arrow {
+  font-size: 10px;
+}
+
 .subscriptions-body {
   position: relative;
   min-height: 80px;

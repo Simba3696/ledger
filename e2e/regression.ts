@@ -19,6 +19,7 @@ import { buildFixtureWorkbook } from "../server/test/fixtures.js";
 // "10 months from today" independently here risks silently drifting from
 // addMonths' actual clamp-at-month-end behavior on an edge-case day.
 import { addMonths, startOfDay, formatDate } from "../server/src/excel/dateMath.js";
+import { dueDateOnOrAfter } from "../server/src/excel/emi.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -601,21 +602,21 @@ async function main() {
     // ceil(12000/1000) = 12 future due dates would be the *derived* estimate
     // — but Duration says this one actually finishes in 10 months, so the
     // saved entry should show that instead, not the derived 12-months-out one.
-    const tenMonthsOut = new Date();
-    tenMonthsOut.setMonth(tenMonthsOut.getMonth() + 10);
-    const expectedFinishes = new Date(tenMonthsOut.getFullYear(), tenMonthsOut.getMonth(), 1).toLocaleDateString(
-      "en-IN",
-      { month: "short", year: "numeric" },
-    );
-    // The exact date (not just month) the "EMI-Free On" stat should show —
-    // via the real addMonths, not a hand-rolled equivalent, so this can't
-    // silently drift from the server's own clamp-at-month-end behavior.
-    const expectedFinishDate = formatDate(addMonths(startOfDay(new Date()), 10));
+    // Computed via the real addMonths + dueDateOnOrAfter (not a hand-rolled
+    // equivalent) so this can't silently drift from the server's own
+    // clamp-at-month-end / roll-to-next-month-due-date behavior — the target
+    // date's day-of-month (today's) has nothing to do with dueDay (15), so
+    // depending on what day today is, the real finish date may or may not
+    // land in the same month as a naive addMonths-only calculation would.
+    const untilTargetDate = addMonths(startOfDay(new Date()), 10);
+    const expectedFinishDateObj = dueDateOnOrAfter(untilTargetDate, 15); // dueDay set below
+    const expectedFinishDate = formatDate(expectedFinishDateObj);
     const expectedFinishDateText = new Date(`${expectedFinishDate}T00:00:00`).toLocaleDateString("en-IN", {
       day: "numeric",
       month: "short",
       year: "numeric",
     });
+    const expectedFinishes = expectedFinishDateObj.toLocaleDateString("en-IN", { month: "short", year: "numeric" });
 
     await page.fill('.add-emi-form input[placeholder="Optional"]', "E2E Loan");
     await page.click('.add-emi-form button:has-text("Add EMI")');
@@ -792,7 +793,41 @@ async function main() {
       (await page.locator(".subscription-row", { hasText: "E2E Netflix" }).innerText()).includes("699"),
     );
 
+    // --- Sorting (E2E Netflix: ₹699, renews in 60 days; E2E Spotify: ₹199, renews in 10 days) ---
+    const soonDate = new Date();
+    soonDate.setDate(soonDate.getDate() + 10);
+    await page.fill('.add-subscription-form input[placeholder="Netflix"]', "E2E Spotify");
+    await page.fill('.add-subscription-form input[type="number"]', "199");
+    await page.fill('.add-subscription-form input[type="date"]', toLocalDateStr(soonDate));
+    await page.click('.add-subscription-form button:has-text("Add Subscription")');
+    await page.waitForSelector('.subscription-row:has-text("E2E Spotify")');
+
+    async function subscriptionNames(): Promise<string[]> {
+      return page.locator(".subscription-service").allInnerTexts();
+    }
+    check(
+      "Sorting by Next Renewal (the default) puts the sooner-renewing entry first",
+      (await subscriptionNames()).indexOf("E2E Spotify") < (await subscriptionNames()).indexOf("E2E Netflix"),
+    );
+
+    await page.click('.subscriptions-sort button:has-text("Amount")'); // ascending: lowest first
+    const subAmountAsc = await subscriptionNames();
+    check(
+      "Sorting by Amount ascending puts the ₹199 entry first",
+      subAmountAsc.indexOf("E2E Spotify") < subAmountAsc.indexOf("E2E Netflix"),
+    );
+    await page.click('.subscriptions-sort button:has-text("Amount")'); // descending: highest first
+    const subAmountDesc = await subscriptionNames();
+    check(
+      "Sorting by Amount descending puts the ₹699 entry first",
+      subAmountDesc.indexOf("E2E Netflix") < subAmountDesc.indexOf("E2E Spotify"),
+    );
+    await page.click('.subscriptions-sort button:has-text("Next Renewal")'); // back to default for cleanup
+    await page.waitForTimeout(200);
+
     // Clean up so the suite is idempotent across runs.
+    await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Spotify" }), "Delete");
+    await page.waitForTimeout(400);
     await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Netflix" }), "Delete");
     await page.waitForTimeout(400);
     check("Subscriptions back to empty after cleanup", (await page.locator(".subscription-row").count()) === 0);
