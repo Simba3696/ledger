@@ -1,0 +1,26 @@
+.emi-projection {
+  margin-bottom: 24px;
+}
+
+.emi-projection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.emi-projection-header h2 {
+  margin: 0;
+}
+
+.emi-projection-body {
+  position: relative;
+  min-height: 200px;
+}
+
+.emi-projection-chart-wrap {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 8px 8px;
+}

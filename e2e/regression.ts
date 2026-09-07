@@ -127,6 +127,10 @@ async function main() {
 
     // --- Dashboard defaults + click-through navigation ---
     check("Default tab is Dashboard", (await page.locator(".tabs button.selected").innerText()) === "Dashboard");
+    check(
+      "Upcoming EMIs chart shows the empty state when there are no active EMIs",
+      (await page.locator(".emi-projection .empty").count()) === 1,
+    );
 
     // Targets a bar's own <path name="Jul"> rather than an X-axis tick's
     // position: `.recharts-cartesian-axis-tick-value` matches Y-axis tick
@@ -1034,6 +1038,15 @@ async function main() {
       // EMI 1000 + card outstanding (3000 due - 1000 paid = 2000) = 3000
       "Dashboard Overview: Upcoming header shows the total across all items",
       (await page.locator(".upcoming-total").innerText()).includes("3,000"),
+    );
+    check(
+      "Upcoming EMIs chart renders bars once an active EMI exists",
+      (await page.locator(".emi-projection-chart-wrap .recharts-rectangle").count()) > 0,
+    );
+    check(
+      "Upcoming EMIs chart legend shows both series",
+      (await page.locator(".emi-projection").innerText()).includes("EMI Amount") &&
+        (await page.locator(".emi-projection").innerText()).includes("Number of EMIs"),
     );
 
     // Below 600px, the header swaps to a shorter "Upcoming" label so it

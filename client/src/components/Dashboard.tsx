@@ -15,6 +15,7 @@ import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { DashboardOverview } from "./DashboardOverview";
+import { EmiProjectionChart } from "./EmiProjectionChart";
 import { rupee } from "../format";
 import "./Dashboard.css";
 
@@ -125,6 +126,8 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
   return (
     <div className="dashboard">
       <DashboardOverview onSelectUpcomingItem={onSelectUpcomingItem} />
+
+      <EmiProjectionChart />
 
       <div className="dashboard-header">
         <h2>Yearly Overview</h2>

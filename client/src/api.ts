@@ -313,6 +313,16 @@ export function payEmi(row: number, amount: number): Promise<EmiEntryComputed> {
   }).then((r) => handle(r));
 }
 
+export interface EmiMonthlyProjection {
+  month: string; // YYYY-MM
+  count: number;
+  totalAmount: number;
+}
+
+export function getEmiMonthlyProjection(): Promise<EmiMonthlyProjection[]> {
+  return fetch(`${BASE}/emi-monthly-projection`).then((r) => handle(r));
+}
+
 export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
   return fetch(`${BASE}/subscriptions`).then((r) => handle(r));
 }
