@@ -18,6 +18,10 @@ function formatMonthYear(ym: string | null): string {
   return new Date(year, month - 1, 1).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
 }
 
+function formatDate(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
 function ordinal(day: number): string {
   if (day >= 11 && day <= 13) return `${day}th`;
   switch (day % 10) {
@@ -46,6 +50,11 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
         <span className="emi-schedule">
           {rupee.format(emi.emiAmount)}/mo, due {ordinal(emi.dueDay)}
         </span>
+        {/* The balance/decay anchor — everything since this date is an
+            auto-projected assumption, not a confirmed payment. Shown so
+            "Paid this month" isn't clicked for a cycle that's already
+            covered by that assumption. */}
+        <span className="emi-as-of">Balance as of {formatDate(emi.asOfDate)}</span>
         <span className="emi-payoff">{emi.isPaidOff ? "Paid off" : `Finishes ~${formatMonthYear(emi.estimatedPayoffMonth)}`}</span>
       </div>
       <OverflowMenu
