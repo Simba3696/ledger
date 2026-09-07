@@ -62,6 +62,12 @@ export interface EmiEntryComputed extends EmiEntry {
    * future due date. Null once already paid off, regardless of which source
    * it would otherwise have used. */
   estimatedPayoffMonth: string | null;
+  /** The same payoff estimate as `estimatedPayoffMonth`, but as a full
+   * YYYY-MM-DD rather than truncated to the month — either the bank-stated
+   * `untilTarget` itself, or the actual `dueDay`-th-of-the-month date of the
+   * derived final installment. Powers the EMI tab's "EMI-Free On" stat,
+   * which needs an exact date to compare across loans, not just a month. */
+  estimatedPayoffDate: string | null;
 }
 
 function round2(n: number): number {
@@ -112,8 +118,8 @@ export function nextDueDateAfter(anchor: Date, dueDay: number): Date {
   throw new Error("nextDueDateAfter: no due date found within 100 years");
 }
 
-/** Finds the YYYY-MM of the Nth monthly due date strictly after `today`. */
-function nthFutureDueMonth(dueDay: number, n: number, today: Date): string | null {
+/** Finds the Nth monthly due date (on `dueDay`) strictly after `today`. */
+function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   let year = today.getFullYear();
   let month = today.getMonth() + 1;
   let found = 0;
@@ -121,7 +127,7 @@ function nthFutureDueMonth(dueDay: number, n: number, today: Date): string | nul
     const due = makeDate(year, month, dueDay);
     if (due > today) {
       found++;
-      if (found === n) return toMonthOnly(due);
+      if (found === n) return due;
     }
     month++;
     if (month > 12) {
@@ -137,12 +143,14 @@ export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntr
   const passed = countDueDatesPassed(asOf, entry.dueDay, startOfDay(today));
   const remaining = Math.max(0, round2(entry.remainingAsOf - passed * entry.emiAmount));
   const isPaidOff = remaining <= 0;
-  const estimatedPayoffMonth = isPaidOff
+  const payoffDate = isPaidOff
     ? null
     : entry.untilTarget
-      ? toMonthOnly(parseDate(entry.untilTarget))
-      : nthFutureDueMonth(entry.dueDay, Math.ceil(remaining / entry.emiAmount), startOfDay(today));
-  return { ...entry, remaining, isPaidOff, estimatedPayoffMonth };
+      ? parseDate(entry.untilTarget)
+      : nthFutureDueDate(entry.dueDay, Math.ceil(remaining / entry.emiAmount), startOfDay(today));
+  const estimatedPayoffMonth = payoffDate ? toMonthOnly(payoffDate) : null;
+  const estimatedPayoffDate = payoffDate ? formatDate(payoffDate) : null;
+  return { ...entry, remaining, isPaidOff, estimatedPayoffMonth, estimatedPayoffDate };
 }
 
 function validateEntry(cardOrBank: string, emiAmount: number, dueDay: number, totalAmount: number, remainingAsOf: number) {

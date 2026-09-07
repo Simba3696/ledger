@@ -35,19 +35,32 @@ describe("emi", () => {
     // 5 more Jan-15ths (2026-01 already happened as of Jan 1? No: Jan1 < Jan15, so
     // the 5th future due date from Jan 1 is 2026-05 (Jan, Feb, Mar, Apr, May).
     expect(added.estimatedPayoffMonth).toBe("2026-05");
+    expect(added.estimatedPayoffDate).toBe("2026-05-15"); // same estimate, full date (dueDay = 15)
   });
 
   it("decays remaining by one EMI amount per due date that has passed", async () => {
     const list = await emi.listEmis(new Date(2026, 1, 16)); // Feb 16, 2026 — Jan15 + Feb15 both passed
     expect(list).toEqual([
-      expect.objectContaining({ row: 2, remaining: 3000, isPaidOff: false, estimatedPayoffMonth: "2026-05" }),
+      expect.objectContaining({
+        row: 2,
+        remaining: 3000,
+        isPaidOff: false,
+        estimatedPayoffMonth: "2026-05",
+        estimatedPayoffDate: "2026-05-15",
+      }),
     ]);
   });
 
   it("floors remaining at 0 and reports paid-off once due dates exceed the balance", async () => {
     const list = await emi.listEmis(new Date(2026, 5, 16)); // Jun 16 — Jan..Jun 15ths all passed (6 installments)
     expect(list).toEqual([
-      expect.objectContaining({ row: 2, remaining: 0, isPaidOff: true, estimatedPayoffMonth: null }),
+      expect.objectContaining({
+        row: 2,
+        remaining: 0,
+        isPaidOff: true,
+        estimatedPayoffMonth: null,
+        estimatedPayoffDate: null,
+      }),
     ]);
   });
 
@@ -202,12 +215,17 @@ describe("emi until-target (bank-stated Duration)", () => {
     );
     expect(added.estimatedPayoffMonth).toBe("2026-11");
     expect(added.untilTarget).toBe("2026-11-01");
+    // The bank-stated target is the exact date, not just re-derived from
+    // dueDay — its day-of-month (1st) comes from *when the loan was added*
+    // (Jan 1 + 10 months), not from dueDay (15th).
+    expect(added.estimatedPayoffDate).toBe("2026-11-01");
   });
 
   it("without a Duration, falls back to the derived remaining/emiAmount estimate as before", async () => {
     const added = await emi.addEmi({ ...durationInput, remainingAsOf: 12000 }, new Date(2026, 0, 1));
     expect(added.untilTarget).toBeNull();
     expect(added.estimatedPayoffMonth).toBe("2026-12"); // ceil(12000/1000) = 12 future due dates from Jan 1
+    expect(added.estimatedPayoffDate).toBe("2026-12-15"); // derived estimate lands on dueDay (15th)
   });
 
   it("preserves the stored until-target across an edit that doesn't resupply Duration", async () => {
@@ -222,6 +240,7 @@ describe("emi until-target (bank-stated Duration)", () => {
     );
     expect(updated.untilTarget).toBe("2026-11-01"); // unchanged
     expect(updated.estimatedPayoffMonth).toBe("2026-11");
+    expect(updated.estimatedPayoffDate).toBe("2026-11-01");
   });
 
   it("preserves the stored until-target across recordEmiPayment (never touches it)", async () => {
@@ -252,7 +271,7 @@ describe("emi until-target (bank-stated Duration)", () => {
       new Date(2026, 0, 1),
     );
     const paid = await emi.recordEmiPayment(added.row, 500, new Date(2026, 0, 10));
-    expect(paid).toMatchObject({ remaining: 0, isPaidOff: true, estimatedPayoffMonth: null });
+    expect(paid).toMatchObject({ remaining: 0, isPaidOff: true, estimatedPayoffMonth: null, estimatedPayoffDate: null });
   });
 
   it("rejects a non-integer or out-of-range Duration", async () => {

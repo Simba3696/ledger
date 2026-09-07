@@ -129,6 +129,8 @@ export interface EmiEntryComputed extends EmiEntry {
   remaining: number;
   isPaidOff: boolean;
   estimatedPayoffMonth: string | null;
+  /** Same estimate as estimatedPayoffMonth, as a full YYYY-MM-DD. */
+  estimatedPayoffDate: string | null;
 }
 
 export interface EmiEdits {

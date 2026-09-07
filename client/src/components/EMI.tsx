@@ -16,6 +16,10 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "remaining", label: "Remaining" },
 ];
 
+function formatDate(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
 function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): EmiEntryComputed[] {
   const sorted = [...emis].sort((a, b) => {
     let cmp = 0;
@@ -193,6 +197,14 @@ export function EMI() {
   const active = emis.filter((e) => !e.isPaidOff);
   const totalRemaining = emis.reduce((sum, e) => sum + e.remaining, 0);
   const totalMonthly = active.reduce((sum, e) => sum + e.emiAmount, 0);
+  // The latest of every active loan's own finish date — YYYY-MM-DD sorts
+  // lexicographically the same as chronologically, so a plain string max
+  // works. This is the day the *last* loan clears, i.e. genuinely EMI-free
+  // — not to be confused with any individual loan's own payoff date.
+  const emiFreeDate = active.reduce<string | null>(
+    (latest, e) => (e.estimatedPayoffDate && (!latest || e.estimatedPayoffDate > latest) ? e.estimatedPayoffDate : latest),
+    null,
+  );
 
   return (
     <div className="emi">
@@ -212,6 +224,12 @@ export function EMI() {
             <span>Active Loans</span>
             <strong>{active.length}</strong>
           </div>
+          {emiFreeDate && (
+            <div className="emi-stat">
+              <span>EMI-Free On</span>
+              <strong>{formatDate(emiFreeDate)}</strong>
+            </div>
+          )}
         </div>
       )}
 
