@@ -298,7 +298,13 @@ export function CreditCards({ year, month }: Props) {
 
   const yearTotalDue = yearMonths.reduce((sum, m) => sum + m.totalDue, 0);
   const yearTotalPaid = yearMonths.reduce((sum, m) => sum + m.totalPaid, 0);
-  const yearOverpaidOrSaved = yearTotalDue - yearTotalPaid;
+  // Sum each month's own overpaidOrSaved (server-computed, settled-cards-only
+  // — see creditCardBills.ts's summarize) rather than yearTotalDue -
+  // yearTotalPaid, which would count every card regardless of Settled and so
+  // disagree with the month figure above on what "Saved" even means: an
+  // unpaid, unsettled bill would inflate this figure while contributing
+  // exactly 0 to the same stat one section up.
+  const yearOverpaidOrSaved = yearMonths.reduce((sum, m) => sum + m.overpaidOrSaved, 0);
   const yearStats = yearMonths.length
     ? [
         { label: "Total Spent This Year", value: rupee.format(yearTotalDue) },
