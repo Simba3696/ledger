@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook } from "./workbookIO.js";
+import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 import { addMonths, makeDate, parseDate, formatDate, startOfDay } from "./dateMath.js";
 
 const EMI_PATH = path.join(DB_DIR, "EMI.xlsx");
@@ -409,45 +409,55 @@ export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Pr
   const interestRate = input.interestRate ?? null;
   const foreclosureCharge = input.foreclosureCharge ?? null;
 
-  const workbook = await loadOrCreateWorkbook();
-  const sheet = getEmiSheet(workbook);
-  const rowNumber = sheet.rowCount + 1;
-  const asOfDate = formatDate(startOfDay(today));
-  const untilTarget = input.durationMonths ? formatDate(addMonths(startOfDay(today), input.durationMonths)) : null;
-  const row = sheet.getRow(rowNumber);
-  row.getCell(1).value = cardOrBank;
-  row.getCell(2).value = input.emiAmount;
-  row.getCell(3).value = input.dueDay;
-  row.getCell(4).value = input.totalAmount;
-  row.getCell(5).value = input.remarks.trim();
-  row.getCell(6).value = input.remainingAsOf;
-  row.getCell(7).value = asOfDate;
-  row.getCell(8).value = untilTarget;
-  row.getCell(9).value = interestRate;
-  row.getCell(10).value = foreclosureCharge;
-  row.commit();
+  return withFileLock(EMI_PATH, async () => {
+    const workbook = await loadOrCreateWorkbook();
+    const sheet = getEmiSheet(workbook);
+    const rowNumber = sheet.rowCount + 1;
+    const asOfDate = formatDate(startOfDay(today));
+    const untilTarget = input.durationMonths ? formatDate(addMonths(startOfDay(today), input.durationMonths)) : null;
+    const row = sheet.getRow(rowNumber);
+    row.getCell(1).value = cardOrBank;
+    row.getCell(2).value = input.emiAmount;
+    row.getCell(3).value = input.dueDay;
+    row.getCell(4).value = input.totalAmount;
+    row.getCell(5).value = input.remarks.trim();
+    row.getCell(6).value = input.remainingAsOf;
+    row.getCell(7).value = asOfDate;
+    row.getCell(8).value = untilTarget;
+    row.getCell(9).value = interestRate;
+    row.getCell(10).value = foreclosureCharge;
+    row.commit();
 
-  await saveWorkbook(workbook, EMI_PATH);
-  const entry: EmiEntry = {
-    row: rowNumber,
-    cardOrBank,
-    emiAmount: input.emiAmount,
-    dueDay: input.dueDay,
-    totalAmount: input.totalAmount,
-    remarks: input.remarks.trim(),
-    remainingAsOf: input.remainingAsOf,
-    asOfDate,
-    untilTarget,
-    interestRate,
-    foreclosureCharge,
-  };
-  return withComputed(entry, today);
+    await saveWorkbook(workbook, EMI_PATH);
+    const entry: EmiEntry = {
+      row: rowNumber,
+      cardOrBank,
+      emiAmount: input.emiAmount,
+      dueDay: input.dueDay,
+      totalAmount: input.totalAmount,
+      remarks: input.remarks.trim(),
+      remainingAsOf: input.remainingAsOf,
+      asOfDate,
+      untilTarget,
+      interestRate,
+      foreclosureCharge,
+    };
+    return withComputed(entry, today);
+  });
 }
 
-export async function updateEmi(
+/** The actual update logic, deliberately *not* wrapped in `withFileLock`
+ * itself — `updateEmi` (below) and `recordEmiPayment` both need to run this
+ * under a lock they hold, and `withFileLock` isn't reentrant: a call made
+ * from inside another call already holding the same file's lock would wait
+ * on itself and deadlock. `recordEmiPayment` needs its own read (`listEmis`)
+ * and this write to happen under one uninterrupted lock acquisition — two
+ * separate `withFileLock` calls would let a second payment's read land
+ * between the first payment's read and write, silently losing one payment. */
+async function updateEmiUnlocked(
   rowNumber: number,
   input: EmiEditsInput,
-  today: Date = new Date(),
+  today: Date,
 ): Promise<EmiEntryComputed> {
   const cardOrBank = input.cardOrBank.trim();
   validateEntry(cardOrBank, input.emiAmount, input.dueDay, input.totalAmount, input.remainingAsOf);
@@ -496,6 +506,14 @@ export async function updateEmi(
   return withComputed(entry, today);
 }
 
+export async function updateEmi(
+  rowNumber: number,
+  input: EmiEditsInput,
+  today: Date = new Date(),
+): Promise<EmiEntryComputed> {
+  return withFileLock(EMI_PATH, () => updateEmiUnlocked(rowNumber, input, today));
+}
+
 /** Records a payment toward an EMI, without risking the double-decay that a
  * naive "just subtract from today's balance" approach would cause: if you pay
  * a few days *before* this month's due date, anchoring the new snapshot to
@@ -537,41 +555,50 @@ export async function recordEmiPayment(
     throw new LedgerError("Payment amount must be a non-negative number", 400);
   }
 
-  const entries = await listEmis(today);
-  const entry = entries.find((e) => e.row === rowNumber);
-  if (!entry) throw new LedgerError(`No EMI entry at row ${rowNumber}`, 404);
+  // The read (listEmis) and the write (updateEmiUnlocked) must happen under
+  // one uninterrupted lock acquisition — see the comment on updateEmiUnlocked
+  // for why two overlapping payments could otherwise both read the same
+  // pre-payment balance and the second write would silently discard the
+  // first payment.
+  return withFileLock(EMI_PATH, async () => {
+    const entries = await listEmis(today);
+    const entry = entries.find((e) => e.row === rowNumber);
+    if (!entry) throw new LedgerError(`No EMI entry at row ${rowNumber}`, 404);
 
-  const day = startOfDay(today);
-  const currentAsOf = parseDate(entry.asOfDate);
-  const thisMonthsDue = makeDate(day.getFullYear(), day.getMonth() + 1, entry.dueDay);
-  const dueToSettle = thisMonthsDue > currentAsOf ? thisMonthsDue : nextDueDateAfter(currentAsOf, entry.dueDay);
-  const dayBeforeDue = new Date(dueToSettle.getFullYear(), dueToSettle.getMonth(), dueToSettle.getDate() - 1);
-  const remainingBeforeThisDue = withComputed(entry, dayBeforeDue).remaining;
-  const newRemainingAsOf = Math.max(0, round2(remainingBeforeThisDue - amountPaid));
+    const day = startOfDay(today);
+    const currentAsOf = parseDate(entry.asOfDate);
+    const thisMonthsDue = makeDate(day.getFullYear(), day.getMonth() + 1, entry.dueDay);
+    const dueToSettle = thisMonthsDue > currentAsOf ? thisMonthsDue : nextDueDateAfter(currentAsOf, entry.dueDay);
+    const dayBeforeDue = new Date(dueToSettle.getFullYear(), dueToSettle.getMonth(), dueToSettle.getDate() - 1);
+    const remainingBeforeThisDue = withComputed(entry, dayBeforeDue).remaining;
+    const newRemainingAsOf = Math.max(0, round2(remainingBeforeThisDue - amountPaid));
 
-  return updateEmi(
-    rowNumber,
-    {
-      cardOrBank: entry.cardOrBank,
-      emiAmount: entry.emiAmount,
-      dueDay: entry.dueDay,
-      totalAmount: entry.totalAmount,
-      remarks: entry.remarks,
-      remainingAsOf: newRemainingAsOf,
-      durationMonths: null, // preserve whatever until-target was already on record
-      interestRate: entry.interestRate, // preserve whatever rate was already on record
-      foreclosureCharge: entry.foreclosureCharge, // preserve whatever charge was already on record
-    },
-    dueToSettle,
-  );
+    return updateEmiUnlocked(
+      rowNumber,
+      {
+        cardOrBank: entry.cardOrBank,
+        emiAmount: entry.emiAmount,
+        dueDay: entry.dueDay,
+        totalAmount: entry.totalAmount,
+        remarks: entry.remarks,
+        remainingAsOf: newRemainingAsOf,
+        durationMonths: null, // preserve whatever until-target was already on record
+        interestRate: entry.interestRate, // preserve whatever rate was already on record
+        foreclosureCharge: entry.foreclosureCharge, // preserve whatever charge was already on record
+      },
+      dueToSettle,
+    );
+  });
 }
 
 /** Removes an EMI entry entirely — e.g. after foreclosing a loan early. */
 export async function deleteEmi(rowNumber: number): Promise<void> {
-  const workbook = await loadOrCreateWorkbook();
-  const sheet = getEmiSheet(workbook);
-  assertRealEmiRow(sheet, rowNumber);
+  await withFileLock(EMI_PATH, async () => {
+    const workbook = await loadOrCreateWorkbook();
+    const sheet = getEmiSheet(workbook);
+    assertRealEmiRow(sheet, rowNumber);
 
-  sheet.spliceRows(rowNumber, 1);
-  await saveWorkbook(workbook, EMI_PATH);
+    sheet.spliceRows(rowNumber, 1);
+    await saveWorkbook(workbook, EMI_PATH);
+  });
 }

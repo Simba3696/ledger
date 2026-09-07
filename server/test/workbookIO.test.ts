@@ -10,7 +10,7 @@ import ExcelJS from "exceljs";
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-workbookio-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
-const { saveWorkbook, DB_DIR, MAX_BACKUPS_PER_FILE } = await import("../src/excel/workbookIO.js");
+const { saveWorkbook, withFileLock, DB_DIR, MAX_BACKUPS_PER_FILE } = await import("../src/excel/workbookIO.js");
 
 const BACKUP_DIR = path.join(DB_DIR, ".backups");
 
@@ -84,5 +84,68 @@ describe("saveWorkbook backups", () => {
 
     expect(backupsFor(pruned)).toHaveLength(MAX_BACKUPS_PER_FILE);
     expect(backupsFor(untouched)).toHaveLength(3); // untouched by the other file's pruning
+  });
+});
+
+describe("withFileLock", () => {
+  it("runs calls for the same key strictly one after another, never overlapping", async () => {
+    const order: string[] = [];
+    let inFlight = 0;
+    let maxConcurrent = 0;
+
+    async function job(label: string, delayMs: number) {
+      return withFileLock("same-key", async () => {
+        inFlight++;
+        maxConcurrent = Math.max(maxConcurrent, inFlight);
+        order.push(`${label}-start`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        order.push(`${label}-end`);
+        inFlight--;
+      });
+    }
+
+    // Fire all three "simultaneously" (no await between them) — if the lock
+    // didn't serialize them, the shorter delays would finish (and interleave
+    // their -start/-end pairs) before the longer one does.
+    await Promise.all([job("a", 30), job("b", 10), job("c", 20)]);
+
+    expect(maxConcurrent).toBe(1);
+    expect(order).toEqual(["a-start", "a-end", "b-start", "b-end", "c-start", "c-end"]);
+  });
+
+  it("keeps the queue moving after one call throws, rather than jamming later calls forever", async () => {
+    await expect(
+      withFileLock("throws-key", async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    // A call queued for the same key after a failure must still run — the
+    // internal per-key promise must not stay permanently rejected.
+    const result = await withFileLock("throws-key", async () => "recovered");
+    expect(result).toBe("recovered");
+  });
+
+  it("never blocks calls made under different keys on each other", async () => {
+    const order: string[] = [];
+    async function slow() {
+      return withFileLock("key-1", async () => {
+        order.push("slow-start");
+        await new Promise((r) => setTimeout(r, 50));
+        order.push("slow-end");
+      });
+    }
+    async function fast() {
+      return withFileLock("key-2", async () => {
+        order.push("fast-start");
+        order.push("fast-end");
+      });
+    }
+
+    await Promise.all([slow(), fast()]);
+
+    // The fast, unrelated-key call finishes well before the slow one, rather
+    // than waiting behind it.
+    expect(order.indexOf("fast-end")).toBeLessThan(order.indexOf("slow-end"));
   });
 });

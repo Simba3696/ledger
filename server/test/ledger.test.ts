@@ -458,3 +458,49 @@ describe("isMonthLocked / setMonthLocked", () => {
     await expect(ledger.setMonthLocked(2999, 1, true)).rejects.toMatchObject({ status: 404 });
   });
 });
+
+// Regression test for a real lost-update bug: appendEntry used to read the
+// sheet's current last row, compute rowNumber = lastRow + 1, then save —
+// with no serialization, two overlapping requests (e.g. the phone and the
+// desktop adding an expense in the same second) could both read the same
+// "last row" and both write to the same new row, silently discarding
+// whichever one saved second. withFileLock (workbookIO.ts) now serializes
+// every write to the same workbook.
+describe("concurrent writes to the same workbook", () => {
+  const YEAR = 2099;
+
+  beforeAll(async () => {
+    await buildFixtureWorkbook(workbookPath(YEAR), [{ name: "January", entries: [] }]);
+  });
+
+  it("appendEntry calls fired concurrently at the same month land on distinct rows, losing none", async () => {
+    const count = 8;
+    const results = await Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        ledger.appendEntry({
+          year: YEAR,
+          month: 1,
+          amount: i + 1,
+          remarks: `Concurrent entry ${i}`,
+          category: "food",
+          isCard: false,
+        }),
+      ),
+    );
+
+    // Every call must have landed on its own row — no two entries collided
+    // on the same row number (the exact failure mode this test guards
+    // against).
+    const rows = results.map((r) => r.row);
+    expect(new Set(rows).size).toBe(count);
+
+    // And every entry actually persisted — re-reading the sheet from disk
+    // finds all `count` remarks, not fewer.
+    const entries = await ledger.listMonth(YEAR, 1);
+    expect(entries).toHaveLength(count);
+    const remarks = new Set(entries.map((e) => e.remarks));
+    for (let i = 0; i < count; i++) {
+      expect(remarks.has(`Concurrent entry ${i}`)).toBe(true);
+    }
+  });
+});
