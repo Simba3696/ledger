@@ -236,6 +236,14 @@ auto-advances forward to the next real cycle, never silently going stale:
   an early/manual payment made outside that automatic schedule — the same
   reason a standalone EMI item is worth clicking through to at all, even
   though its own tab would eventually reflect the payment regardless.
+  Upcoming also carries a **salary reminder**, separate from the three due-
+  date-driven sources above: since salary is logged under the month it was
+  *earned* (see the Finances entry below), a new calendar month starting
+  means last month's entry should already exist — if it doesn't, a reminder
+  to log it appears (sorting first, ahead of everything else) for the first
+  two weeks of the new month, then goes quiet either way rather than nagging
+  for the rest of the month. Clicking it jumps to Finances with last month
+  selected.
 - The **Finances** tab tracks Salary, Other Income, and a Current
   Savings snapshot per month — entered through the app into a new
   `Finances.xlsx` that it owns entirely (originally kept separate from
@@ -380,9 +388,12 @@ auto-advances forward to the next real cycle, never silently going stale:
   **Interest Rate** (% p.a.) and **Foreclosure Charge** (%), both plain
   overwritable fields (not sticky like Duration/Until Target) where `0` is a
   real, distinct-from-empty value (an interest-free conversion, or a real
-  0%-charge loan) — currently display-only, since `remaining` already
-  includes future interest, a genuinely different (larger) number than the
-  true foreclosure payoff for any loan with real interest. A dashboard-level
+  0%-charge loan). Once an Interest Rate is on record, each row also shows a
+  **Foreclosure payoff** figure — the true cost to close that loan today
+  (standard reducing-balance amortization of the outstanding principal, plus
+  any Foreclosure Charge), shown only when it actually differs from
+  Remaining, since `remaining` already includes future interest that hasn't
+  accrued yet and is a genuinely bigger number otherwise. A dashboard-level
   **EMI-Free On** stat shows the *latest* payoff date across every active
   loan — the day your last loan actually clears, not any individual loan's
   own date — and the Dashboard itself has an **Upcoming EMIs** chart
@@ -483,7 +494,8 @@ Windows-specific, and it's entirely optional.
    to see how it behaves before trusting it with your real spreadsheets.
 
 4. **Point it at your real Excel files**, once you're ready, by creating
-   `server/.env`:
+   `server/.env` (copy from `server/.env.example`, which documents every
+   variable both `server/.env` and `client/.env` support):
 
    ```
    LEDGER_DB_DIR=C:/path/to/your/Expenses/folder
@@ -681,7 +693,11 @@ Two suites, covering different layers:
   once the due date passes, that paying the standard amount after the due
   date is a no-op, and that several unrecorded months get caught up
   correctly in one payment — Interest Rate/Foreclosure Charge validation
-  (0-100%, `0` distinct from `null`), and `emiMonthlyProjection`'s month-by-
+  (0-100%, `0` distinct from `null`), the true foreclosure payoff (standard
+  reducing-balance amortization of the outstanding principal, plus any
+  foreclosure charge — verified against a hand-computed example, that it
+  gracefully equals `remaining` exactly when no interest rate is on record,
+  and the zero-division guards), and `emiMonthlyProjection`'s month-by-
   month bucketing for the Upcoming EMIs chart, including a regression test
   for a real crash reproduced against actual data (a stale `asOfDate` walking
   the projection backward into an already-decayed past month outside the
@@ -701,7 +717,11 @@ Two suites, covering different layers:
   **Settled** checkbox (not a raw due/paid gap) is what zeroes out its
   contribution to Net Worth and drops it from Upcoming — an unsettled card
   counts its full gap even if tiny, and a settled card contributes exactly 0
-  even if it was overpaid on paper.
+  even if it was overpaid on paper. It also covers the salary reminder — a
+  nudge to log last month's salary that appears only during the first two
+  weeks of a new month if last month's Finances entry has no salary on
+  record, sorting first regardless of other items' due dates, and gone
+  entirely once that salary is logged or once the two-week window passes.
   `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
   one backup per file per process run (not one per save), pruning down to
   the most recent 10 per file, and that pruning one file's backups never
@@ -737,8 +757,10 @@ Two suites, covering different layers:
   payoff estimate and surviving edits, the "Paid this month"/"Record
   payment" quick actions and the Balance-as-of anchor they advance, sorting
   by every column including % Paid, Interest Rate/Foreclosure Charge
-  entry/edit/clear including a real 0%, and the EMI-Free On stat picking the
-  *latest* payoff date across loans rather than the most recently added
+  entry/edit/clear including a real 0%, the true foreclosure payoff line
+  appearing (and being less than `remaining`) once an interest rate is on
+  record and disappearing once it's cleared, and the EMI-Free On stat picking
+  the *latest* payoff date across loans rather than the most recently added
   one), Subscriptions add/edit/delete
   (including the stale-anchor auto-advance and sorting by Next Renewal/
   Service/Amount), Credit Cards add/edit/
@@ -746,15 +768,19 @@ Two suites, covering different layers:
   and Saved/Overpaid — both monthly and yearly — staying ₹0 until a card is
   actually marked Settled), the Dashboard Overview widget (Net Worth combining figures
   from Finances/Debts/EMI/Credit Cards, the Upcoming list surfacing an
-  EMI and a credit card bill both due the same day, and the Upcoming
+  EMI and a credit card bill both due the same day, the Upcoming
   fold/collapse toggle defaulting open and persisting its state across a
-  reload), and theme toggle + persistence — failing loudly on both
+  reload, and — only when the suite happens to run within the first two
+  weeks of a month — the salary reminder naming last month, jumping to
+  Finances on click, and disappearing once that salary is logged), and theme
+  toggle + persistence — failing loudly on both
   failed assertions and any browser console error. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
   enabled in the UI for an unlocked month (always true for a freshly-seeded
   month in the scratch data this suite builds). Slower (~20–25s) and needs
-  the dev ports free — this is the one to run after any client-side change,
-  or before considering a session's changes done.
+  its own dev ports free (overridable via `.env`, see "Running a second
+  checkout alongside an existing one" above) — this is the one to run after
+  any client-side change, or before considering a session's changes done.
 
 Both suites are self-contained: they create their own temp data directories
 and never touch the real `Expenses` folder.
