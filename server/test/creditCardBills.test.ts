@@ -116,14 +116,19 @@ describe("yearBillsSummary", () => {
       year: YEAR,
       month: 1,
       cards: [
-        { name: "Coral", due: 5000, paid: 4990, dueDate: "2093-01-07", settled: false },
+        // Settled: its own (due - paid) gap counts toward overpaidOrSaved.
+        { name: "Coral", due: 5000, paid: 4990, dueDate: "2093-01-07", settled: true },
+        // Unsettled: paid *more* than due (a real -50 gap), but since this
+        // bill isn't marked Settled yet, that gap must NOT count — an
+        // in-progress bill shouldn't move the Saved/Overpaid figure.
         { name: "OneCard", due: 3000, paid: 3050, dueDate: "2093-01-09", settled: false },
       ],
     });
     await ccBills.setMonthBills({
       year: YEAR,
       month: 2,
-      cards: [{ name: "Coral", due: 1000, paid: 1000, dueDate: null, settled: false }],
+      // Unsettled with a real due/paid gap (100) — must contribute 0.
+      cards: [{ name: "Coral", due: 1000, paid: 900, dueDate: null, settled: false }],
     });
     // Month 3 intentionally left with no entry at all.
   });
@@ -133,23 +138,27 @@ describe("yearBillsSummary", () => {
     expect(summary).toHaveLength(12);
     const [jan, feb, mar] = summary;
 
-    // Jan: totalDue = 5000+3000 = 8000, totalPaid = 4990+3050 = 8040.
-    // overpaidOrSaved = due - paid = 8000-8040 = -40 (negative = overpaid,
-    // since Coral was paid less but OneCard was paid *more* than due, net
-    // more was paid overall). Earliest due date = min(Jan 7, Jan 9) = Jan 7.
+    // Jan: totalDue = 5000+3000 = 8000, totalPaid = 4990+3050 = 8040 — these
+    // sum every card regardless of settled status. overpaidOrSaved, though,
+    // only counts Coral (settled): 5000-4990 = 10. OneCard's -50 gap is
+    // real (it was paid more than due) but doesn't count since it isn't
+    // settled — the naive totalDue-totalPaid would give -40 here instead.
+    // Earliest due date = min(Jan 7, Jan 9) = Jan 7, unaffected by settled.
     expect(jan).toMatchObject({
       month: 1,
       totalDue: 8000,
       totalPaid: 8040,
       earliestDueDate: "2093-01-07",
-      overpaidOrSaved: -40,
+      overpaidOrSaved: 10,
     });
 
-    // Feb: single card, no due date entered at all -> earliestDueDate null.
+    // Feb: single unsettled card with a real 100 gap — contributes 0 to
+    // overpaidOrSaved even though totalDue/totalPaid still reflect it.
+    // No due date entered at all -> earliestDueDate null.
     expect(feb).toMatchObject({
       month: 2,
       totalDue: 1000,
-      totalPaid: 1000,
+      totalPaid: 900,
       earliestDueDate: null,
       overpaidOrSaved: 0,
     });

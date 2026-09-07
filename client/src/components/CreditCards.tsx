@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   getCreditCardBillsSummary,
   getMonthBills,
@@ -69,7 +69,26 @@ interface CardsEditorProps {
   disabled: boolean;
 }
 
+/** Moves the row with id `fromId` to sit where `toId` currently is — the
+ * order here is exactly what gets persisted (Save sends `rows` as-is, and
+ * setMonthBills stores it as JSON in that order), so a pure client-side
+ * reorder is all that's needed; there's nothing server-side to update until
+ * the user hits Save. */
+function moveRow(rows: CardRow[], fromId: string, toId: string): CardRow[] {
+  if (fromId === toId) return rows;
+  const fromIdx = rows.findIndex((r) => r.id === fromId);
+  const toIdx = rows.findIndex((r) => r.id === toId);
+  if (fromIdx === -1 || toIdx === -1) return rows;
+  const next = [...rows];
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  return next;
+}
+
 function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
   function updateRow(id: string, patch: Partial<CardRow>) {
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
@@ -80,10 +99,56 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
     onChange([...rows, { id: generateId(), name: "", due: "", paid: "", dueDate: "", settled: false }]);
   }
 
+  // Pointer Events (not the HTML5 drag-and-drop API) so reordering works
+  // with touch input too — native `draggable`/`ondragstart` never fires on
+  // mobile Safari/Chrome. Same approach as RecentEntries' drag handle.
+  function handleHandlePointerDown(e: ReactPointerEvent<HTMLSpanElement>, id: string) {
+    if (disabled) return;
+    e.preventDefault();
+    setDraggedId(id);
+
+    const idAt = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-row-id]");
+      return el?.dataset.rowId ?? null;
+    };
+
+    const onMove = (ev: globalThis.PointerEvent) => {
+      setDragOverId(idAt(ev.clientX, ev.clientY));
+    };
+
+    const finish = (ev: globalThis.PointerEvent | null) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      setDraggedId(null);
+      setDragOverId(null);
+      const targetId = ev ? idAt(ev.clientX, ev.clientY) : null;
+      if (targetId) onChange(moveRow(rows, id, targetId));
+    };
+    const onUp = (ev: globalThis.PointerEvent) => finish(ev);
+    const onCancel = () => finish(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
   return (
     <div className="cards-editor">
       {rows.map((row) => (
-        <div className="card-row-fields" key={row.id}>
+        <div
+          className={`card-row-fields${dragOverId === row.id ? " drag-over" : ""}${draggedId === row.id ? " dragging" : ""}`}
+          key={row.id}
+          data-row-id={row.id}
+        >
+          <span
+            className="cards-drag-handle"
+            aria-hidden="true"
+            title="Drag to reorder"
+            onPointerDown={disabled ? undefined : (e) => handleHandlePointerDown(e, row.id)}
+          >
+            ⠿
+          </span>
           <input
             type="text"
             placeholder="Card / loan name"

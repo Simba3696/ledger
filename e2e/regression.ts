@@ -914,8 +914,24 @@ async function main() {
       "Credit Cards: Earliest Due Date picks the 7th over the 22nd",
       earliestDueText.includes("7") && !earliestDueText.includes("22"),
     );
+
+    // --- Saved/Overpaid only counts a card once it's marked Settled ---
+    // Neither card is settled yet, even though OneCard (paid 3050 against a
+    // 3000 due) has a real -50 gap — a naive totalDue-totalPaid over every
+    // card would already show Overpaid ₹40 here, but an in-progress bill
+    // shouldn't move this figure until it's actually checked off.
     check(
-      "Credit Cards: shows Overpaid when total paid exceeds total due",
+      "Credit Cards: Saved/Overpaid stays ₹0 while no card is marked Settled",
+      (await monthStat("Overpaid").count()) === 0 && (await monthStat("Saved").innerText()).includes("0.00"),
+    );
+
+    await cardRows.nth(0).locator('input[type="checkbox"]').check(); // settle E2E Coral
+    await cardRows.nth(1).locator('input[type="checkbox"]').check(); // settle E2E OneCard
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+
+    check(
+      "Credit Cards: shows Overpaid once total paid exceeds total due among settled cards",
       (await monthStat("Overpaid").count()) === 1,
     );
 
@@ -939,6 +955,43 @@ async function main() {
     await page.waitForSelector(".cards-stats");
     await page.waitForSelector(".loading-overlay", { state: "detached" });
     check("Credit Cards: entries persisted across reload", (await page.locator(".card-row-fields").count()) === 2);
+
+    // --- Drag reorder (lets you add a card first, sort it out later) ---
+    // Grabs the handle specifically (not the row) — same pointer-events-based
+    // approach as RecentEntries' drag handle, so it also works via touch.
+    async function cardNames(): Promise<string[]> {
+      return page
+        .locator('.card-row-fields input[type="text"]')
+        .evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value));
+    }
+    check("Credit Cards: initial order is Coral then OneCard", (await cardNames()).join(",") === "E2E Coral,E2E OneCard");
+
+    // `.card-row-fields` holds only <input> fields, not text nodes — a card's
+    // name lives in an input's `value`, which Playwright's `hasText` (it
+    // matches rendered text content, not form-control values) can never see.
+    // Filter by the attribute instead of the row's (nonexistent) visible text.
+    const ccRowByName = (name: string) =>
+      page.locator(".card-row-fields").filter({ has: page.locator(`input[type="text"][value="${name}"]`) });
+    const ccSrc = ccRowByName("E2E Coral").locator(".cards-drag-handle");
+    const ccDst = ccRowByName("E2E OneCard");
+    await ccSrc.dragTo(ccDst);
+    await page.waitForTimeout(400);
+    check("Credit Cards: drag reorder changed row order", (await cardNames()).join(",") === "E2E OneCard,E2E Coral");
+    check(
+      "Credit Cards: Save button re-enables after a drag reorder",
+      !(await page.locator('.cards-form button:has-text("Save")').isDisabled()),
+    );
+    await page.click('.cards-form button:has-text("Save")');
+    await page.waitForTimeout(400);
+
+    // --- Reload persistence of the new order ---
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click('.tabs button:has-text("Credit Cards")');
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check(
+      "Credit Cards: reordered row order persisted across reload",
+      (await cardNames()).join(",") === "E2E OneCard,E2E Coral",
+    );
 
     // Clean up so the suite is idempotent across runs.
     await page.click(".cards-remove >> nth=0");

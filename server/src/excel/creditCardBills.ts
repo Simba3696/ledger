@@ -148,9 +148,16 @@ export interface MonthBillsSummary extends MonthBills {
   totalPaid: number;
   /** Earliest of each card's own due date this month, or null if none entered. */
   earliestDueDate: string | null;
-  /** totalDue - totalPaid, matching the sign convention already used by hand:
-   * negative = overpaid (paid more than due), positive = saved a little
-   * (paid less, e.g. a bill-payment app rounding down). */
+  /** Sum of (due - paid) across only *settled* cards, matching the sign
+   * convention already used by hand: negative = overpaid (paid more than
+   * due), positive = saved a little (paid less, e.g. a bill-payment app
+   * rounding down). An unsettled card's raw gap is just an in-progress bill,
+   * not a real result yet — same reasoning as `cardOutstanding` in
+   * overview.ts, which likewise ignores a settled card's gap (there, in the
+   * opposite direction: a settled card contributes 0 outstanding regardless
+   * of its gap; here, an *unsettled* card contributes 0 to this stat
+   * regardless of its gap). Total Due/Total Paid below are unaffected by
+   * this — they still sum every card, settled or not. */
   overpaidOrSaved: number;
 }
 
@@ -159,7 +166,8 @@ function summarize(month: MonthBills): MonthBillsSummary {
   const totalPaid = month.cards.reduce((sum, c) => sum + c.paid, 0);
   const dueDates = month.cards.map((c) => c.dueDate).filter((d): d is string => d !== null);
   const earliestDueDate = dueDates.length > 0 ? dueDates.reduce((a, b) => (a < b ? a : b)) : null;
-  return { ...month, totalDue, totalPaid, earliestDueDate, overpaidOrSaved: totalDue - totalPaid };
+  const overpaidOrSaved = month.cards.reduce((sum, c) => sum + (c.settled ? c.due - c.paid : 0), 0);
+  return { ...month, totalDue, totalPaid, earliestDueDate, overpaidOrSaved };
 }
 
 /** All 12 months of a year, each independently summarized (unlike Finances,
