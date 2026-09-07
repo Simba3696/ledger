@@ -37,11 +37,26 @@ function ordinal(day: number): string {
 }
 
 export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordPayment, onForeclose }: Props) {
+  // Foreclosure hint: how much of this loan is already behind you vs. what a
+  // lump-sum payoff would still cost today (== `remaining`, shown separately
+  // in the figures column). Comparing this percentage across loans — not
+  // just the raw remaining amount — is what actually surfaces the best
+  // "quick win" candidate: a loan that started small can have a low
+  // remaining balance without being anywhere near paid off, and vice versa.
+  const paidAmount = Math.max(0, emi.totalAmount - emi.remaining);
+  const paidPercent = emi.totalAmount > 0 ? Math.min(100, (paidAmount / emi.totalAmount) * 100) : 0;
+
   return (
     <li className={`emi-row${emi.isPaidOff ? " paid-off" : ""}`}>
       <div className="emi-main">
         <span className="emi-card">{emi.cardOrBank}</span>
         {emi.remarks && <span className="emi-remarks">{emi.remarks}</span>}
+        <div className="emi-progress" title={`${rupee.format(paidAmount)} paid of ${rupee.format(emi.totalAmount)}`}>
+          <div className="emi-progress-track">
+            <div className="emi-progress-fill" style={{ width: `${paidPercent}%` }} />
+          </div>
+          <span className="emi-progress-label">{paidPercent.toFixed(0)}% paid</span>
+        </div>
       </div>
       <div className="emi-figures">
         <span className="emi-remaining">
@@ -49,6 +64,8 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
         </span>
         <span className="emi-schedule">
           {rupee.format(emi.emiAmount)}/mo, due {ordinal(emi.dueDay)}
+          {emi.interestRate !== null && ` · ${emi.interestRate}% p.a.`}
+          {emi.foreclosureCharge !== null && ` · ${emi.foreclosureCharge}% foreclosure fee`}
         </span>
         {/* The balance/decay anchor — everything since this date is an
             auto-projected assumption, not a confirmed payment. Shown so

@@ -256,6 +256,11 @@ function parseEmiInput(body: unknown): EmiEditsInput {
     remarks: String(b.remarks ?? ""),
     remainingAsOf: Number(b.remainingAsOf),
     durationMonths: b.durationMonths === null || b.durationMonths === undefined ? null : Number(b.durationMonths),
+    interestRate: b.interestRate === null || b.interestRate === undefined || b.interestRate === "" ? null : Number(b.interestRate),
+    foreclosureCharge:
+      b.foreclosureCharge === null || b.foreclosureCharge === undefined || b.foreclosureCharge === ""
+        ? null
+        : Number(b.foreclosureCharge),
   };
 }
 

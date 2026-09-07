@@ -6,7 +6,7 @@ import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./EMI.css";
 
-type SortField = "name" | "dueDay" | "emiAmount" | "remaining";
+type SortField = "name" | "dueDay" | "emiAmount" | "remaining" | "percentPaid";
 type SortDir = "asc" | "desc";
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
@@ -14,10 +14,19 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "dueDay", label: "Due Day" },
   { field: "emiAmount", label: "EMI Amount" },
   { field: "remaining", label: "Remaining" },
+  { field: "percentPaid", label: "% Paid" },
 ];
 
 function formatDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Foreclosure hint: % of the loan already paid off — sorting by this (rather
+// than the raw remaining amount) surfaces the best "quick win" candidate,
+// since a loan that started small can have a low remaining balance without
+// being anywhere near paid off, and vice versa.
+function percentPaid(emi: EmiEntryComputed): number {
+  return emi.totalAmount > 0 ? (emi.totalAmount - emi.remaining) / emi.totalAmount : 0;
 }
 
 function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): EmiEntryComputed[] {
@@ -26,7 +35,8 @@ function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): Emi
     if (field === "name") cmp = a.cardOrBank.localeCompare(b.cardOrBank);
     else if (field === "dueDay") cmp = a.dueDay - b.dueDay;
     else if (field === "emiAmount") cmp = a.emiAmount - b.emiAmount;
-    else cmp = a.remaining - b.remaining;
+    else if (field === "remaining") cmp = a.remaining - b.remaining;
+    else cmp = percentPaid(a) - percentPaid(b);
     return dir === "asc" ? cmp : -cmp;
   });
   return sorted;
@@ -46,6 +56,8 @@ export function EMI() {
   const [remarks, setRemarks] = useState("");
   const [remainingAsOf, setRemainingAsOf] = useState("");
   const [durationMonths, setDurationMonths] = useState("");
+  const [interestRate, setInterestRate] = useState("");
+  const [foreclosureCharge, setForeclosureCharge] = useState("");
   const [adding, setAdding] = useState(false);
 
   const [sortField, setSortField] = useState<SortField>("name");
@@ -113,6 +125,8 @@ export function EMI() {
         remarks: remarks.trim(),
         remainingAsOf: Number(remainingAsOf),
         durationMonths: durationMonths.trim() === "" ? null : Number(durationMonths),
+        interestRate: interestRate.trim() === "" ? null : Number(interestRate),
+        foreclosureCharge: foreclosureCharge.trim() === "" ? null : Number(foreclosureCharge),
       });
       setCardOrBank("");
       setEmiAmount("");
@@ -121,6 +135,8 @@ export function EMI() {
       setRemarks("");
       setRemainingAsOf("");
       setDurationMonths("");
+      setInterestRate("");
+      setForeclosureCharge("");
       await refresh();
     } catch (err) {
       setError((err as Error).message);
@@ -297,6 +313,32 @@ export function EMI() {
               value={durationMonths}
               onChange={(e) => setDurationMonths(e.target.value)}
               placeholder="If the bank told you"
+            />
+          </label>
+          <label>
+            Interest Rate (% p.a.) — optional
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min={0}
+              max={100}
+              value={interestRate}
+              onChange={(e) => setInterestRate(e.target.value)}
+              placeholder="If you know it"
+            />
+          </label>
+          <label>
+            Foreclosure Charge (%) — optional
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min={0}
+              max={100}
+              value={foreclosureCharge}
+              onChange={(e) => setForeclosureCharge(e.target.value)}
+              placeholder="Early-closure fee, if any"
             />
           </label>
           <label>

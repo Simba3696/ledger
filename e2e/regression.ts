@@ -689,6 +689,8 @@ async function main() {
       "EMI: Duration does not overwrite Current Balance",
       (await emiNumberInputs.nth(3).inputValue()) === "12000",
     );
+    await emiNumberInputs.nth(5).fill("10.5"); // Interest Rate (% p.a.), optional
+    await emiNumberInputs.nth(6).fill("0"); // Foreclosure Charge (%), optional
 
     // ceil(12000/1000) = 12 future due dates would be the *derived* estimate
     // — but Duration says this one actually finishes in 10 months, so the
@@ -716,6 +718,16 @@ async function main() {
     check(
       "EMI: row shows remaining equal to total for a fresh loan",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("12,000"),
+    );
+    check(
+      "EMI: row shows the entered interest rate",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("10.5% p.a."),
+    );
+    check(
+      // 0% is a meaningful, distinct value here (e.g. a real CRED/IDFC FIRST
+      // loan with no foreclosure fee) — must render, not be treated as blank.
+      "EMI: row shows the entered foreclosure charge, including a real 0%",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("0% foreclosure fee"),
     );
     const todayDateText = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
     check(
@@ -746,7 +758,16 @@ async function main() {
     // --- Edit an EMI entry (correcting drift in the current balance) ---
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Edit");
     await page.waitForSelector(".row-editing");
-    await page.locator(".emi-edit-fields input[type=\"number\"]").nth(3).fill("3000"); // Current Balance
+    const editNumberInputs = page.locator(".emi-edit-fields input[type=\"number\"]");
+    check(
+      "EMI: edit form pre-fills the existing interest rate",
+      (await editNumberInputs.nth(5).inputValue()) === "10.5",
+    );
+    check(
+      "EMI: edit form pre-fills the existing foreclosure charge, including a real 0%",
+      (await editNumberInputs.nth(6).inputValue()) === "0",
+    );
+    await editNumberInputs.nth(3).fill("3000"); // Current Balance
     await page.click('.row-editing button:has-text("Save")');
     await page.waitForTimeout(400);
     check(
@@ -756,6 +777,35 @@ async function main() {
     check(
       "EMI: editing without a fresh Duration preserves the existing until-target",
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes(expectedFinishes),
+    );
+    check(
+      // Interest Rate is a plain overwritable field, not a "sticky unless
+      // resupplied" one like Duration — but the edit form pre-fills it from
+      // the current value, so leaving that pre-filled value untouched (as
+      // this edit does) still correctly keeps it, not clears it.
+      "EMI: editing without touching Interest Rate keeps it",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("10.5% p.a."),
+    );
+    check(
+      "EMI: editing without touching Foreclosure Charge keeps it",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("0% foreclosure fee"),
+    );
+
+    // Interest Rate genuinely is clearable, though — an explicit blank on a
+    // later edit removes it rather than leaving the old value stuck forever.
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Edit");
+    await page.waitForSelector(".row-editing");
+    await page.locator(".emi-edit-fields input[type=\"number\"]").nth(5).fill("");
+    await page.locator(".emi-edit-fields input[type=\"number\"]").nth(6).fill("");
+    await page.click('.row-editing button:has-text("Save")');
+    await page.waitForTimeout(400);
+    check(
+      "EMI: clearing Interest Rate on an edit removes it from the row",
+      !(await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("p.a."),
+    );
+    check(
+      "EMI: clearing Foreclosure Charge on an edit removes it from the row",
+      !(await page.locator(".emi-row", { hasText: "E2E Coral" }).innerText()).includes("foreclosure fee"),
     );
 
     // --- Reload persistence ---
@@ -791,6 +841,11 @@ async function main() {
       // the displayed anchor actually reacts to a payment, not a fixed date.
       "EMI: \"Paid this month\" advances the Balance-as-of anchor",
       (await coralAsOf().innerText()) !== asOfBeforePayment,
+    );
+    check(
+      // 10,000 paid of 12,000 total = 83.33% -> "83% paid".
+      "EMI: shows the foreclosure-hint percent-paid progress for the loan",
+      (await page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-progress-label").innerText()) === "83% paid",
     );
 
     // The global dialog handler accepts every prompt with an *empty* string
@@ -837,6 +892,23 @@ async function main() {
       "Sorting by EMI Amount descending puts the ₹1,000/mo entry first",
       emiAmountDesc.indexOf("E2E Coral") < emiAmountDesc.indexOf("E2E Amber"),
     );
+
+    // % Paid (foreclosure hint): Coral is 83% paid, Amber is a fresh 0% —
+    // sorting by this (not the raw remaining amount, which happens to be
+    // equal for both right now) is what actually distinguishes them.
+    await page.click('.emi-sort button:has-text("% Paid")'); // ascending: least paid first
+    const percentPaidAsc = await emiNames();
+    check(
+      "Sorting by % Paid ascending puts the fresh 0%-paid entry first",
+      percentPaidAsc.indexOf("E2E Amber") < percentPaidAsc.indexOf("E2E Coral"),
+    );
+    await page.click('.emi-sort button:has-text("% Paid")'); // descending: most paid first
+    const percentPaidDesc = await emiNames();
+    check(
+      "Sorting by % Paid descending puts the 83%-paid entry first",
+      percentPaidDesc.indexOf("E2E Coral") < percentPaidDesc.indexOf("E2E Amber"),
+    );
+
     await page.click('.emi-sort button:has-text("Name")'); // back to default for the rest of the flow
     await page.waitForTimeout(200);
 

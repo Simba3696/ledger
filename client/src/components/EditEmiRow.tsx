@@ -15,6 +15,10 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
   const [remarks, setRemarks] = useState(emi.remarks);
   const [remainingAsOf, setRemainingAsOf] = useState(String(emi.remaining));
   const [durationMonths, setDurationMonths] = useState("");
+  const [interestRate, setInterestRate] = useState(emi.interestRate === null ? "" : String(emi.interestRate));
+  const [foreclosureCharge, setForeclosureCharge] = useState(
+    emi.foreclosureCharge === null ? "" : String(emi.foreclosureCharge),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +47,8 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
         remarks: remarks.trim(),
         remainingAsOf: Number(remainingAsOf),
         durationMonths: durationMonths.trim() === "" ? null : Number(durationMonths),
+        interestRate: interestRate.trim() === "" ? null : Number(interestRate),
+        foreclosureCharge: foreclosureCharge.trim() === "" ? null : Number(foreclosureCharge),
       });
       await onSaved();
     } catch (err) {
@@ -95,6 +101,26 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           value={durationMonths}
           onChange={(e) => setDurationMonths(e.target.value)}
           placeholder="Duration (months, optional)"
+        />
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min={0}
+          max={100}
+          value={interestRate}
+          onChange={(e) => setInterestRate(e.target.value)}
+          placeholder="Interest Rate (% p.a., optional)"
+        />
+        <input
+          type="number"
+          inputMode="decimal"
+          step="0.01"
+          min={0}
+          max={100}
+          value={foreclosureCharge}
+          onChange={(e) => setForeclosureCharge(e.target.value)}
+          placeholder="Foreclosure Charge (%, optional)"
         />
         <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" />
       </div>
