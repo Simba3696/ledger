@@ -20,10 +20,41 @@
 }
 
 .card-row-fields {
+  position: relative;
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.card-row-fields.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.card-row-fields.dragging {
+  opacity: 0.5;
+}
+
+/* Sits in .cards-form's own 20px padding to the left of the row, rather than
+ * taking up flex width inside it — a `padding-left` reservation on the row
+ * shrinks its content area by the exact same amount it saves elsewhere, so
+ * the remove button still gets bumped onto its own line at the same narrow
+ * widths as when the handle was a normal flex item. Borrowing the existing
+ * card gutter instead leaves the row's own available width untouched. */
+.cards-drag-handle {
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: grab;
+  color: var(--text);
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  user-select: none;
+  touch-action: none;
 }
 
 .card-row-fields input {
