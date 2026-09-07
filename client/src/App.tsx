@@ -105,13 +105,19 @@ function App() {
   }
 
   // EMI/Subscriptions are flat lists (no month scope) — just switch tabs.
-  // Credit Cards is month-scoped, so also jump year/month to match the
-  // item's actual due date, not whatever's currently selected.
+  // Credit Cards and the Salary reminder are month-scoped, so also jump
+  // year/month to match the item's actual due date (for Salary, that's
+  // last month, per its own dueDate), not whatever's currently selected.
   function goToUpcomingItem(item: UpcomingItem) {
     if (item.source === "EMI") {
       setTab("emi");
     } else if (item.source === "Subscription") {
       setTab("subscriptions");
+    } else if (item.source === "Salary") {
+      const [y, m] = item.dueDate.split("-").map(Number);
+      setYear(y);
+      setMonth(m);
+      setTab("finances");
     } else {
       const [y, m] = item.dueDate.split("-").map(Number);
       setYear(y);

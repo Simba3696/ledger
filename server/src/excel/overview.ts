@@ -2,8 +2,9 @@ import { listDebts } from "./debts.js";
 import { listEmis, nextDueDateAfter } from "./emi.js";
 import { listSubscriptions } from "./subscriptions.js";
 import { getMonthBills, type CardBill } from "./creditCardBills.js";
-import { financeSummary } from "./finances.js";
-import { parseDate, formatDate, startOfDay } from "./dateMath.js";
+import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";
+import { parseDate, formatDate, startOfDay, makeDate } from "./dateMath.js";
+import { MONTH_NAMES } from "./ledger.js";
 
 /** Pure read-time aggregation across every other module — no workbook of its
  * own, no writes. Keeping this separate from the individual modules preserves
@@ -22,7 +23,7 @@ function cardOutstanding(card: CardBill): number {
   return card.settled ? 0 : card.due - card.paid;
 }
 
-export type UpcomingSource = "EMI" | "Subscription" | "Credit Card";
+export type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
 
 export interface UpcomingItem {
   source: UpcomingSource;
@@ -51,7 +52,9 @@ export interface DashboardOverview {
   netWorth: NetWorthBreakdown;
   /** Sorted by due date, soonest first — EMI due dates and Subscription
    * renewals landing within the next two weeks, plus any credit card that
-   * still has an outstanding balance and a due date in that window. */
+   * still has an outstanding balance and a due date in that window, plus a
+   * reminder to log last month's salary during the first two weeks of a new
+   * month if it isn't on record yet. */
   upcoming: UpcomingItem[];
 }
 
@@ -59,18 +62,29 @@ function nextMonthOf(year: number, month: number): { year: number; month: number
   return month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
 }
 
+/** Null once there's no meaningful "last month" at all — i.e. today is
+ * January of EARLIEST_YEAR, before which the app has no concept of a prior
+ * month to have logged a salary for. Not a realistic case for "today" in
+ * practice, just a defensive guard against getMonthIncome's own year floor. */
+function previousMonthOf(year: number, month: number): { year: number; month: number } | null {
+  if (year <= EARLIEST_YEAR && month <= 1) return null;
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
+
 export async function dashboardOverview(today: Date = new Date()): Promise<DashboardOverview> {
   const day = startOfDay(today);
   const windowEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate() + UPCOMING_WINDOW_DAYS);
   const { year: nextYear, month: nextMonth } = nextMonthOf(day.getFullYear(), day.getMonth() + 1);
+  const lastMonth = previousMonthOf(day.getFullYear(), day.getMonth() + 1);
 
-  const [debts, emis, subscriptions, financeRows, thisMonthBills, nextMonthBills] = await Promise.all([
+  const [debts, emis, subscriptions, financeRows, thisMonthBills, nextMonthBills, lastMonthIncome] = await Promise.all([
     listDebts(),
     listEmis(today),
     listSubscriptions(today),
     financeSummary(day.getFullYear(), day.getMonth() + 1),
     getMonthBills(day.getFullYear(), day.getMonth() + 1),
     getMonthBills(nextYear, nextMonth),
+    lastMonth ? getMonthIncome(lastMonth.year, lastMonth.month) : null,
   ]);
 
   // --- Net worth ---
@@ -83,8 +97,31 @@ export async function dashboardOverview(today: Date = new Date()): Promise<Dashb
   );
   const netWorth = currentSavings - totalDebt - emiRemaining - creditCardOutstanding;
 
-  // --- Upcoming (next 14 days) ---
+  // --- Upcoming (next 14 days, plus the salary reminder below, which uses
+  // that same window but anchored to the *start* of this month instead) ---
   const upcoming: UpcomingItem[] = [];
+
+  // A reminder, not a real due date. Salary is logged under the month it was
+  // *earned*, not received (see README), so once a new month has started,
+  // last month's entry should already exist — this nudges until it does.
+  // Only relevant for the first UPCOMING_WINDOW_DAYS of the new month,
+  // though: that's the natural "go log last month's salary" window (e.g.
+  // August's salary gets entered in the first couple weeks of September),
+  // and a bare reminder that just kept nagging for the rest of the month
+  // regardless would read as stale rather than actionable. dueDate is
+  // deliberately a real past date (the 1st of last month) — combined with
+  // the plain ascending dueDate sort below, that reliably sorts this first,
+  // ahead of every genuinely-upcoming item, without needing separate
+  // priority logic. amount is 0 since nothing is actually "owed" here — the
+  // client hides the amount for this source.
+  if (day.getDate() <= UPCOMING_WINDOW_DAYS && lastMonthIncome && lastMonthIncome.salary === null) {
+    upcoming.push({
+      source: "Salary",
+      name: `${MONTH_NAMES[lastMonth!.month - 1]} ${lastMonth!.year}`,
+      amount: 0,
+      dueDate: formatDate(makeDate(lastMonth!.year, lastMonth!.month, 1)),
+    });
+  }
 
   // Some EMIs are actually installments on a credit card's own monthly bill
   // (converting a purchase to EMI bills it there, not separately) — their due
