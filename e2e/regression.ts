@@ -356,6 +356,75 @@ async function main() {
     const namesAfterMoveUp = await page.locator(".entry-remarks").allInnerTexts();
     check("Move up (menu) reverses Move down", namesAfterMoveUp.join(",") === namesBeforeMenuMove.join(","));
 
+    // --- Month locking (replaces the old "only the current calendar month
+    // is editable" auto-lock rule — nothing auto-locks on the 1st anymore,
+    // locking is an explicit per-month choice backed by real Excel sheet
+    // protection on the server, not just a UI convenience). ---
+    check(
+      "A never-locked month shows the unlocked banner by default",
+      (await page.locator(".month-lock-status").innerText()).includes("is unlocked"),
+    );
+    check(
+      // Checked on an actual input, not the submit button (also disabled
+      // whenever the form is simply empty/invalid, which it is here, so
+      // that alone wouldn't distinguish "disabled because locked" from
+      // "disabled because empty") or the <fieldset> itself (confirmed via
+      // real DOM inspection to correctly carry disabled="" when locked, but
+      // Playwright's isDisabled() only recognizes actual form controls like
+      // <input>, not a bare <fieldset>, so checking it directly always
+      // reports false regardless of the real attribute).
+      "Add Expense form is enabled while unlocked",
+      !(await page.locator('.add-expense-form input[type="text"]').isDisabled()),
+    );
+
+    await page.click(".month-lock-toggle"); // Lock this month
+    await page.waitForTimeout(400);
+    check(
+      "Locking the month updates the banner and button label",
+      (await page.locator(".month-lock-status").innerText()).includes("is locked") &&
+        (await page.locator(".month-lock-toggle").innerText()) === "Unlock",
+    );
+    check(
+      "Add Expense form is disabled once the month is locked",
+      await page.locator('.add-expense-form input[type="text"]').isDisabled(),
+    );
+    check(
+      "Existing entries lose their drag handle and overflow menu once the month is locked",
+      (await page.locator(".entry-row .drag-handle").count()) === 0 &&
+        (await page.locator(".entry-row .overflow-menu").count()) === 0,
+    );
+
+    // Real server-side enforcement, not just a hidden UI control — a direct
+    // API call against the locked month must also be rejected.
+    const lockedWriteStatus = await page.evaluate(
+      async ({ y, m }) => {
+        const res = await fetch("/api/entries", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ year: y, month: m, amount: 1, remarks: "should be blocked", category: "food", isCard: false }),
+        });
+        return res.status;
+      },
+      { y: year, m: monthIndex + 1 },
+    );
+    check("Locked month rejects a direct API write with 403, not just the UI", lockedWriteStatus === 403);
+    // That 403 is expected (it's the whole point of the check above) — the
+    // browser logs the failed fetch as a console error regardless, so filter
+    // this one known-expected occurrence out rather than let it fail the "no
+    // console errors" check at the end (same reasoning as the next-year 404
+    // filtered below).
+    const expected403 = consoleErrors.findIndex((e) => e.includes("403"));
+    if (expected403 !== -1) consoleErrors.splice(expected403, 1);
+
+    await page.click(".month-lock-toggle"); // Unlock again
+    await page.waitForTimeout(400);
+    check(
+      "Unlocking restores the unlocked banner, re-enables the form, and restores entry controls",
+      (await page.locator(".month-lock-status").innerText()).includes("is unlocked") &&
+        !(await page.locator('.add-expense-form input[type="text"]').isDisabled()) &&
+        (await page.locator(".entry-row .overflow-menu").count()) > 0,
+    );
+
     // --- Delete all three test entries (cleanup + verifies delete) ---
     await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" }), "Delete");
     await page.waitForTimeout(400);

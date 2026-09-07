@@ -1,5 +1,15 @@
 import { Router, type ErrorRequestHandler } from "express";
-import { appendEntry, deleteEntry, LedgerError, listMonth, moveEntry, updateEntry, yearSummary } from "./excel/ledger.js";
+import {
+  appendEntry,
+  deleteEntry,
+  isMonthLocked,
+  LedgerError,
+  listMonth,
+  moveEntry,
+  setMonthLocked,
+  updateEntry,
+  yearSummary,
+} from "./excel/ledger.js";
 import { CATEGORIES, CATEGORY_LABELS } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
@@ -34,6 +44,28 @@ router.get("/months/:year/:month", async (req, res, next) => {
     const month = Number(req.params.month);
     const entries = await listMonth(year, month);
     res.json(entries);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/months/:year/:month/lock", async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const month = Number(req.params.month);
+    res.json({ locked: await isMonthLocked(year, month) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/months/:year/:month/lock", async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    const month = Number(req.params.month);
+    const locked = Boolean((req.body ?? {}).locked);
+    await setMonthLocked(year, month, locked);
+    res.json({ locked });
   } catch (err) {
     next(err);
   }

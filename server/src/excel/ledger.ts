@@ -81,14 +81,61 @@ function getSheet(workbook: ExcelJS.Workbook, year: number, month: number): Exce
 // raw XML, so the password is never checked) and even re-saves the hash intact — meaning
 // a write would silently succeed while the file still *looks* protected in Excel. Since
 // these locks are placed intentionally on past years to prevent edits, treat them as
-// read-only from this app too rather than bypassing them.
+// read-only from this app too rather than bypassing them. This is also the same mechanism
+// setMonthLocked below uses to implement the app's own explicit per-month lock — a sheet
+// protected by hand in Excel and one locked via the app's UI are indistinguishable here,
+// and both are correctly rejected by every write path (append/update/delete/move all call
+// this), and both can be lifted from the app's own Unlock button (see setMonthLocked).
 function assertWritable(sheet: ExcelJS.Worksheet, year: number, month: number) {
   if ((sheet as unknown as { sheetProtection?: unknown }).sheetProtection) {
     throw new LedgerError(
-      `${monthName(month)} ${year} is protected/locked in Excel. Unprotect the sheet first if you really need to add an entry there.`,
+      `${monthName(month)} ${year} is locked. Unlock it first (from the app, or in Excel directly) if you really need to add an entry there.`,
       403,
     );
   }
+}
+
+// Not a real secret — ExcelJS never actually validates a protection password
+// when reading a workbook back (see the comment above), so there's nothing
+// confidential to protect here. This just satisfies sheet.protect()'s
+// required argument; the app always unlocks via unprotect() (which needs no
+// password at all). "Locking" a month is a workflow safeguard against
+// fat-fingering old data by accident, not a real security boundary.
+const MONTH_LOCK_PASSWORD = "ledger-month-lock";
+
+/** Whether a month is currently locked — the exact same real Excel sheet
+ * protection `assertWritable` already enforces on every write path, just
+ * exposed for the UI to read/toggle. A month whose year workbook doesn't
+ * exist on disk yet (e.g. browsing to a future year before adding anything)
+ * is never locked; there's nothing to lock. */
+export async function isMonthLocked(year: number, month: number): Promise<boolean> {
+  let workbook: ExcelJS.Workbook;
+  try {
+    workbook = await loadWorkbook(year);
+  } catch {
+    return false;
+  }
+  const sheet = getSheet(workbook, year, month);
+  return !!(sheet as unknown as { sheetProtection?: unknown }).sheetProtection;
+}
+
+/** Locks or unlocks a month by toggling real Excel sheet protection.
+ * Replaces the old "only the current calendar month is editable" client-side
+ * rule with an explicit, user-controlled one: nothing auto-locks on the 1st
+ * of the month anymore, so a month you haven't finished entering (e.g. away
+ * from your laptop around month-end) stays editable until you say you're
+ * done with it — at which point locking it is a deliberate, undoable choice
+ * rather than something the calendar decides for you. */
+export async function setMonthLocked(year: number, month: number, locked: boolean): Promise<void> {
+  const filePath = workbookPath(year);
+  const workbook = await loadWorkbook(year);
+  const sheet = getSheet(workbook, year, month);
+  if (locked) {
+    await sheet.protect(MONTH_LOCK_PASSWORD, {});
+  } else {
+    sheet.unprotect();
+  }
+  await saveWorkbook(workbook, filePath);
 }
 
 /** Last row (1-based) that has a numeric Amount value in column A. */

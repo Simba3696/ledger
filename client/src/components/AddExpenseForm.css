@@ -8,3 +8,15 @@
   flex-direction: column;
   gap: 16px;
 }
+
+/* A plain <fieldset disabled> is the whole-form disable mechanism (see
+   AddExpenseForm.tsx) — display:contents makes it layout-transparent so its
+   children flow straight into .add-expense-form's own flex column exactly
+   as if the fieldset weren't there, while still keeping its disabled-cascade
+   behavior (a fieldset's own display doesn't affect that). */
+.add-expense-form fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: contents;
+}

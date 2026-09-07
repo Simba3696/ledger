@@ -400,3 +400,61 @@ describe("yearSummary", () => {
     expect(summary[1]).toMatchObject({ month: 2, food: 0, transportation: 0, rent: 0, other: 0, total: 0 });
   });
 });
+
+describe("isMonthLocked / setMonthLocked", () => {
+  const YEAR = 2098;
+
+  beforeAll(async () => {
+    await buildFixtureWorkbook(workbookPath(YEAR), [
+      { name: "January", entries: [{ amount: 10, remarks: "x", category: "food" }] },
+      // February pre-protected directly (simulating a sheet locked by hand
+      // in Excel, or by an earlier app session) — isMonthLocked must
+      // recognize it as locked without ever having called setMonthLocked.
+      { name: "February", entries: [], protect: true },
+    ]);
+  });
+
+  it("reports a fresh, never-locked month as unlocked", async () => {
+    expect(await ledger.isMonthLocked(YEAR, 1)).toBe(false);
+  });
+
+  it("reports a pre-protected sheet (e.g. locked by hand in Excel) as locked", async () => {
+    expect(await ledger.isMonthLocked(YEAR, 2)).toBe(true);
+  });
+
+  it("reports a month in a year with no workbook on disk yet as unlocked, not an error", async () => {
+    expect(await ledger.isMonthLocked(2999, 1)).toBe(false);
+  });
+
+  it("locking a month makes it report locked and rejects further writes", async () => {
+    await ledger.setMonthLocked(YEAR, 1, true);
+    expect(await ledger.isMonthLocked(YEAR, 1)).toBe(true);
+    await expect(
+      ledger.appendEntry({ year: YEAR, month: 1, amount: 5, remarks: "blocked", category: "food", isCard: false }),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("unlocking a month (including one pre-protected outside the app) restores writes", async () => {
+    await ledger.setMonthLocked(YEAR, 1, false);
+    expect(await ledger.isMonthLocked(YEAR, 1)).toBe(false);
+    const added = await ledger.appendEntry({
+      year: YEAR,
+      month: 1,
+      amount: 5,
+      remarks: "allowed again",
+      category: "food",
+      isCard: false,
+    });
+    expect(added.remarks).toBe("allowed again");
+
+    // The app's own unlock doesn't need to know how a sheet got protected —
+    // unprotect() needs no password, so this also lifts the hand-protected
+    // February sheet from the other fixture just as well as an app-locked one.
+    await ledger.setMonthLocked(YEAR, 2, false);
+    expect(await ledger.isMonthLocked(YEAR, 2)).toBe(false);
+  });
+
+  it("throws a 404 trying to lock a month in a year with no workbook", async () => {
+    await expect(ledger.setMonthLocked(2999, 1, true)).rejects.toMatchObject({ status: 404 });
+  });
+});
