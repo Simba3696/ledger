@@ -42,10 +42,12 @@
  * shrinks its content area by the exact same amount it saves elsewhere, so
  * the remove button still gets bumped onto its own line at the same narrow
  * widths as when the handle was a normal flex item. Borrowing the existing
- * card gutter instead leaves the row's own available width untouched. */
+ * card gutter instead leaves the row's own available width untouched.
+ * -14px (not the full -20px gutter) leaves a small visible gap between the
+ * handle and the card's left edge, instead of sitting flush against it. */
 .cards-drag-handle {
   position: absolute;
-  left: -20px;
+  left: -14px;
   top: 50%;
   transform: translateY(-50%);
   cursor: grab;
