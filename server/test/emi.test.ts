@@ -644,3 +644,77 @@ describe("emi foreclosurePayoff", () => {
     expect(added.foreclosurePayoff).toBe(0);
   });
 });
+
+describe("emiMonthlyProjection auto mode (until paid off)", () => {
+  // Anchored 10 real years out from whenever this suite actually runs
+  // (not a fixed calendar year — a hardcoded one bit this exact test the
+  // first time, since an earlier test in this file adds a loan anchored to
+  // the *real* current date with ~46 installments left, which a fixed
+  // "2030" isn't safely past once run close enough to that date) —
+  // comfortably clears every earlier test's leftover EMIs in this shared
+  // workbook (the longest-lived is that ~46-cycle loan, well under 4 years),
+  // so they've all decayed to 0 and are excluded via `isPaidOff`. Isolates
+  // each test here to just its own loan(s), the same way the fixed-`months`
+  // tests above use a before/after delta instead.
+  const FAR_FUTURE = new Date(new Date().getFullYear() + 10, 0, 1);
+
+  // FAR_FUTURE is always Jan 1st of some year — this just names the month
+  // `offsetMonths` after it (0 = FAR_FUTURE's own Jan), so assertions don't
+  // hardcode a specific year that'd go stale the next time `new Date()`
+  // itself advances by a decade.
+  function monthKey(offsetMonths: number): string {
+    const total = FAR_FUTURE.getMonth() + offsetMonths;
+    const year = FAR_FUTURE.getFullYear() + Math.floor(total / 12);
+    const month = (total % 12) + 1;
+    return `${year}-${String(month).padStart(2, "0")}`;
+  }
+
+  it("extends past the default 12-month window until the loan actually reaches zero", async () => {
+    const added = await emi.addEmi(
+      // 18 full ₹1000 installments, evenly divisible (no smaller final one).
+      { cardOrBank: "Auto Long", emiAmount: 1000, dueDay: 15, totalAmount: 18000, remarks: "", remainingAsOf: 18000 },
+      FAR_FUTURE,
+    );
+    const result = await emi.emiMonthlyProjection("auto", FAR_FUTURE);
+    // 18th (final) installment: FAR_FUTURE's Jan (1st) + 17 months.
+    expect(result.length).toBe(18);
+    expect(result[result.length - 1]).toEqual({ month: monthKey(17), count: 1, totalAmount: 1000 });
+    await emi.deleteEmi(added.row);
+  });
+
+  it("trims to a single (zeroed) month when there are no active EMIs at all", async () => {
+    const result = await emi.emiMonthlyProjection("auto", FAR_FUTURE);
+    expect(result).toEqual([{ month: monthKey(0), count: 0, totalAmount: 0 }]);
+  });
+
+  it("extends to the later of two loans' payoff dates, not the sooner one", async () => {
+    const shorter = await emi.addEmi(
+      { cardOrBank: "Auto Shorter", emiAmount: 1000, dueDay: 5, totalAmount: 2000, remarks: "", remainingAsOf: 2000 },
+      FAR_FUTURE, // 2 installments
+    );
+    const longer = await emi.addEmi(
+      { cardOrBank: "Auto Longer", emiAmount: 500, dueDay: 20, totalAmount: 5000, remarks: "", remainingAsOf: 5000 },
+      FAR_FUTURE, // 10 installments
+    );
+    const result = await emi.emiMonthlyProjection("auto", FAR_FUTURE);
+    expect(result[result.length - 1].month).toBe(monthKey(9));
+    expect(result.length).toBe(10);
+    await emi.deleteEmi(longer.row);
+    await emi.deleteEmi(shorter.row);
+  });
+
+  it("caps at the 600-month ceiling rather than simulating forever for an implausibly slow loan", async () => {
+    // emiAmount 1 against a 10,000 balance would take 10,000 cycles to
+    // finish — nowhere near representable within the 600-month cap, so this
+    // must return exactly 600 entries (not throw, hang, or return an
+    // effectively-unbounded array) with the loan still active every month.
+    const added = await emi.addEmi(
+      { cardOrBank: "Auto Slow", emiAmount: 1, dueDay: 15, totalAmount: 10000, remarks: "", remainingAsOf: 10000 },
+      FAR_FUTURE,
+    );
+    const result = await emi.emiMonthlyProjection("auto", FAR_FUTURE);
+    expect(result.length).toBe(600);
+    expect(result.every((m) => m.count >= 1)).toBe(true);
+    await emi.deleteEmi(added.row);
+  });
+});

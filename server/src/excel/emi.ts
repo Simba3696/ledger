@@ -339,9 +339,18 @@ export async function listEmis(today: Date = new Date()): Promise<EmiEntryComput
 }
 
 /** How many calendar months ahead the Dashboard's upcoming-EMIs chart
- * projects — a year gives a full picture of the near-term EMI load without
- * projecting so far out that a long-tenure loan's tail dominates the chart. */
+ * projects by default — a year gives a full picture of the near-term EMI
+ * load without projecting so far out that a long-tenure loan's tail
+ * dominates the chart. The chart also offers other fixed scales and an
+ * "auto" (until every active loan is paid off) mode — see
+ * `emiMonthlyProjection`. */
 export const EMI_PROJECTION_MONTHS = 12;
+
+/** Upper bound for the "auto" (until paid off) mode's simulation window —
+ * matches `validateDurationMonths`'s own 600-month (50-year) ceiling, so
+ * "auto" can never simulate further out than a loan's own Duration field
+ * could ever legitimately claim to finish. */
+const EMI_PROJECTION_MAX_MONTHS = 600;
 
 export interface EmiMonthlyProjection {
   month: string; // YYYY-MM
@@ -357,14 +366,22 @@ export interface EmiMonthlyProjection {
  * payoff" date, just simulated across every future cycle instead of only
  * the last one, and summed across every loan per month. Months with no EMI
  * due at all are still included (zeroed), so the chart's X-axis is a
- * continuous run of months rather than skipping gaps. */
+ * continuous run of months rather than skipping gaps.
+ *
+ * `months: "auto"` extends the window instead of capping it — simulates the
+ * generous `EMI_PROJECTION_MAX_MONTHS` ceiling (so even a long-tenure loan's
+ * real payoff is always captured), then trims every trailing all-zero month
+ * once every active loan has actually reached 0, so the chart's x-axis stops
+ * right where the last installment lands instead of padding out to 50 years
+ * of empty months. */
 export async function emiMonthlyProjection(
-  months: number = EMI_PROJECTION_MONTHS,
+  months: number | "auto" = EMI_PROJECTION_MONTHS,
   today: Date = new Date(),
 ): Promise<EmiMonthlyProjection[]> {
   const day = startOfDay(today);
   const firstOfThisMonth = makeDate(day.getFullYear(), day.getMonth() + 1, 1);
-  const windowMonths = Array.from({ length: months }, (_, i) => toMonthOnly(addMonths(firstOfThisMonth, i)));
+  const windowSize = months === "auto" ? EMI_PROJECTION_MAX_MONTHS : months;
+  const windowMonths = Array.from({ length: windowSize }, (_, i) => toMonthOnly(addMonths(firstOfThisMonth, i)));
   const lastWindowMonth = windowMonths[windowMonths.length - 1];
 
   const buckets = new Map<string, { count: number; totalAmount: number }>(
@@ -403,7 +420,18 @@ export async function emiMonthlyProjection(
     }
   }
 
-  return windowMonths.map((month) => ({ month, ...buckets.get(month)! }));
+  const result = windowMonths.map((month) => ({ month, ...buckets.get(month)! }));
+  if (months !== "auto") return result;
+
+  // Trim trailing all-zero months once every loan's simulated above has
+  // actually reached 0 — always keeps at least the current month, so a
+  // portfolio with no active EMIs at all still returns one (zeroed) row
+  // rather than an empty array.
+  let lastNonZero = 0;
+  result.forEach((r, i) => {
+    if (r.count > 0) lastNonZero = i;
+  });
+  return result.slice(0, lastNonZero + 1);
 }
 
 export interface EmiEditsInput {

@@ -1323,6 +1323,33 @@ async function main() {
         (await page.locator(".emi-projection").innerText()).includes("Number of EMIs"),
     );
 
+    // --- Upcoming EMIs chart scale dropdown ---
+    check(
+      "Upcoming EMIs chart: scale defaults to 1 Year",
+      (await page.locator(".emi-projection select").inputValue()) === "12",
+    );
+    await page.selectOption(".emi-projection select", "6");
+    await page.waitForTimeout(300);
+    check(
+      "Upcoming EMIs chart: switching to 6 Months still renders bars",
+      (await page.locator(".emi-projection-chart-wrap .recharts-rectangle").count()) > 0,
+    );
+    await page.selectOption(".emi-projection select", "auto");
+    await page.waitForTimeout(300);
+    check(
+      "Upcoming EMIs chart: Until Paid Off still renders bars",
+      (await page.locator(".emi-projection-chart-wrap .recharts-rectangle").count()) > 0,
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await waitForDashboardData();
+    await page.waitForTimeout(400);
+    check(
+      "Upcoming EMIs chart: scale selection persists across reload",
+      (await page.locator(".emi-projection select").inputValue()) === "auto",
+    );
+    await page.selectOption(".emi-projection select", "12"); // back to default for the rest of the flow
+    await page.waitForTimeout(300);
+
     // Below 600px, the header swaps to a shorter "Upcoming" label so it
     // doesn't crowd/wrap against the total sharing the same row.
     await page.setViewportSize({ width: 420, height: 800 });

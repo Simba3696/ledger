@@ -341,9 +341,16 @@ router.patch("/emi/:row/pay", async (req, res, next) => {
   }
 });
 
-router.get("/emi-monthly-projection", async (_req, res, next) => {
+router.get("/emi-monthly-projection", async (req, res, next) => {
   try {
-    res.json(await emiMonthlyProjection());
+    const raw = req.query.months;
+    // "auto" (until every active loan is paid off) passes through as-is;
+    // anything else is coerced to a number, clamped the same way a stored
+    // Duration already is (1-600 months) so a stray/mistyped query value
+    // can't make the server try to simulate an absurd number of months.
+    const months =
+      raw === "auto" ? "auto" : raw === undefined ? undefined : Math.min(600, Math.max(1, Number(raw) || 1));
+    res.json(await emiMonthlyProjection(months));
   } catch (err) {
     next(err);
   }

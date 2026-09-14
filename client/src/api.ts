@@ -352,8 +352,10 @@ export interface EmiMonthlyProjection {
   totalAmount: number;
 }
 
-export function getEmiMonthlyProjection(): Promise<EmiMonthlyProjection[]> {
-  return fetch(`${BASE}/emi-monthly-projection`).then((r) => handle(r));
+export type EmiProjectionScale = 6 | 12 | 24 | 60 | "auto";
+
+export function getEmiMonthlyProjection(months: EmiProjectionScale = 12): Promise<EmiMonthlyProjection[]> {
+  return fetch(`${BASE}/emi-monthly-projection?months=${months}`).then((r) => handle(r));
 }
 
 export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
