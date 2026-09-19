@@ -1,22 +1,33 @@
+/* Sign toggle + magnitude input side by side, not stacked — so the whole
+   control is a single line, the same height as a plain input, and aligns
+   in the same row as a sibling field (Name/Scheme) next to it. Wraps
+   internally (not the outer form row) if the toggle's own labels don't
+   leave enough room for the input on a narrow screen, rather than
+   overflowing — the labels ("Owed to you", "Withdrawal") are deliberately
+   not shortened just to fit, so this is the fallback for genuinely tight
+   widths, not the common case. */
 .signed-amount {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  flex-shrink: 0;
   gap: 6px;
+  align-items: center;
 }
 
 .signed-amount-sign {
   display: flex;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .signed-amount-sign button {
-  flex: 1;
   padding: 6px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--card-bg);
   color: var(--text);
   font-size: var(--font-size-xs);
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -32,29 +43,7 @@
   opacity: 0.6;
 }
 
-/* The inner number input always fills whatever width .signed-amount itself
-   ends up with. In a *column* flex parent (.field-row's label), that's
-   already the full label width for free via flexbox's default stretch —
-   nothing more to do. In a *row* flex parent (.edit-fields,
-   .savings-row-main), items size to content by default instead, which
-   would cramp two pill buttons into their own shrink-to-fit width; give
-   .signed-amount a fixed width there, deliberately wider than those forms'
-   old *bare-input* width (110px) to fit "Owed to you"/"Withdrawal" across
-   two buttons without wrapping. The two-selector `.edit-fields .signed-amount
-   input[type="number"]` form (three class/attribute selectors total) is
-   used deliberately — a plain `.signed-amount input[type="number"]` would
-   tie on specificity with `.edit-fields input[type="number"]`'s existing
-   110px rule and depend on unpredictable CSS load order to actually win. */
-.field-row .signed-amount input[type="number"] {
-  width: 100%;
-}
-
-.edit-fields .signed-amount,
-.savings-row-main .signed-amount {
-  width: 190px;
-}
-
-.edit-fields .signed-amount input[type="number"],
-.savings-row-main .signed-amount input[type="number"] {
-  width: 100%;
+.signed-amount input[type="number"] {
+  flex: 1 1 80px;
+  min-width: 80px;
 }
