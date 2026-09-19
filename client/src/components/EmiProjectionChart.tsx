@@ -62,14 +62,6 @@ export function EmiProjectionChart() {
   // EMIs at all — a flat, empty-looking chart is worse than just saying so.
   const hasAnyEmis = data.some((m) => m.count > 0);
 
-  // Showing every single month's tick label is fine at the 6-12 month
-  // scales this defaulted to before, but becomes an unreadable smear once
-  // "2 Years"/"5 Years"/"Until Paid Off" can return 24-600 months — thin the
-  // ticks out to roughly a dozen labels regardless of how long the range
-  // actually is, rather than fixing a single interval that'd either be too
-  // sparse for the short scales or too dense for the long ones.
-  const tickInterval = Math.max(0, Math.ceil(chartData.length / 12) - 1);
-
   return (
     <div className="emi-projection">
       <div className="emi-projection-header">
@@ -100,7 +92,7 @@ export function EmiProjectionChart() {
               <ResponsiveContainer width="100%" height={300}>
                 <ComposedChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="month" stroke="var(--text)" fontSize={12} interval={tickInterval} />
+                  <XAxis dataKey="month" stroke="var(--text)" tick={false} tickLine={false} />
                   <YAxis
                     yAxisId="amount"
                     stroke="var(--text)"
