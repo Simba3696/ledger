@@ -11,6 +11,7 @@
     "stop": "node scripts/kill-ports.js",
     "test": "npm run test -w server",
     "test:e2e": "tsx e2e/regression.ts",
+    "screenshots": "tsx e2e/screenshots.ts",
     "build": "npm run build -w client && npm run build -w server",
     "prestart": "node scripts/kill-ports.js",
     "start": "npm run build && npm run start -w server"

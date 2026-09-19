@@ -785,6 +785,23 @@ Two suites, covering different layers:
   checkout alongside an existing one" above) — this is the one to run after
   any client-side change, or before considering a session's changes done.
 
+- **`npm run screenshots`** — `e2e/screenshots.ts` (Playwright, plain
+  script). Regenerates `docs/screenshots/dashboard.png` and
+  `dashboard-dark.png` against a fixed fictional demo dataset (Alex/Sam,
+  Visa Rewards/Amex Gold, Car Loan/Home Loan, Netflix/Spotify/Amazon Prime,
+  Emergency Fund/PPF/NPS/APY — the same cast every other screenshot already
+  uses). Deliberately copies `e2e/regression.ts`'s exact isolation recipe
+  (`LEDGER_DB_DIR` passed as an env var to a `npm run dev` spawned on this
+  checkout's own ports, never a separate custom port) rather than a
+  from-scratch setup — see the comment at the top of the file for why: an
+  earlier attempt used a separate worktree with its own overridden ports so
+  it could run *alongside* the real server, which left the client's dev
+  proxy silently defaulting to the real one instead, and every "demo" entry
+  written by that run landed in real data. Also asserts every tab is empty
+  before adding anything, as a second independent guard. Stops the real
+  server as a side effect (same as `test:e2e`) — rebuild and restart it
+  afterward (see **Deployment** below).
+
 Both suites are self-contained: they create their own temp data directories
 and never touch the real `Expenses` folder.
 
@@ -841,6 +858,20 @@ and never touch the real `Expenses` folder.
   magnitude-only field that never needs a minus sign, which also reads
   more clearly than the old implicit "+/-" prefix convention did, even on
   desktop.
+- Never hand-write a one-off script that drives the app's UI against real
+  data, even for something as low-stakes as regenerating a screenshot — use
+  (or extend) `npm run screenshots`/`e2e/screenshots.ts`. A 2026-09-19
+  incident did exactly this with a custom-port worktree meant to run
+  *alongside* the real server: the client dev proxy silently defaulted to
+  the real one anyway (see `client/vite.config.ts`'s `VITE_API_PROXY_TARGET`
+  fallback under **Deployment** below), and a second bug — filling a form by
+  row position, assuming the positions were blank — overwrote several real
+  Debts/EMI/Subscriptions/Credit Cards/Finances rows before anyone noticed.
+  Some of it (Credit Cards) was unrecoverable. `e2e/screenshots.ts` exists
+  specifically so this can't recur: same ports as the real server (so
+  `predev`'s `kill-ports.js` frees them first, same as `test:e2e`), never a
+  separate one, plus an explicit empty-tab assertion before writing
+  anything.
 
 ## History: retiring Expense Summary.xlsm
 
