@@ -238,7 +238,11 @@ gives every entry.
   (inline edit, swapped in for the row being edited). Shared row-action
   affordances (Edit/Delete/Copy/etc.) go through `OverflowMenu.tsx`, a
   generic `items: {label, onClick, ...}[]` menu, not a bespoke dropdown per
-  tab.
+  tab. A signed amount (Debts, the Finances savings delta) goes through
+  `SignedAmountInput.tsx` rather than a plain `<input type="number">` —
+  splitting sign (an explicit two-button toggle) from magnitude sidesteps a
+  phone's numeric keypad having no "-" key at all, which made a negative
+  value impossible to type on iOS.
 - **CSS**: one file per component, co-located (e.g. `Debts.css` next to
   `Debts.tsx`), imported directly (Vite bundles them into one global
   stylesheet, so anything genuinely shared lives in `shared.css` instead of
