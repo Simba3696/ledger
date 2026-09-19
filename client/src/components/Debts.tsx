@@ -3,6 +3,7 @@ import { addDebt, deleteDebt, getDebts, updateDebt, type DebtEntry } from "../ap
 import { DebtRow } from "./DebtRow";
 import { EditDebtRow } from "./EditDebtRow";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { SignedAmountInput } from "./SignedAmountInput";
 import { rupee } from "../format";
 import "./Debts.css";
 
@@ -166,14 +167,12 @@ export function Debts() {
           </label>
           <label>
             Amount (₹)
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
+            <SignedAmountInput
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="+ you owe, − owed to you"
-              required
+              onChange={setAmount}
+              positiveLabel="You owe"
+              negativeLabel="Owed to you"
+              placeholder="0.00"
             />
           </label>
         </div>
