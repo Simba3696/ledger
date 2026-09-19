@@ -47,6 +47,7 @@
 
 .savings-row-main {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
@@ -75,7 +76,13 @@
 
 .savings-row-main input[type="text"] {
   flex: 1;
-  min-width: 0;
+  /* Enough to stay legible — not 0. A shrinkable sibling with no real
+     minimum never actually triggers a wrap: flexbox only wraps an item to
+     a new line when the *others* on that line can't be squeezed enough to
+     fit, so .signed-amount (flex-shrink: 0, ~270px) would otherwise just
+     sit on the same line and let this field collapse toward nothing on a
+     narrow screen instead of wrapping below it. */
+  min-width: 140px;
 }
 
 .savings-row-main input[type="number"] {
