@@ -260,15 +260,18 @@ auto-advances forward to the next real cycle, never silently going stale:
   - **Current Savings** — named scheme balances (PPF, NPS, APY, etc.),
     summed automatically into a total. Entry is delta-based, not absolute:
     each scheme shows its last known balance (carried forward from
-    whichever month it was last touched) and you type a **+/− change** —
-    a deposit or a withdrawal — and the app computes and stores the new
-    absolute balance for you. For a scheme with no prior balance yet, the
-    first amount you type simply becomes its starting balance (baseline
-    zero). The underlying data is still a plain absolute balance per
-    scheme per month — only entry is delta-based — so a scheme's real
-    figure can always be corrected by typing whatever delta reconciles it
-    to your actual passbook/statement, rather than drifting permanently out
-    of sync the way a pure running-total ledger would. The set of schemes
+    whichever month it was last touched) and you pick **Deposit** or
+    **Withdrawal** and type the change — the app computes and stores the
+    new absolute balance for you. Sign is a toggle, not something you type,
+    since a phone's numeric keypad has no "-" key at all (see
+    [SignedAmountInput](#notes--gotchas) below). For a scheme with no prior
+    balance yet, the first amount you enter simply becomes its starting
+    balance (baseline zero). The underlying data is still a plain absolute
+    balance per scheme per month — only entry is delta-based — so a
+    scheme's real figure can always be corrected by entering whatever
+    deposit/withdrawal reconciles it to your actual passbook/statement,
+    rather than drifting permanently out of sync the way a pure
+    running-total ledger would. The set of schemes
     isn't fixed — add or remove one freely as your actual savings mix
     changes. Whichever month's breakdown was most recently entered carries
     forward across later months until you update it again, rather than
@@ -830,6 +833,14 @@ and never touch the real `Expenses` folder.
   running from a built `server/dist`." Fixed to check the latter — dev mode
   never serves a stale build no matter what was previously built in the
   same checkout.
+- A phone's numeric/decimal on-screen keyboard has no "-" key at all —
+  `<input type="number">` for a signed amount (Debts, the savings delta
+  above) made entering a negative value flat-out impossible on iOS. Both
+  now use a shared `SignedAmountInput` component: an explicit two-button
+  sign toggle (You owe/Owed to you, Deposit/Withdrawal) plus a
+  magnitude-only field that never needs a minus sign, which also reads
+  more clearly than the old implicit "+/-" prefix convention did, even on
+  desktop.
 
 ## History: retiring Expense Summary.xlsm
 
