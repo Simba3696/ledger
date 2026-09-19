@@ -1,0 +1,60 @@
+.signed-amount {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.signed-amount-sign {
+  display: flex;
+  gap: 4px;
+}
+
+.signed-amount-sign button {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.signed-amount-sign button.selected {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+}
+
+.signed-amount-sign button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* The inner number input always fills whatever width .signed-amount itself
+   ends up with. In a *column* flex parent (.field-row's label), that's
+   already the full label width for free via flexbox's default stretch —
+   nothing more to do. In a *row* flex parent (.edit-fields,
+   .savings-row-main), items size to content by default instead, which
+   would cramp two pill buttons into their own shrink-to-fit width; give
+   .signed-amount a fixed width there, deliberately wider than those forms'
+   old *bare-input* width (110px) to fit "Owed to you"/"Withdrawal" across
+   two buttons without wrapping. The two-selector `.edit-fields .signed-amount
+   input[type="number"]` form (three class/attribute selectors total) is
+   used deliberately — a plain `.signed-amount input[type="number"]` would
+   tie on specificity with `.edit-fields input[type="number"]`'s existing
+   110px rule and depend on unpredictable CSS load order to actually win. */
+.field-row .signed-amount input[type="number"] {
+  width: 100%;
+}
+
+.edit-fields .signed-amount,
+.savings-row-main .signed-amount {
+  width: 190px;
+}
+
+.edit-fields .signed-amount input[type="number"],
+.savings-row-main .signed-amount input[type="number"] {
+  width: 100%;
+}

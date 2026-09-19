@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getFinanceSummary, getMonthIncome, setMonthIncome, type MonthFinanceSummary, type SavingsEntry } from "../api";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { SignedAmountInput } from "./SignedAmountInput";
 import { rupee } from "../format";
 import { generateId } from "../id";
 import "./Finances.css";
@@ -93,13 +94,12 @@ function SavingsEditor({ rows, onChange, disabled }: SavingsEditorProps) {
               onChange={(e) => updateRow(row.id, { name: e.target.value })}
               disabled={disabled}
             />
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              placeholder="+/− change"
+            <SignedAmountInput
               value={row.delta}
-              onChange={(e) => updateRow(row.id, { delta: e.target.value })}
+              onChange={(delta) => updateRow(row.id, { delta })}
+              positiveLabel="Deposit"
+              negativeLabel="Withdrawal"
+              placeholder="0.00"
               disabled={disabled}
             />
             <button

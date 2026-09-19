@@ -577,6 +577,26 @@ async function main() {
       (await page.locator(".savings-editor-total").innerText()).includes("2,00,000"),
     );
 
+    // Same sign-toggle input Debts uses (SignedAmountInput.tsx) — added
+    // here so a real regression in either of its two usage contexts
+    // (.field-row vs. .savings-row-main's different flex layout) gets
+    // caught, not just the Debts one. Removed again right after, so the
+    // rest of this Finances flow's own assertions (2 schemes, ₹2,00,000)
+    // stay valid unchanged.
+    await page.click(".savings-add");
+    await savingsRows.nth(2).locator('input[type="text"]').fill("Emergency Fund");
+    await savingsRows.nth(2).locator('.signed-amount-sign button:has-text("Withdrawal")').click();
+    await savingsRows.nth(2).locator('input[type="number"]').fill("1000");
+    check(
+      "Finance: savings editor's Withdrawal toggle subtracts from the live total",
+      (await page.locator(".savings-editor-total").innerText()).includes("1,99,000"),
+    );
+    await savingsRows.nth(2).locator(".savings-remove").click();
+    check(
+      "Finance: removing the withdrawal row restores the original total",
+      (await page.locator(".savings-editor-total").innerText()).includes("2,00,000"),
+    );
+
     await page.click(".income-form button.submit-btn");
     await page.waitForSelector(".finance-stats");
     await page.waitForTimeout(300);
@@ -633,9 +653,15 @@ async function main() {
     await page.waitForSelector(".debts p.empty");
     check("Debts starts empty", (await page.locator(".debts p.empty").count()) === 1);
 
+    // Amount is a sign-toggle + magnitude-only number input (see
+    // SignedAmountInput.tsx — a plain number input never gets a "-" key on
+    // a phone's numeric keypad), so a negative `amount` here means clicking
+    // "Owed to you" first, then filling just the magnitude.
     async function fillDebtForm(name: string, amount: string) {
       await page.fill(".add-debt-form input[type=\"text\"]", name);
-      await page.fill(".add-debt-form input[type=\"number\"]", amount);
+      const negative = amount.startsWith("-");
+      await page.click(`.add-debt-form .signed-amount-sign button:has-text("${negative ? "Owed to you" : "You owe"}")`);
+      await page.fill('.add-debt-form input[type="number"]', negative ? amount.slice(1) : amount);
       await page.click('.add-debt-form button:has-text("Add Debt")');
       await page.waitForSelector(`text=${name}`);
     }
@@ -692,6 +718,29 @@ async function main() {
       "Debt stats: Net is You owe minus Owed to you",
       netStatText.includes("-") && netStatText.includes("11,300"),
     );
+    // The whole point of the sign-toggle input (see SignedAmountInput.tsx):
+    // a real bug report that a phone's numeric keypad has no "-" key at
+    // all, making a negative Debts amount impossible to type. Confirms the
+    // row this produced actually reads as "owed to you", not just that the
+    // stats happened to net out right.
+    check(
+      "Debts: 'Owed to you' toggle produces a row styled/labeled as owed, not just a negative stat",
+      (await page.locator(".debt-row", { hasText: "E2E Anandu" }).locator(".debt-amount.owed").count()) === 1 &&
+        (await page.locator(".debt-row", { hasText: "E2E Anandu" }).innerText()).includes("owed to you"),
+    );
+
+    // Editing that same debt must pre-select "Owed to you", not default back
+    // to "You owe" — the toggle's initial state is derived from the actual
+    // stored (negative) amount, not always the positive default.
+    await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Anandu" }), "Edit");
+    await page.waitForSelector(".row-editing");
+    check(
+      "Debts: editing a negative amount pre-selects the 'Owed to you' toggle",
+      (await page.locator(".row-editing .signed-amount-sign button:has-text(\"Owed to you\")").getAttribute("class"))?.includes(
+        "selected",
+      ) ?? false,
+    );
+    await page.click('.row-editing button:has-text("Cancel")'); // no actual change intended, just checking the pre-fill
 
     // --- Edit a debt entry ---
     await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Umma" }), "Edit");

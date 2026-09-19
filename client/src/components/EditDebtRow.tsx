@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { updateDebt, type DebtEntry } from "../api";
+import { SignedAmountInput } from "./SignedAmountInput";
 
 interface Props {
   debt: DebtEntry;
@@ -32,13 +33,12 @@ export function EditDebtRow({ debt, onCancel, onSaved }: Props) {
     <li className="debt-row row-editing">
       <div className="edit-fields">
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" />
-        <input
-          type="number"
-          inputMode="decimal"
-          step="0.01"
+        <SignedAmountInput
           value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="Amount (+ you owe, − owed to you)"
+          onChange={setAmount}
+          positiveLabel="You owe"
+          negativeLabel="Owed to you"
+          placeholder="Amount"
         />
       </div>
 
