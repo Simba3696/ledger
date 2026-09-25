@@ -1372,8 +1372,15 @@ async function main() {
       (await page.locator(".tabs button.selected").innerText()) === "EMI",
     );
 
-    await page.click('.tabs button:has-text("Dashboard")');
+    // The logo (top-left, always visible regardless of tab) is a shortcut
+    // back to Dashboard — handy on a phone where scrolling back up to the
+    // nav row isn't always convenient.
+    await page.click(".brand");
     await waitForDashboardData();
+    check(
+      "Clicking the logo navigates back to Dashboard",
+      (await page.locator(".tabs button.selected").innerText()) === "Dashboard",
+    );
     await page.waitForTimeout(400);
     await page.locator(".upcoming-item", { hasText: "E2E Overview Card" }).click();
     await page.waitForSelector(".cards-form");

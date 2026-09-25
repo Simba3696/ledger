@@ -130,10 +130,10 @@ function App() {
   return (
     <div className="app">
       <header>
-        <div className="brand">
+        <button type="button" className="brand" onClick={() => setTab("dashboard")} aria-label="Go to Dashboard">
           <img src={logoIcon} alt="" className="brand-logo" />
           <h1>Ledger</h1>
-        </div>
+        </button>
         <div className="header-right">
           {(tab === "expenses" || tab === "finances" || tab === "creditCards") && (
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
