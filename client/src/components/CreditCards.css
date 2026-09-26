@@ -47,7 +47,11 @@
  * handle and the card's left edge, instead of sitting flush against it. */
 .cards-drag-handle {
   position: absolute;
-  left: -14px;
+  /* -20px (6px padding further left than the visible glyph position) so the
+     added padding below grows the hit target without the glyph itself
+     appearing to move — lands exactly on the row's own 20px gutter edge,
+     no further. */
+  left: -20px;
   top: 50%;
   transform: translateY(-50%);
   cursor: grab;
@@ -57,6 +61,11 @@
   line-height: 1;
   user-select: none;
   touch-action: none;
+  /* Taller than wide on purpose: telling this row's handle apart from the
+     one above/below it (vertical precision) matters far more for a
+     reorder-drag than horizontal precision does, and there's limited room
+     to grow into sideways before spilling past the app's own edge padding. */
+  padding: 12px 6px;
 }
 
 .card-row-fields input {

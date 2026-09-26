@@ -52,6 +52,11 @@
   line-height: 1;
   user-select: none;
   touch-action: none;
+  /* padding + matching negative margin: grows the actual hit target to a
+     comfortable ~40px square without shifting the visible glyph or any
+     sibling's layout — the glyph itself stays exactly where it was. */
+  padding: 12px;
+  margin: -12px;
 }
 
 .entry-remarks {
