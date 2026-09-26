@@ -86,7 +86,7 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
         disabled={busy}
         items={[
           { label: "Paid this month", icon: "✅", onClick: onPaidThisMonth, disabled: emi.isPaidOff },
-          { label: "Record payment…", icon: "💰", onClick: onRecordPayment, disabled: emi.isPaidOff },
+          { label: "Record payment", icon: "💰", onClick: onRecordPayment, disabled: emi.isPaidOff },
           { label: "Foreclose EMI", icon: "🏁", onClick: onForeclose },
           { label: "Edit", icon: "✏️", onClick: onEdit },
           { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },

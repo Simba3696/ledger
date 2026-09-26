@@ -950,7 +950,7 @@ async function main() {
     // real bug found via this exact test: Number("") is 0, so without an
     // explicit blank-input guard, this would have silently recorded a
     // "paid ₹0" instead of a no-op.
-    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Record payment…");
+    await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Record payment");
     await fillAndAcceptPrompt("");
     await page.waitForTimeout(400);
     check(
