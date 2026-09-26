@@ -6,6 +6,15 @@
 .overflow-menu-trigger {
   font-size: 16px;
   line-height: 1;
+  /* min-width/height (not just padding) so the tap target is a predictable
+     ~40px regardless of font metrics — this is the only way to reach
+     Edit/Delete/etc for every row, so it's the highest-traffic small
+     control in the app. */
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 4px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -35,6 +44,11 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.overflow-menu-list.upward {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 
 .overflow-menu-item {

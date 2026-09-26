@@ -7,17 +7,23 @@ export function useDismiss(ref: RefObject<HTMLElement | null>, onDismiss: () => 
   useEffect(() => {
     if (!enabled) return;
 
-    function handlePointerDown(e: MouseEvent) {
+    function handlePointerDown(e: PointerEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) onDismiss();
     }
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") onDismiss();
     }
 
-    document.addEventListener("mousedown", handlePointerDown);
+    // `pointerdown`, not `mousedown` — mobile Safari's synthetic mouse-event
+    // chain after a tap is unreliable on elements that aren't themselves
+    // "clickable" (no onclick/cursor:pointer), which is exactly what most of
+    // this app's row content is. Same category of bug as native
+    // drag-and-drop never firing on mobile Safari, fixed the same way
+    // elsewhere in this app: use Pointer Events instead.
+    document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [ref, onDismiss, enabled]);
