@@ -24,3 +24,11 @@
   border-radius: 12px;
   padding: 16px 8px 8px;
 }
+
+.emi-projection-hint {
+  margin: 8px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  opacity: 0.6;
+  text-align: center;
+}

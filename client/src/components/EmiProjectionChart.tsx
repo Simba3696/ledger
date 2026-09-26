@@ -120,6 +120,12 @@ export function EmiProjectionChart() {
               </ResponsiveContainer>
             </div>
           )}
+
+          {/* The x-axis has no visible labels (see the XAxis above) so a
+              month is only ever revealed via the tooltip — worth a hint,
+              since there's nothing else on the chart suggesting that's
+              possible, especially by touch. */}
+          {!loading && hasAnyEmis && <p className="emi-projection-hint">Tap or hover a bar to see its month</p>}
         </div>
       )}
     </div>
