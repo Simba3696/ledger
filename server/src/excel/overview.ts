@@ -56,6 +56,11 @@ export interface DashboardOverview {
    * reminder to log last month's salary during the first two weeks of a new
    * month if it isn't on record yet. */
   upcoming: UpcomingItem[];
+  /** The day the *last* active loan clears — same "latest finish date across
+   * every active EMI" the EMI tab's own "EMI-Free On" stat shows, not any
+   * individual loan's own payoff date. Null once there are no active loans
+   * (either none exist, or every one is already paid off). */
+  emiFreeDate: string | null;
 }
 
 function nextMonthOf(year: number, month: number): { year: number; month: number } {
@@ -96,6 +101,13 @@ export async function dashboardOverview(today: Date = new Date()): Promise<Dashb
     thisMonthBills.cards.reduce((sum, c) => sum + cardOutstanding(c), 0),
   );
   const netWorth = currentSavings - totalDebt - emiRemaining - creditCardOutstanding;
+
+  // YYYY-MM-DD sorts lexicographically the same as chronologically, so a
+  // plain string max works — same logic as the EMI tab's own stat.
+  const emiFreeDate = emis.reduce<string | null>(
+    (latest, e) => (!e.isPaidOff && e.estimatedPayoffDate && (!latest || e.estimatedPayoffDate > latest) ? e.estimatedPayoffDate : latest),
+    null,
+  );
 
   // --- Upcoming (next 14 days, plus the salary reminder below, which uses
   // that same window but anchored to the *start* of this month instead) ---
@@ -169,5 +181,6 @@ export async function dashboardOverview(today: Date = new Date()): Promise<Dashb
   return {
     netWorth: { currentSavings, totalDebt, emiRemaining, creditCardOutstanding, netWorth },
     upcoming,
+    emiFreeDate,
   };
 }

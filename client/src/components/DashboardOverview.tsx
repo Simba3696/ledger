@@ -24,6 +24,12 @@ function formatDueDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 }
 
+// Same format as the EMI tab's own "EMI-Free On" stat — no weekday, this one
+// is a distant milestone date rather than a this-week due date.
+function formatEmiFreeDate(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
 interface Props {
   onSelectUpcomingItem: (item: UpcomingItem) => void;
 }
@@ -82,6 +88,12 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
               <span>Credit Cards Owed (This Month)</span>
               <strong>{rupee.format(netWorth.creditCardOutstanding)}</strong>
             </div>
+            {data?.emiFreeDate && (
+              <div className="overview-stat">
+                <span>EMI-Free On</span>
+                <strong>{formatEmiFreeDate(data.emiFreeDate)}</strong>
+              </div>
+            )}
           </div>
         )}
 
