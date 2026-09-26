@@ -6,7 +6,14 @@
 .app {
   max-width: 720px;
   margin: 0 auto;
-  padding: 24px 16px 64px;
+  /* max(..., env(safe-area-inset-*)) rather than a flat value — on a
+     notched/rounded-corner phone (an iPhone in landscape especially, or the
+     home-indicator gesture bar at the bottom in any orientation), content
+     would otherwise sit flush against the inset instead of clear of it.
+     env() only resolves to anything beyond 0 because index.html's viewport
+     meta now also sets viewport-fit=cover. */
+  padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(64px, env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
 }
 
 .tab-loading {
