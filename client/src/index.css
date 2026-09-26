@@ -92,10 +92,19 @@
 
 * {
   box-sizing: border-box;
+  /* Android Chrome's default tap flash is a gray rectangle that ignores
+     border-radius, so it visibly overshoots every rounded button/chip/card
+     in the app. Buttons already get their own :active/hover states where it
+     matters, so nothing is lost by turning the browser's own flash off. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
   margin: 0;
+  /* Without this, a stray downward swipe while scrolling a long list (or
+     dismissing a dropdown) can trigger Android Chrome's native
+     pull-to-refresh and reload the page, discarding any in-progress edit. */
+  overscroll-behavior-y: contain;
 }
 
 h1, h2 {
