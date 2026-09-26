@@ -1324,6 +1324,26 @@ async function main() {
       "Dashboard Overview: Upcoming header shows the total across all items",
       (await page.locator(".upcoming-total").innerText()).includes("3,000"),
     );
+
+    // Cross-checked against the EMI tab's own stat (rather than hand-computing
+    // the expected finish date again here) — both derive it the same way
+    // (latest estimatedPayoffDate across active loans), so they must agree.
+    await page.click('.tabs button:has-text("EMI")');
+    await page.waitForSelector(".add-emi-form");
+    const emiTabFreeDate = await page.locator(".emi-stat", { hasText: "EMI-Free On" }).innerText();
+    await page.click('.tabs button:has-text("Dashboard")');
+    // Dashboard is conditionally rendered (unmounts entirely when not the
+    // active tab, per App.tsx), so returning to it re-fetches everything
+    // from scratch — same wait as the very first arrival at this tab, so the
+    // chart-bar checks right after this one aren't racing a fresh loading
+    // state.
+    await waitForDashboardData();
+    await page.waitForTimeout(400);
+    check(
+      "Dashboard Overview: shows the same EMI-Free On date as the EMI tab",
+      (await page.locator(".overview-stat", { hasText: "EMI-Free On" }).innerText()) === emiTabFreeDate,
+    );
+
     check(
       "Upcoming EMIs chart renders bars once an active EMI exists",
       (await page.locator(".emi-projection-chart-wrap .recharts-rectangle").count()) > 0,

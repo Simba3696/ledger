@@ -403,6 +403,7 @@ export interface NetWorthBreakdown {
 export interface DashboardOverview {
   netWorth: NetWorthBreakdown;
   upcoming: UpcomingItem[];
+  emiFreeDate: string | null;
 }
 
 export function getOverview(): Promise<DashboardOverview> {
