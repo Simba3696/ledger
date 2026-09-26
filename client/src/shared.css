@@ -87,7 +87,11 @@
 }
 
 .edit-fields input {
-  font-size: var(--font-size-control);
+  /* Not --font-size-control (15px): any text/number/date input under 16px
+     makes iOS Safari auto-zoom the whole page on focus — jarring, and it
+     doesn't cleanly zoom back out. The add-forms already use --font-size-base
+     for the same reason; edit-mode inputs were the one place still on 15px. */
+  font-size: var(--font-size-base);
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);
