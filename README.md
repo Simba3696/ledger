@@ -211,7 +211,7 @@ auto-advances forward to the next real cycle, never silently going stale:
   user has actually paid off shouldn't still read as "owed" just because of
   that leftover. An EMI's Upcoming due date is computed from its own stored
   snapshot date, not just "today" — so clicking **Paid this month** (or
-  **Record payment…**) correctly advances which cycle shows as upcoming
+  **Record payment**) correctly advances which cycle shows as upcoming
   next, rather than continuing to show the one just paid. The header also
   shows the total across every Upcoming item, so you know what's coming due
   at a glance without adding it up yourself — and since it lives in the
@@ -382,7 +382,7 @@ auto-advances forward to the next real cycle, never silently going stale:
   Once set, the target is sticky — it survives ordinary balance corrections
   and payments, and only changes if you explicitly enter a fresh Duration on
   a later edit. Each entry also has quick payment actions — **Paid this
-  month** (subtracts one EMI Amount) and **Record payment…** (a custom
+  month** (subtracts one EMI Amount) and **Record payment** (a custom
   amount, for a partial or extra payment) — both of which anchor the new
   balance snapshot to *this month's due date* rather than to whatever day
   you happen to click, so paying a few days before the due date doesn't get
