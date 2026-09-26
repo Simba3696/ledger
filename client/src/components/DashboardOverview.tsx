@@ -115,7 +115,7 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
                         type="button"
                         className="upcoming-item"
                         onClick={() => onSelectUpcomingItem(item)}
-                        title={`${item.name} — go to ${
+                        title={`Go to ${
                           item.source === "EMI"
                             ? "EMI"
                             : item.source === "Subscription"
@@ -125,23 +125,19 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
                                 : "Credit Cards"
                         }`}
                       >
-                        <div className="upcoming-item-main">
-                          <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
-                          <span className="upcoming-name">{item.name}</span>
-                        </div>
-                        <div className="upcoming-item-meta">
-                          {item.source === "Salary" ? (
-                            <>
-                              <span className="upcoming-date">Overdue</span>
-                              <span className="upcoming-amount">Not logged yet</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
-                              <span className="upcoming-amount">{rupee.format(item.amount)}</span>
-                            </>
-                          )}
-                        </div>
+                        <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
+                        <span className="upcoming-name">{item.name}</span>
+                        {item.source === "Salary" ? (
+                          <>
+                            <span className="upcoming-date">Overdue</span>
+                            <span className="upcoming-amount">Not logged yet</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="upcoming-date">{formatDueDate(item.dueDate)}</span>
+                            <span className="upcoming-amount">{rupee.format(item.amount)}</span>
+                          </>
+                        )}
                       </button>
                     </li>
                   ))}
