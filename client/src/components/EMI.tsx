@@ -3,6 +3,7 @@ import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../ap
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { confirmDialog, promptDialog } from "./Dialog";
 import { rupee } from "../format";
 import "./EMI.css";
 
@@ -146,7 +147,7 @@ export function EMI() {
   }
 
   async function handleDelete(row: number) {
-    if (!window.confirm("Delete this EMI?")) return;
+    if (!(await confirmDialog({ message: "Delete this EMI?", confirmLabel: "Delete", destructive: true }))) return;
     setBusyRow(row);
     setError(null);
     try {
@@ -165,7 +166,14 @@ export function EMI() {
     // it comes off the list entirely rather than lingering as "Paid off" —
     // same underlying delete as the general Delete action, just the
     // dedicated, clearly-labeled entry point for that specific moment.
-    if (!window.confirm(`Foreclose ${emi.cardOrBank}? This removes it from your EMI list.`)) return;
+    if (
+      !(await confirmDialog({
+        message: `Foreclose ${emi.cardOrBank}? This removes it from your EMI list.`,
+        confirmLabel: "Foreclose",
+        destructive: true,
+      }))
+    )
+      return;
     setBusyRow(emi.row);
     setError(null);
     try {
@@ -195,8 +203,13 @@ export function EMI() {
     handlePay(emi.row, emi.emiAmount);
   }
 
-  function handleRecordPayment(emi: EmiEntryComputed) {
-    const input = window.prompt(`How much did you pay toward ${emi.cardOrBank}?`, String(emi.emiAmount));
+  async function handleRecordPayment(emi: EmiEntryComputed) {
+    const input = await promptDialog({
+      message: `How much did you pay toward ${emi.cardOrBank}?`,
+      defaultValue: String(emi.emiAmount),
+      type: "number",
+      inputMode: "decimal",
+    });
     // Treat both an explicit Cancel (null) and a blank submission the same
     // way — a blank prompt isn't a deliberate "I paid ₹0", and Number("")
     // is 0, so without this check it would silently look like a valid

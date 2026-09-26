@@ -3,6 +3,7 @@ import { addSubscription, deleteSubscription, getSubscriptions, type Subscriptio
 import { SubscriptionRow } from "./SubscriptionRow";
 import { EditSubscriptionRow } from "./EditSubscriptionRow";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { confirmDialog } from "./Dialog";
 import { rupee } from "../format";
 import "./Subscriptions.css";
 
@@ -109,7 +110,7 @@ export function Subscriptions() {
   }
 
   async function handleDelete(row: number) {
-    if (!window.confirm("Delete this subscription?")) return;
+    if (!(await confirmDialog({ message: "Delete this subscription?", confirmLabel: "Delete", destructive: true }))) return;
     setBusyRow(row);
     setError(null);
     try {

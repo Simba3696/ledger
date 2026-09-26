@@ -4,6 +4,7 @@ import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
 import { EntryRow } from "./EntryRow";
 import { LoadingOverlay } from "./LoadingOverlay";
+import { confirmDialog } from "./Dialog";
 import { rupee } from "../format";
 import "./RecentEntries.css";
 
@@ -58,7 +59,13 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
   }
 
   async function handleDelete(row: number) {
-    if (!window.confirm("Delete this entry? This edits the Excel file directly and can't be undone from here.")) {
+    if (
+      !(await confirmDialog({
+        message: "Delete this entry? This edits the Excel file directly and can't be undone from here.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) {
       return;
     }
     setBusyRow(row);

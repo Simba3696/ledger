@@ -131,7 +131,6 @@ async function main() {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
     page.on("pageerror", (err) => consoleErrors.push("pageerror: " + err.message));
-    page.on("dialog", (d) => d.accept());
 
     // The Dashboard chart's DOM shell now renders immediately (even before its
     // data has loaded, so the loading overlay has something to cover) — so
@@ -314,6 +313,24 @@ async function main() {
       await row.locator(".overflow-menu-trigger").click();
       await row.locator(".overflow-menu-list").getByRole("menuitem", { name: itemLabel }).click();
     }
+
+    // --- In-app confirm()/prompt() replacement (Dialog.tsx) helpers — every
+    // Delete/Foreclose/Record payment action now opens this modal instead of
+    // a native dialog, so each of those actions needs an explicit follow-up
+    // click here instead of the old global `page.on("dialog", accept)`.
+    async function acceptDialog() {
+      await page.waitForSelector(".dialog-card");
+      await page.click(".dialog-confirm");
+    }
+    async function dismissDialog() {
+      await page.waitForSelector(".dialog-card");
+      await page.click(".dialog-cancel");
+    }
+    async function fillAndAcceptPrompt(value: string) {
+      await page.waitForSelector(".dialog-input");
+      await page.fill(".dialog-input", value);
+      await page.click(".dialog-confirm");
+    }
     // Playwright's `hasText` is a substring match, so once the copy gets
     // renamed to "...Edited" below, plain `hasText: "E2E Cash Entry"` would
     // ambiguously match both rows — filter it back out to stay exact.
@@ -453,10 +470,13 @@ async function main() {
 
     // --- Delete all three test entries (cleanup + verifies delete) ---
     await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Cash Entry Edited" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     await clickMenuItem(page.locator(".entry-row", { hasText: "E2E Card Entry" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     await clickMenuItem(cashEntryRow(), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
@@ -606,12 +626,13 @@ async function main() {
     // suite's Debts flow, which assumes starting from an empty list) ---
     await fillDebtForm("E2E Duplicate", "1000");
     // Different case on the second entry to also exercise case-insensitive
-    // matching. The global dialog handler above accepts by default, so this
-    // exercises the *consolidate* path — the row keeps the original entry's
-    // name/casing, so wait on the merged amount rather than the typed name.
+    // matching. Accepting the dialog here exercises the *consolidate* path —
+    // the row keeps the original entry's name/casing, so wait on the merged
+    // amount rather than the typed name.
     await page.fill('.add-debt-form input[type="text"]', "e2e duplicate");
     await page.fill('.add-debt-form input[type="number"]', "500");
     await page.click('.add-debt-form button:has-text("Add Debt")');
+    await acceptDialog();
     await page.waitForTimeout(400);
     check(
       "Duplicate debt name (dialog accepted) consolidates into one row",
@@ -619,14 +640,12 @@ async function main() {
         (await page.locator(".debt-row", { hasText: "E2E Duplicate" }).innerText()).includes("1,500"),
     );
 
-    // Swap to a one-shot dismiss handler to exercise the "separate entry" path.
-    page.removeAllListeners("dialog");
-    page.once("dialog", (d) => d.dismiss());
+    // Dismiss this time, to exercise the "separate entry" path instead.
     await page.fill('.add-debt-form input[type="text"]', "E2E Duplicate");
     await page.fill('.add-debt-form input[type="number"]', "200");
     await page.click('.add-debt-form button:has-text("Add Debt")');
+    await dismissDialog();
     await page.waitForTimeout(400);
-    page.on("dialog", (d) => d.accept()); // restore the default accept-everything handler
     check(
       "Duplicate debt name (dialog dismissed) adds a separate entry instead",
       (await page.locator(".debt-row", { hasText: "E2E Duplicate" }).count()) === 2,
@@ -635,6 +654,7 @@ async function main() {
     const dupeRows = page.locator(".debt-row", { hasText: "E2E Duplicate" });
     while ((await dupeRows.count()) > 0) {
       await clickMenuItem(dupeRows.first(), "Delete");
+      await acceptDialog();
       await page.waitForTimeout(400);
     }
     check("Debts back to empty after duplicate-name cleanup", (await page.locator(".debt-row").count()) === 0);
@@ -711,6 +731,7 @@ async function main() {
     // --- Delete a debt entry ---
     const beforeDebtCount = await page.locator(".debt-row").count();
     await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Anandu" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     check("Deleting a debt removes it from the list", (await page.locator(".debt-row").count()) === beforeDebtCount - 1);
     check(
@@ -720,6 +741,7 @@ async function main() {
 
     // Clean up the remaining test debt so this suite is idempotent across runs.
     await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Umma" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     check("Debts back to empty after cleanup", (await page.locator(".debt-row").count()) === 0);
 
@@ -923,12 +945,13 @@ async function main() {
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-progress-label").innerText()) === "83% paid",
     );
 
-    // The global dialog handler accepts every prompt with an *empty* string
-    // (Playwright's dialog.accept() with no argument does not resubmit the
-    // prompt's own default value) — this exercises a real bug found via this
-    // exact test: Number("") is 0, so without an explicit blank-input guard,
-    // this would have silently recorded a "paid ₹0" instead of a no-op.
+    // The dialog's input opens pre-filled with the EMI amount (Dialog.tsx's
+    // defaultValue) — explicitly clearing it before confirming exercises a
+    // real bug found via this exact test: Number("") is 0, so without an
+    // explicit blank-input guard, this would have silently recorded a
+    // "paid ₹0" instead of a no-op.
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Record payment…");
+    await fillAndAcceptPrompt("");
     await page.waitForTimeout(400);
     check(
       "EMI: \"Record payment\" treats a blank prompt as cancelled, not as a ₹0 payment",
@@ -991,8 +1014,10 @@ async function main() {
     // "Foreclose EMI" action (matches the user's actual workflow: once a
     // loan is fully paid off, it comes off the list entirely).
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Amber" }), "Foreclose EMI");
+    await acceptDialog();
     await page.waitForTimeout(400);
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Foreclose EMI");
+    await acceptDialog();
     await page.waitForTimeout(400);
     check("EMI back to empty after cleanup (foreclosure)", (await page.locator(".emi-row").count()) === 0);
 
@@ -1079,8 +1104,10 @@ async function main() {
 
     // Clean up so the suite is idempotent across runs.
     await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Spotify" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     await clickMenuItem(page.locator(".subscription-row", { hasText: "E2E Netflix" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
     check("Subscriptions back to empty after cleanup", (await page.locator(".subscription-row").count()) === 0);
 
@@ -1501,11 +1528,13 @@ async function main() {
     await page.click('.tabs button:has-text("Debts")');
     await page.waitForSelector(".add-debt-form");
     await clickMenuItem(page.locator(".debt-row", { hasText: "E2E Overview Debt" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
 
     await page.click('.tabs button:has-text("EMI")');
     await page.waitForSelector(".add-emi-form");
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Overview EMI" }), "Delete");
+    await acceptDialog();
     await page.waitForTimeout(400);
 
     await page.click('.tabs button:has-text("Credit Cards")');

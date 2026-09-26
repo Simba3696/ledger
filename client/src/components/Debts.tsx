@@ -4,6 +4,7 @@ import { DebtRow } from "./DebtRow";
 import { EditDebtRow } from "./EditDebtRow";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { SignedAmountInput } from "./SignedAmountInput";
+import { confirmDialog } from "./Dialog";
 import { rupee } from "../format";
 import "./Debts.css";
 
@@ -94,11 +95,12 @@ export function Debts() {
     const existing = debts.find((d) => d.name.trim().toLowerCase() === trimmedName.toLowerCase());
     const consolidate =
       existing &&
-      window.confirm(
-        `You already have a debt entry for "${existing.name}" (${rupee.format(existing.amount)}).\n\n` +
+      (await confirmDialog({
+        message:
+          `You already have a debt entry for "${existing.name}" (${rupee.format(existing.amount)}).\n\n` +
           `Click OK to consolidate — adds ${rupee.format(enteredAmount)} to make ${rupee.format(existing.amount + enteredAmount)}.\n` +
           `Click Cancel to add this as a separate new entry instead.`,
-      );
+      }));
 
     setAdding(true);
     setError(null);
@@ -119,7 +121,7 @@ export function Debts() {
   }
 
   async function handleDelete(row: number) {
-    if (!window.confirm("Delete this debt entry?")) return;
+    if (!(await confirmDialog({ message: "Delete this debt entry?", confirmLabel: "Delete", destructive: true }))) return;
     setBusyRow(row);
     setError(null);
     try {
