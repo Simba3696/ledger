@@ -164,8 +164,8 @@
 
 .upcoming-item {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 4px;
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -176,6 +176,23 @@
   text-align: left;
   cursor: pointer;
   transition: border-color 0.15s ease;
+}
+
+/* Name on its own row (rather than sharing one with the date/amount) so a
+   long real-world subscription or card name has the item's full width to
+   wrap into, instead of being squeezed by three other flex items down to a
+   sliver that wraps one word per line. */
+.upcoming-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.upcoming-item-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .upcoming-item:hover,
@@ -195,10 +212,13 @@
 
 .upcoming-name {
   flex: 1;
+  /* Wraps rather than truncating with an ellipsis — a real subscription or
+     card name can be long enough to clip into something unrecognizable
+     ("Amazon Prime + Prime Vi…"), and a hover tooltip wouldn't help on a
+     phone anyway. min-width: 0 (not the flex-item default of auto) is what
+     lets this item actually shrink narrower than its own content and wrap,
+     rather than forcing the whole row wider instead. */
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .upcoming-date {
