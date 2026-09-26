@@ -15,6 +15,7 @@ import { Dashboard } from "./components/Dashboard";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { LoadingOverlay } from "./components/LoadingOverlay";
 import { MonthLockToggle } from "./components/MonthLockToggle";
+import { DialogHost } from "./components/Dialog";
 import logoIcon from "./assets/logo-icon.png";
 
 // Dashboard is the default tab (needed on first paint, so it stays eager);
@@ -218,6 +219,8 @@ function App() {
           />
         </Suspense>
       )}
+
+      <DialogHost />
     </div>
   );
 }

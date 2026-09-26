@@ -1,0 +1,72 @@
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
+}
+
+.dialog-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.dialog-message {
+  margin: 0 0 16px;
+  color: var(--text-h);
+  /* Debts' consolidate-or-new confirmation is a real multi-line message —
+     native window.confirm respects \n, this needs telling explicitly to. */
+  white-space: pre-line;
+}
+
+.dialog-input {
+  display: block;
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  font-size: var(--font-size-base);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-actions button {
+  min-height: 40px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: var(--font-size-control);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dialog-cancel {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.dialog-confirm {
+  border: none;
+  background: var(--accent);
+  color: white;
+}
+
+.dialog-confirm.destructive {
+  background: var(--danger);
+}
