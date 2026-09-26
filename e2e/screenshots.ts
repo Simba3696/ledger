@@ -55,6 +55,20 @@ const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
 const SERVER_PORT = Number(serverEnv.PORT) || 4000;
 const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
 
+// Every "Upcoming (next 2 weeks)" item needs to land inside that window
+// relative to whenever this script actually runs, not a fixed calendar date
+// — a hardcoded date silently drops out of "Upcoming" (and the screenshot
+// quietly gets worse) the moment real time passes it, exactly as happened
+// the first time this ran a week after being written. `toLocalDateStr`
+// mirrors e2e/regression.ts's own helper: plain getFullYear/getMonth/getDate,
+// never toISOString(), which is UTC and can land on the wrong calendar day
+// near midnight IST.
+function daysFromNow(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -133,13 +147,13 @@ async function main() {
     await cardRows.nth(0).locator('input[type="text"]').fill("Visa Rewards");
     await cardRows.nth(0).locator('input[type="number"]').nth(0).fill("4500");
     await cardRows.nth(0).locator('input[type="number"]').nth(1).fill("4500");
-    await cardRows.nth(0).locator('input[type="date"]').fill("2026-09-25");
+    await cardRows.nth(0).locator('input[type="date"]').fill(daysFromNow(6));
     await cardRows.nth(0).locator('.cards-settled input[type="checkbox"]').check();
 
     await cardRows.nth(1).locator('input[type="text"]').fill("Amex Gold");
     await cardRows.nth(1).locator('input[type="number"]').nth(0).fill("8200");
     await cardRows.nth(1).locator('input[type="number"]').nth(1).fill("2000");
-    await cardRows.nth(1).locator('input[type="date"]').fill("2026-09-25");
+    await cardRows.nth(1).locator('input[type="date"]').fill(daysFromNow(6));
 
     await page.click('.cards-form button:has-text("Save")');
     await page.waitForTimeout(500);
@@ -184,9 +198,15 @@ async function main() {
       await page.click('.add-subscription-form button:has-text("Add Subscription")');
       await page.waitForSelector(`.subscription-row:has-text("${service}")`);
     };
-    await addSub("Spotify", "119", "Monthly", "2026-09-12", "Amex Gold");
-    await addSub("Netflix", "649", "Monthly", "2026-09-20", "Visa Rewards");
-    await addSub("Amazon Prime", "1499", "Yearly", "2026-12-01", "Visa Rewards");
+    // Spotify's anchor is deliberately stale (well in the past) — Monthly's
+    // auto-advance-to-current-cycle logic (see Subscriptions.tsx) computes
+    // its real next renewal from this regardless, same as it would from any
+    // old real-world anchor. Netflix's is already in the future so it lands
+    // in "Upcoming" untouched; Amazon Prime's is far enough out that it
+    // reliably doesn't.
+    await addSub("Spotify", "119", "Monthly", daysFromNow(-40), "Amex Gold");
+    await addSub("Netflix", "649", "Monthly", daysFromNow(1), "Visa Rewards");
+    await addSub("Amazon Prime", "1499", "Yearly", daysFromNow(90), "Visa Rewards");
 
     // --- Finances (income + savings) ---
     await page.click('.tabs button:has-text("Finances")');
