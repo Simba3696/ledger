@@ -21,7 +21,10 @@
 }
 
 .signed-amount-sign button {
-  padding: 6px 8px;
+  /* Matches the ~41px total height of the magnitude input beside it
+     (.signed-amount's align-items: center doesn't require an exact match,
+     but this keeps both a comfortable tap target and visually level). */
+  padding: 10px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--card-bg);
