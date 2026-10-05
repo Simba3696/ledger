@@ -29,20 +29,22 @@ function readEnvFile(filePath: string): Record<string, string> {
   return vars;
 }
 export const serverEnv = readEnvFile(path.join(ROOT, "server", ".env"));
-const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
+export const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
 export const SERVER_PORT = Number(serverEnv.PORT) || 4000;
 export const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
 
-/** The dev server refuses to start without auth configured (LLD §6), which
- * would otherwise surface only as a timeout waiting on its port. The client
- * has no sign-in screen yet, so e2e runs need AUTH_DISABLED=true. */
-export function assertAuthDisabled(): void {
-  if (serverEnv.AUTH_DISABLED !== "true") {
-    throw new Error(
-      "server/.env must set AUTH_DISABLED=true for e2e until the client has a sign-in screen " +
-        "(see server/.env.example and docs/architecture/LLD.md §6).",
-    );
-  }
+// The auth settings every spawned dev server gets explicitly (LLD §6), so
+// a SUPABASE_URL, OWNER_EMAIL or AUTH_DISABLED left in the calling shell
+// can't win over the .env files that e2e/auth.ts's assertLocalAuth checked
+// (dotenv and Vite both let an existing environment variable win).
+function authEnv(): Record<string, string> {
+  return {
+    SUPABASE_URL: serverEnv.SUPABASE_URL ?? "",
+    OWNER_EMAIL: serverEnv.OWNER_EMAIL ?? "",
+    AUTH_DISABLED: "",
+    VITE_SUPABASE_URL: clientEnv.VITE_SUPABASE_URL ?? "",
+    VITE_SUPABASE_ANON_KEY: clientEnv.VITE_SUPABASE_ANON_KEY ?? "",
+  };
 }
 
 export async function waitForServer(url: string, timeoutMs: number): Promise<void> {
@@ -60,13 +62,14 @@ export async function waitForServer(url: string, timeoutMs: number): Promise<voi
 }
 
 /** Spawns `npm run dev` (server + client on this checkout's ports) with
- * `extraEnv` added to its environment, e.g. ENABLED_MODULES. dotenv never
- * overrides a variable that is already set, so these win over server/.env
- * without editing it. Resolves once both ports answer. */
+ * the .env files' auth settings and `extraEnv` added to its environment,
+ * e.g. ENABLED_MODULES. dotenv never overrides a variable that is already
+ * set, so these win over server/.env without editing it. Resolves once both
+ * ports answer. */
 export async function startDevServer(extraEnv: Record<string, string> = {}): Promise<ChildProcessWithoutNullStreams> {
   const devProcess = spawn("npm", ["run", "dev"], {
     cwd: ROOT,
-    env: { ...process.env, ...extraEnv },
+    env: { ...process.env, ...authEnv(), ...extraEnv },
     shell: true,
   });
   devProcess.stdout.on("data", () => {});

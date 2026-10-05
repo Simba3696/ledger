@@ -34,7 +34,8 @@ import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
-import { CLIENT_PORT, ROOT, SERVER_PORT, assertAuthDisabled, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import { ROOT, SERVER_PORT, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import { assertLocalAuth, ownerAccessToken, signInAsOwner } from "./auth.js";
 import { resetLocalDatabase } from "./localDb.js";
 
 const SCREENSHOTS_DIR = path.join(ROOT, "docs", "screenshots");
@@ -65,9 +66,9 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
 }
 
 async function main() {
-  // Same check as e2e/regression.ts: without auth configured the dev server
-  // won't start (LLD §6), and the client can't sign in yet.
-  assertAuthDisabled();
+  // Same check as e2e/regression.ts: sign-in goes to the LOCAL stack only,
+  // as the seeded owner (LLD §6, §10).
+  assertLocalAuth();
 
   // Every store module reads the LOCAL Supabase stack (server/.env's
   // DATABASE_URL) — empty it first. resetLocalDatabase refuses any non-local
@@ -85,14 +86,16 @@ async function main() {
 
     // Belt-and-braces: ask the running server itself, independent of
     // anything this script assumes about which database it's reading.
-    const health = await fetch(`http://localhost:${SERVER_PORT}/api/debts`).then((r) => r.json());
+    const health = await fetch(`http://localhost:${SERVER_PORT}/api/debts`, {
+      headers: { Authorization: `Bearer ${await ownerAccessToken()}` },
+    }).then((r) => r.json());
     if (Array.isArray(health) && health.length !== 0) {
       throw new Error(`Refusing to seed: /api/debts already has ${health.length} row(s) on a supposedly freshly reset local database.`);
     }
 
     const browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
-    await page.goto(`http://localhost:${CLIENT_PORT}`, { waitUntil: "networkidle" });
+    await signInAsOwner(page);
 
     // --- Debts ---
     await page.click('.tabs button:has-text("Debts")');

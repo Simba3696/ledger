@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from "react";
 import "./App.css";
 import "./shared.css";
+import type { Session } from "@supabase/supabase-js";
 import {
+  ApiError,
   addEntry,
   getCategories,
   getConfig,
@@ -19,6 +21,9 @@ import { LoadingOverlay } from "./components/LoadingOverlay";
 import { MonthLockToggle } from "./components/MonthLockToggle";
 import { DialogHost } from "./components/Dialog";
 import logoIcon from "./assets/logo-icon.png";
+import { useSession } from "./auth/session";
+import { AuthLoading, NotAllowed, SignIn } from "./auth/SignIn";
+import { SignOutButton } from "./auth/SignOutButton";
 
 // Dashboard is the default tab (needed on first paint, so it stays eager);
 // everything else here is only ever needed after the user actually clicks
@@ -64,7 +69,16 @@ const UPCOMING_MODULE: Record<UpcomingItem["source"], ModuleName> = {
   Salary: "finances",
 };
 
+/** Nothing but <SignIn/> until there's a session (LLD §6). The app is keyed
+ * on the account, so signing out and back in starts it fresh. */
 function App() {
+  const auth = useSession();
+  if (auth.status === "loading") return <AuthLoading />;
+  if (auth.status === "signedOut") return <SignIn notice={auth.notice} />;
+  return <Ledger key={auth.session.user.id} session={auth.session} />;
+}
+
+function Ledger({ session }: { session: Session }) {
   const now = new Date();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [year, setYear] = useState(now.getFullYear());
@@ -74,6 +88,9 @@ function App() {
   // fetches before then, so a disabled module's routes are never called.
   const [modules, setModules] = useState<ReadonlySet<ModuleName> | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
+  // The API's 403 for a signed-in account that isn't OWNER_EMAIL. Every
+  // route answers it, so the first request (config) is where it shows up.
+  const [notAllowed, setNotAllowed] = useState(false);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,7 +136,10 @@ function App() {
   useEffect(() => {
     getConfig()
       .then((config) => setModules(new Set(config.modules)))
-      .catch((err) => setConfigError((err as Error).message));
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 403) setNotAllowed(true);
+        else setConfigError((err as Error).message);
+      });
     getCategories().then(setCategories).catch((err) => setLoadError((err as Error).message));
   }, []);
 
@@ -161,6 +181,8 @@ function App() {
     }
   }
 
+  if (notAllowed) return <NotAllowed email={session.user.email} />;
+
   return (
     <div className="app">
       <header>
@@ -173,6 +195,7 @@ function App() {
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
+          <SignOutButton />
         </div>
       </header>
 

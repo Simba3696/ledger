@@ -1,0 +1,90 @@
+/* The sign-in and "not allowed" screens: one card, the same surface and
+   input styles as the app's add-forms (AddExpenseForm.css, shared.css). */
+.auth-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 20px;
+  max-width: 400px;
+  margin: 8vh auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-card h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.auth-card p {
+  margin: 0;
+}
+
+.auth-notice {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+/* Layout-transparent, as in .add-expense-form: it's only there to disable
+   every input and the button at once while a sign-in is in flight. */
+.auth-card fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: contents;
+}
+
+.auth-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.auth-card input {
+  /* --font-size-base, not smaller: iOS Safari zooms the page on focusing
+     any input under 16px. */
+  font-size: var(--font-size-base);
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.auth-card input:disabled {
+  opacity: 0.6;
+}
+
+.auth-card .submit-btn {
+  align-self: stretch;
+}
+
+/* The header's sign-out control: an icon button the size of ThemeToggle so
+   it fits beside it (and the month picker) on a phone. */
+.sign-out-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sign-out-btn:hover {
+  color: var(--text-h);
+}
+
+.sign-out-btn svg {
+  width: 15px;
+  height: 15px;
+}

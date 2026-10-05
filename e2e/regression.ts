@@ -12,7 +12,16 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chromium } from "playwright";
 import { insertLocalCategory, insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
-import { CLIENT_PORT, ROOT, SERVER_PORT, assertAuthDisabled, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import { ROOT, SERVER_PORT, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import {
+  OWNER_PASSWORD,
+  assertLocalAuth,
+  checkSignInFlow,
+  dropConsoleErrors,
+  ownerAccessToken,
+  signInAsOwner,
+  submitSignIn,
+} from "./auth.js";
 
 const results: { label: string; ok: boolean }[] = [];
 function check(label: string, ok: boolean) {
@@ -31,7 +40,7 @@ function toLocalDateStr(d: Date): string {
 }
 
 async function main() {
-  assertAuthDisabled();
+  const ownerEmail = assertLocalAuth();
 
   // Every store module reads the LOCAL Supabase stack (via server/.env's
   // DATABASE_URL) — reset it to empty + seed so every "starts empty" check
@@ -125,12 +134,20 @@ async function main() {
       await page.waitForSelector(".loading-overlay", { state: "detached" });
     }
 
-    await page.goto(`http://localhost:${CLIENT_PORT}`, { waitUntil: "networkidle" });
-    await waitForDashboardData();
+    // --- Sign-in (LLD §6) ---
+    // The API refuses a request without a token, whatever the route.
+    const unauthenticated = await fetch(`http://localhost:${SERVER_PORT}/api/config`);
+    check("API: a request without a token is a 401", unauthenticated.status === 401);
+
+    await checkSignInFlow(page, ownerEmail, consoleErrors, check);
+
+    // The scripts' own direct API calls carry the owner's token too.
+    const token = await ownerAccessToken();
+    const authHeader = { Authorization: `Bearer ${token}` };
 
     // --- Dashboard defaults + click-through navigation ---
     check("Default tab is Dashboard", (await page.locator(".tabs button.selected").innerText()) === "Dashboard");
-    const config = await fetch(`http://localhost:${SERVER_PORT}/api/config`).then((r) => r.json());
+    const config = await fetch(`http://localhost:${SERVER_PORT}/api/config`, { headers: authHeader }).then((r) => r.json());
     check(
       "API: /api/config lists every module when ENABLED_MODULES is unset",
       JSON.stringify(config) ===
@@ -493,15 +510,15 @@ async function main() {
     // Real server-side enforcement, not just a hidden UI control — a direct
     // API call against the locked month must also be rejected.
     const lockedWriteStatus = await page.evaluate(
-      async ({ y, m }) => {
+      async ({ y, m, t }) => {
         const res = await fetch("/api/entries", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
           body: JSON.stringify({ year: y, month: m, amount: 1, remarks: "should be blocked", category: "food", isCard: false }),
         });
         return res.status;
       },
-      { y: year, m: monthIndex + 1 },
+      { y: year, m: monthIndex + 1, t: token },
     );
     check("Locked month rejects a direct API write with 403, not just the UI", lockedWriteStatus === 403);
     // That 403 is expected (it's the whole point of the check above) — the
@@ -1460,6 +1477,21 @@ async function main() {
       (await navButtons.allInnerTexts()).join(",") === "Home,Spend,CC Bills,Debts,EMI,Subs,Finances",
     );
 
+    // Phone width on a month-scoped tab: with the month picker in the header
+    // too, the theme toggle and Sign out used to be pushed off the right
+    // edge. The picker now wraps to its own row (App.css, max-width: 500px).
+    await page.setViewportSize({ width: 375, height: 800 });
+    await navButtons.nth(1).click();
+    await page.waitForSelector("header .month-picker");
+    const headerBoxes = await Promise.all([".theme-toggle", ".sign-out-btn"].map((sel) => page.locator(sel).boundingBox()));
+    const noSideScroll = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    check(
+      "Header: theme toggle and Sign out stay on screen at phone width, with no sideways scroll",
+      headerBoxes.every((b) => !!b && b.width > 0 && b.x >= 0 && b.x + b.width <= 375) && noSideScroll,
+    );
+    await navButtons.nth(0).click();
+    await waitForDashboardData();
+
     await page.setViewportSize({ width: 1280, height: 720 }); // restore Playwright's default
 
     // Clicking an Upcoming item is a shortcut to go pay/settle it — EMI
@@ -1632,6 +1664,52 @@ async function main() {
       "Theme persisted across reload",
       (await page.evaluate(() => document.documentElement.dataset.theme)) === "dark",
     );
+
+    // --- Sign out ---
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.waitForSelector("form.auth-card");
+    check(
+      "Sign out returns to the sign-in screen",
+      (await page.locator(".tabs").count()) === 0 && (await page.locator('.auth-card input[type="email"]').inputValue()) === "",
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    check("Signed out: still on the sign-in screen after a reload", (await page.locator("form.auth-card").count()) === 1);
+    check(
+      "Signed out: the sign-in screen keeps the chosen theme",
+      (await page.evaluate(() => document.documentElement.dataset.theme)) === "dark",
+    );
+
+    // A signed-in account that isn't OWNER_EMAIL gets a 403 on every route.
+    // The local stack has only the owner (sign-ups are off), so the 403 is
+    // simulated for /api/config, the first request after sign-in.
+    await page.route("**/api/config", (route) =>
+      route.fulfill({ status: 403, json: { error: "This account isn't allowed to use this app" } }),
+    );
+    await submitSignIn(page, ownerEmail, OWNER_PASSWORD);
+    await page.waitForSelector(".auth-card >> text=This account is not allowed on this deployment.");
+    check("A 403 from the API shows the not-allowed screen, not the app", (await page.locator(".tabs").count()) === 0);
+    // Every simulated 403 is expected (React's dev StrictMode requests config twice).
+    dropConsoleErrors(consoleErrors, "403");
+    await page.unroute("**/api/config");
+    await page.locator(".auth-card").getByRole("button", { name: "Sign out" }).click();
+    await page.waitForSelector("form.auth-card");
+    check("The not-allowed screen's Sign out returns to the sign-in screen", (await page.locator("form.auth-card").count()) === 1);
+
+    // A session the API rejects (here: a token that's been tampered with)
+    // is a 401, which signs the client out with a notice.
+    await signInAsOwner(page);
+    await waitForDashboardData();
+    await page.route("**/api/categories", (route) =>
+      route.continue({ headers: { ...route.request().headers(), authorization: "Bearer not-a-token" } }),
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector("form.auth-card");
+    check(
+      "A 401 from the API signs out and explains why",
+      (await page.locator(".auth-notice").innerText()).includes("Sign in again"),
+    );
+    dropConsoleErrors(consoleErrors, "401");
+    await page.unroute("**/api/categories");
 
     await browser.close();
   } finally {

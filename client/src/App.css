@@ -43,6 +43,11 @@ header h1 {
   padding: 0;
   font: inherit;
   color: inherit;
+}
+
+/* Only the app header's logo is clickable (back to the Dashboard); the
+   sign-in screens reuse .brand on a plain <div>. */
+button.brand {
   cursor: pointer;
 }
 
@@ -56,6 +61,30 @@ header h1 {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* Phones: the logo, the month picker (on month-scoped tabs), the theme
+   toggle and the sign-out button don't fit on one row, and the last two
+   were pushed off the right edge. Keep the logo and the two controls on the
+   first row and give the month picker a row of its own below them. */
+@media (max-width: 500px) {
+  header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .brand {
+    margin-right: auto;
+  }
+
+  .header-right {
+    display: contents;
+  }
+
+  .header-right .month-picker {
+    order: 1;
+    flex-basis: 100%;
+  }
 }
 
 .tabs {

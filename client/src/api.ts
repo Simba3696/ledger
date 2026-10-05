@@ -1,3 +1,5 @@
+import { currentAccessToken, expireSession } from "./auth/session";
+
 export type Category = string;
 
 export interface CategoryOption {
@@ -188,10 +190,33 @@ export interface SubscriptionEdits {
 
 const BASE = "/api";
 
-async function handle<T>(res: Response): Promise<T> {
+/** A non-2xx API response. `status` lets a caller tell, say, the 403 for a
+ * signed-in account that isn't the owner (only ever seen on the first
+ * request, GET /api/config, since every route answers it the same way)
+ * apart from a validation error. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/** The one place the client calls the API (LLD §6). Reads the current
+ * session on every call rather than caching a token, since supabase-js
+ * refreshes it in the background. A 401 means the session is gone or no
+ * longer valid: it is cleared locally, which returns the app to <SignIn/>. */
+async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const token = await currentAccessToken();
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(url, { ...init, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? `Request failed (${res.status})`);
+    const message = body.error ?? `Request failed (${res.status})`;
+    if (res.status === 401) await expireSession(message);
+    throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -207,23 +232,23 @@ export interface AppConfig {
 }
 
 export function getConfig(): Promise<AppConfig> {
-  return fetch(`${BASE}/config`).then((r) => handle(r));
+  return request(`${BASE}/config`);
 }
 
 export function getCategories(): Promise<CategoryOption[]> {
-  return fetch(`${BASE}/categories`).then((r) => handle(r));
+  return request(`${BASE}/categories`);
 }
 
 export function getMonth(year: number, month: number): Promise<LedgerEntry[]> {
-  return fetch(`${BASE}/months/${year}/${month}`).then((r) => handle(r));
+  return request(`${BASE}/months/${year}/${month}`);
 }
 
 export function addEntry(entry: NewEntry): Promise<LedgerEntry> {
-  return fetch(`${BASE}/entries`, {
+  return request(`${BASE}/entries`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(entry),
-  }).then((r) => handle(r));
+  });
 }
 
 export function updateEntry(
@@ -232,23 +257,23 @@ export function updateEntry(
   row: number,
   edits: EntryEdits,
 ): Promise<LedgerEntry> {
-  return fetch(`${BASE}/entries/${year}/${month}/${row}`, {
+  return request(`${BASE}/entries/${year}/${month}/${row}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function deleteEntry(year: number, month: number, row: number): Promise<void> {
-  return fetch(`${BASE}/entries/${year}/${month}/${row}`, { method: "DELETE" }).then((r) => handle(r));
+  return request(`${BASE}/entries/${year}/${month}/${row}`, { method: "DELETE" });
 }
 
 export function moveEntry(year: number, month: number, fromRow: number, toRow: number): Promise<void> {
-  return fetch(`${BASE}/entries/${year}/${month}/${fromRow}/move`, {
+  return request(`${BASE}/entries/${year}/${month}/${fromRow}/move`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ toRow }),
-  }).then((r) => handle(r));
+  });
 }
 
 export interface MonthLock {
@@ -256,107 +281,107 @@ export interface MonthLock {
 }
 
 export function getMonthLock(year: number, month: number): Promise<MonthLock> {
-  return fetch(`${BASE}/months/${year}/${month}/lock`).then((r) => handle(r));
+  return request(`${BASE}/months/${year}/${month}/lock`);
 }
 
 export function setMonthLock(year: number, month: number, locked: boolean): Promise<MonthLock> {
-  return fetch(`${BASE}/months/${year}/${month}/lock`, {
+  return request(`${BASE}/months/${year}/${month}/lock`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ locked }),
-  }).then((r) => handle(r));
+  });
 }
 
 export function getYearSummary(year: number): Promise<MonthSummary[]> {
-  return fetch(`${BASE}/summary/${year}`).then((r) => handle(r));
+  return request(`${BASE}/summary/${year}`);
 }
 
 export function getMonthIncome(year: number, month: number): Promise<MonthIncome> {
-  return fetch(`${BASE}/finance/${year}/${month}`).then((r) => handle(r));
+  return request(`${BASE}/finance/${year}/${month}`);
 }
 
 export function setMonthIncome(year: number, month: number, edits: IncomeEdits): Promise<MonthIncome> {
-  return fetch(`${BASE}/finance/${year}/${month}`, {
+  return request(`${BASE}/finance/${year}/${month}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function getFinanceSummary(year: number): Promise<MonthFinanceSummary[]> {
-  return fetch(`${BASE}/finance-summary/${year}`).then((r) => handle(r));
+  return request(`${BASE}/finance-summary/${year}`);
 }
 
 export function getDebts(): Promise<DebtEntry[]> {
-  return fetch(`${BASE}/debts`).then((r) => handle(r));
+  return request(`${BASE}/debts`);
 }
 
 export function addDebt(edits: DebtEdits): Promise<DebtEntry> {
-  return fetch(`${BASE}/debts`, {
+  return request(`${BASE}/debts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function updateDebt(row: number, edits: DebtEdits): Promise<DebtEntry> {
-  return fetch(`${BASE}/debts/${row}`, {
+  return request(`${BASE}/debts/${row}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function deleteDebt(row: number): Promise<void> {
-  return fetch(`${BASE}/debts/${row}`, { method: "DELETE" }).then((r) => handle(r));
+  return request(`${BASE}/debts/${row}`, { method: "DELETE" });
 }
 
 export function getMonthBills(year: number, month: number): Promise<MonthBills> {
-  return fetch(`${BASE}/credit-card-bills/${year}/${month}`).then((r) => handle(r));
+  return request(`${BASE}/credit-card-bills/${year}/${month}`);
 }
 
 export function setMonthBills(year: number, month: number, cards: CardBill[]): Promise<MonthBills> {
-  return fetch(`${BASE}/credit-card-bills/${year}/${month}`, {
+  return request(`${BASE}/credit-card-bills/${year}/${month}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ cards }),
-  }).then((r) => handle(r));
+  });
 }
 
 export function getCreditCardBillsSummary(year: number): Promise<MonthBillsSummary[]> {
-  return fetch(`${BASE}/credit-card-bills-summary/${year}`).then((r) => handle(r));
+  return request(`${BASE}/credit-card-bills-summary/${year}`);
 }
 
 export function getEmis(): Promise<EmiEntryComputed[]> {
-  return fetch(`${BASE}/emi`).then((r) => handle(r));
+  return request(`${BASE}/emi`);
 }
 
 export function addEmi(edits: EmiEdits): Promise<EmiEntryComputed> {
-  return fetch(`${BASE}/emi`, {
+  return request(`${BASE}/emi`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function updateEmi(row: number, edits: EmiEdits): Promise<EmiEntryComputed> {
-  return fetch(`${BASE}/emi/${row}`, {
+  return request(`${BASE}/emi/${row}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function deleteEmi(row: number): Promise<void> {
-  return fetch(`${BASE}/emi/${row}`, { method: "DELETE" }).then((r) => handle(r));
+  return request(`${BASE}/emi/${row}`, { method: "DELETE" });
 }
 
 export function payEmi(row: number, amount: number): Promise<EmiEntryComputed> {
-  return fetch(`${BASE}/emi/${row}/pay`, {
+  return request(`${BASE}/emi/${row}/pay`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amount }),
-  }).then((r) => handle(r));
+  });
 }
 
 export interface EmiMonthlyProjection {
@@ -368,31 +393,31 @@ export interface EmiMonthlyProjection {
 export type EmiProjectionScale = 6 | 12 | 24 | 60 | "auto";
 
 export function getEmiMonthlyProjection(months: EmiProjectionScale = 12): Promise<EmiMonthlyProjection[]> {
-  return fetch(`${BASE}/emi-monthly-projection?months=${months}`).then((r) => handle(r));
+  return request(`${BASE}/emi-monthly-projection?months=${months}`);
 }
 
 export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
-  return fetch(`${BASE}/subscriptions`).then((r) => handle(r));
+  return request(`${BASE}/subscriptions`);
 }
 
 export function addSubscription(edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
-  return fetch(`${BASE}/subscriptions`, {
+  return request(`${BASE}/subscriptions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function updateSubscription(row: number, edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
-  return fetch(`${BASE}/subscriptions/${row}`, {
+  return request(`${BASE}/subscriptions/${row}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(edits),
-  }).then((r) => handle(r));
+  });
 }
 
 export function deleteSubscription(row: number): Promise<void> {
-  return fetch(`${BASE}/subscriptions/${row}`, { method: "DELETE" }).then((r) => handle(r));
+  return request(`${BASE}/subscriptions/${row}`, { method: "DELETE" });
 }
 
 export type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
@@ -421,5 +446,5 @@ export interface DashboardOverview {
 }
 
 export function getOverview(): Promise<DashboardOverview> {
-  return fetch(`${BASE}/overview`).then((r) => handle(r));
+  return request(`${BASE}/overview`);
 }

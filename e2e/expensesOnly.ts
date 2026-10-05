@@ -5,7 +5,9 @@
  * and Expenses, expenses can be added, edited and deleted, the Dashboard
  * renders its expense charts with no card for a disabled module and no
  * console error (so the client never calls a disabled route), and a
- * disabled module's API answers 404.
+ * disabled module's API answers 404. Signs in through the UI as the
+ * seeded owner first, like regression.ts, and checks the 401 without a
+ * token, a wrong password's error and signing out.
  *
  * Same isolation as regression.ts: resets the LOCAL database first
  * (e2e/localDb.ts refuses any other host) and runs on this checkout's ports.
@@ -15,7 +17,8 @@
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chromium } from "playwright";
 import { insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
-import { CLIENT_PORT, ROOT, SERVER_PORT, assertAuthDisabled, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import { ROOT, SERVER_PORT, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
+import { assertLocalAuth, checkSignInFlow, ownerAccessToken } from "./auth.js";
 
 const results: { label: string; ok: boolean }[] = [];
 function check(label: string, ok: boolean) {
@@ -24,7 +27,7 @@ function check(label: string, ok: boolean) {
 }
 
 async function main() {
-  assertAuthDisabled();
+  const ownerEmail = assertLocalAuth();
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
   // "Now" as the server sees it (APP_TIMEZONE), so the seeded month is the
@@ -45,7 +48,16 @@ async function main() {
     devProcess = await startDevServer({ ENABLED_MODULES: "expenses" });
 
     // --- API ---
-    const api = (path: string, init?: RequestInit) => fetch(`http://localhost:${SERVER_PORT}/api${path}`, init);
+    check(
+      "API: a request without a token is a 401",
+      (await fetch(`http://localhost:${SERVER_PORT}/api/config`)).status === 401,
+    );
+    const token = await ownerAccessToken();
+    const api = (path: string, init: RequestInit = {}) =>
+      fetch(`http://localhost:${SERVER_PORT}/api${path}`, {
+        ...init,
+        headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${token}` },
+      });
     check(
       "API: /api/config lists only expenses",
       JSON.stringify(await api("/config").then((r) => r.json())) === JSON.stringify({ modules: ["expenses"] }),
@@ -77,9 +89,8 @@ async function main() {
     });
     page.on("pageerror", (err) => consoleErrors.push("pageerror: " + err.message));
 
-    await page.goto(`http://localhost:${CLIENT_PORT}`, { waitUntil: "networkidle" });
-    await page.waitForSelector(".chart-wrap svg");
-    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    // --- Sign-in ---
+    await checkSignInFlow(page, ownerEmail, consoleErrors, check);
 
     check(
       "Nav bar: exactly Dashboard and Expenses",
@@ -142,6 +153,11 @@ async function main() {
       "Dashboard: still only the expense charts after a round trip",
       (await page.locator(".overview-panel").count()) === 0 && (await page.locator(".chart-wrap").count()) === 1,
     );
+
+    // --- Sign out ---
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.waitForSelector("form.auth-card");
+    check("Sign out returns to the sign-in screen", (await page.locator(".tabs").count()) === 0);
 
     await browser.close();
   } finally {
