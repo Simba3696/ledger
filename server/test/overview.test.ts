@@ -1,4 +1,6 @@
 import { describe, it, expect, afterAll } from "vitest";
+// Debts now live in Postgres: dbHelpers must load before any store module.
+import { resetTables, closeSql } from "./dbHelpers.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -10,14 +12,18 @@ const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-overview-test-"
 process.env.LEDGER_DB_DIR = scratchDir;
 
 const overview = await import("../src/excel/overview.js");
-const debts = await import("../src/excel/debts.js");
+const debts = await import("../src/store/debts.js");
 const emi = await import("../src/excel/emi.js");
 const subscriptions = await import("../src/excel/subscriptions.js");
 const creditCardBills = await import("../src/excel/creditCardBills.js");
 const finances = await import("../src/excel/finances.js");
 
-afterAll(() => {
+// Start from an empty debts table, as the fresh scratch workbook folder did.
+await resetTables("debts");
+
+afterAll(async () => {
   fs.rmSync(scratchDir, { recursive: true, force: true });
+  await closeSql();
 });
 
 // Every other test below exercises a "today" date whose *previous* month

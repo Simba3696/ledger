@@ -1,4 +1,4 @@
-import { listDebts } from "./debts.js";
+import { listDebts } from "../store/debts.js";
 import { listEmis, nextDueDateAfter } from "./emi.js";
 import { listSubscriptions } from "./subscriptions.js";
 import { getMonthBills, type CardBill } from "./creditCardBills.js";

@@ -12,7 +12,7 @@ import {
 } from "./excel/ledger.js";
 import { loadCategoryConfig } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
-import { addDebt, deleteDebt, listDebts, updateDebt } from "./excel/debts.js";
+import { addDebt, deleteDebt, listDebts, updateDebt } from "./store/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
 import {
   addEmi,
