@@ -2,8 +2,8 @@
 // Store modules validate first with field-specific messages
 // (store/validate.ts); this is the backstop so anything that slips past
 // still reads as a client error, never a bare 500. The database's own
-// message is logged by the caller, never returned — it can name tables and
-// columns.
+// message is never returned (it can name tables and columns) and the caller
+// logs only the code and constraint name (it can echo the input).
 const DB_ERROR_STATUS: Record<string, { status: number; message: string }> = {
   "22021": { status: 400, message: "Input contains an invalid character" }, // character_not_in_repertoire (e.g. NUL)
   "22P05": { status: 400, message: "Input contains an invalid character" }, // untranslatable_character

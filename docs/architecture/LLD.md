@@ -9,10 +9,11 @@ client/                      React app (unchanged except auth + api.ts headers)
   src/auth/                  Supabase client, <SignIn/>, session hook
 server/
   src/
-    app.ts                   builds the Express app (shared by local server and function)
-    index.ts                 local dev entry: app.listen(PORT)
+    app.ts                   createApp({ basePath }): request log, JSON body, auth, router, error handler
+                             (shared by the local server and the function)
+    index.ts                 local entry: createApp() + the built client (npm start only) + app.listen(PORT)
     routes.ts                unchanged route table (30 routes)
-    auth.ts                  JWT verification middleware
+    auth.ts                  auth config checks + JWT verification middleware (§6)
     db/
       client.ts              postgres.js connection + type parsers
       tx.ts                  withTransaction helper
@@ -25,8 +26,10 @@ server/
       today.ts               "today" in APP_TIMEZONE
     errors.ts                LedgerError
     dbErrors.ts              SQLSTATE → 400/409 mapping (§11)
-  test/                      vitest, against the local Supabase Postgres
-netlify/functions/api.ts     serverless-http(app)
+  test/                      vitest, against the local Supabase Postgres (api.test.ts: supertest on createApp)
+netlify/
+  functions/api.ts           serverless-http(createApp(...))
+  tsconfig.json              typecheck-only (Bundler resolution, like Netlify's esbuild)
 supabase/
   config.toml
   migrations/                timestamped SQL, the only source of schema truth
@@ -275,23 +278,30 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 
 **Client:** `@supabase/supabase-js` with the anon key handles sign-in (email + password) and token refresh. `api.ts`'s shared fetch helper adds `Authorization: Bearer <access_token>`. A 401 response sends the user back to `<SignIn/>`.
 
-**Server (`auth.ts`):** Express middleware on `/api/*`:
-1. Read the bearer token and return 401 if it's missing.
-2. Verify it with `jose`'s `jwtVerify` against the project's JWKS (`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`, cached by `createRemoteJWKSet`). Check `iss` and `aud = authenticated`.
-3. Require `email === OWNER_EMAIL` (case-insensitive), otherwise 403.
+**Server (`auth.ts`):** Express middleware on every API mount (`/api` and the function's base path), ahead of the JSON body parser and the router, so a request without a valid token is a 401 whatever its body and is never parsed:
+1. Read the `Authorization: Bearer <token>` header and return 401 `{ error }` if it's missing or not a bearer token.
+2. Verify it with `jose`'s `jwtVerify` against the project's JWKS (`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`, one `createRemoteJWKSet` per process or warm function instance, which caches the keys). Check `iss = ${SUPABASE_URL}/auth/v1` and `aud = authenticated`, allow only the asymmetric algorithms (`ES256`, `RS256`, `EdDSA`), and require the `exp`, `sub` and `email` claims (jose only checks `exp` when it's present, and a token that never expires must not authorize anything). A malformed, expired, wrongly signed, wrong-`iss`/`aud` or `exp`-less token, or one whose `kid` isn't in the JWKS, is a 401. A JWKS fetch failure (timeout, non-200) isn't the caller's fault and goes to the error handler as a 500, so a Supabase Auth outage doesn't look like a sign-out.
+3. Require the token's `email`, trimmed and case-insensitive, to equal `OWNER_EMAIL`, otherwise 403 `{ error }`.
+
+The JWKS only publishes **asymmetric** signing keys, so the project must sign access tokens with one (the default for new Supabase projects; a project still on the legacy shared HS256 secret has to migrate to JWT signing keys first). The local stack already does: Supabase CLI 2.x signs with a built-in ES256 key (public, like its demo anon key) and serves it at `http://127.0.0.1:54321/auth/v1/.well-known/jwks.json`, so no `signing_keys.json` is needed. `supabase/config.toml` keeps `[auth.email] enable_signup = true`, because in the CLI that flag switches the whole email provider (password sign-in included) on or off; sign-ups stay off through `[auth] enable_signup = false`.
+
+`createApp` reads the configuration once, at startup (`readAuthConfig`), and throws rather than serve a misconfigured API: `SUPABASE_URL` or `OWNER_EMAIL` missing while auth is on, or `AUTH_DISABLED=true` where it isn't allowed (below). In the function that means a cold start fails loudly.
 
 **Supabase project settings:** public sign-ups disabled. The owner account is created once from the dashboard.
 
-**Local development and tests:** `AUTH_DISABLED=true` skips the middleware, and is refused at startup when `NODE_ENV=production` or when running inside Netlify (`process.env.NETLIFY` is set). The e2e suite still exercises real sign-in against the local stack's seeded owner account.
+**Local development and tests:** `AUTH_DISABLED=true` (that exact value) skips the middleware. `createApp` refuses it when `NODE_ENV=production` or when running on Netlify: `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT` is set. `NETLIFY` is a build-time variable that isn't guaranteed inside the function, while the Lambda ones always are. The API tests sign tokens with a key pair generated in the test and inject it through `createApp({ authKeySet })`; the production path always uses the remote JWKS. Until the client has a sign-in screen, the gitignored `server/.env` sets `AUTH_DISABLED=true` for `npm run dev` and e2e; the e2e suite then moves to real sign-in against the local stack's seeded owner account.
 
 ## 7. Netlify packaging
 
 ```toml
 # netlify.toml
 [build]
-  command   = "npm run build -w client"
+  command   = "npm ci && npm run build -w client"   # installs every workspace from the lockfile
   publish   = "client/dist"
   functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
 
 [functions]
   node_bundler = "esbuild"
@@ -307,7 +317,11 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
   status = 200
 ```
 
-`netlify/functions/api.ts` exports `handler = serverless(createApp({ basePath: "/.netlify/functions/api" }))`. `createApp` mounts the router at `/api` locally and at the function's own path in production, so `routes.ts` is shared verbatim.
+`netlify/functions/api.ts` exports `handler = serverless(createApp({ basePath: "/.netlify/functions/api" }))` (`serverless-http`, a root dependency since the function lives at the root). `createApp` always mounts the router (behind auth) at `/api`, and also at `basePath` when one is given, because the path the function receives depends on how it was reached: through the `/api/*` rewrite the event keeps the original `/api/...` path, while a direct call arrives as `/.netlify/functions/api/...`. `serverless-http` passes the event's path through unchanged (its own `basePath` option, which strips a single prefix, isn't used). `routes.ts` is shared verbatim.
+
+Netlify bundles the function with esbuild from the repo root. esbuild resolves the server's ESM `.js` import specifiers to their `.ts` sources and inlines every dependency (including the ESM-only `jose`) into a CommonJS bundle, so no `included_files` are needed. The server's static-client serving stays in `index.ts`, out of the function.
+
+Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go in `[build.environment]`, where it would make `npm ci` skip the client's build tools), so Express would run in `development` mode and its default error page, used for body-parser's 400s, would include the stack trace with the bundle's paths. `createApp` therefore sets Express's `env` to `production` whenever it detects the deployed runtime (the same `NETLIFY`/Lambda check as `AUTH_DISABLED`'s refusal, §6). `netlify/tsconfig.json` typechecks the function (`cd server && npx tsc -p ../netlify/tsconfig.json`).
 
 ## 8. Import script (`scripts/import-xlsx.ts`)
 
@@ -326,7 +340,7 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 | `VITE_SUPABASE_ANON_KEY` | client | Supabase public client key (safe to expose; RLS denies all) |
 | `OWNER_EMAIL` | server, function | The only account allowed through |
 | `APP_TIMEZONE` | server, function | IANA zone for "today" (default `Asia/Kolkata`) |
-| `AUTH_DISABLED` | local only | Skips JWT checks in dev and tests; refused in production |
+| `AUTH_DISABLED` | local only | `true` skips JWT checks in dev and tests; refused under `NODE_ENV=production`, `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT` |
 | `PORT` | local only | Dev server port (`main` worktree: 4100) |
 
 ## 10. Testing
@@ -335,8 +349,8 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 |---|---|
 | Domain | Unit tests on the pure functions, no database |
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
-| API | supertest on `createApp()` covering auth (no token, wrong owner, valid owner) and error mapping |
-| End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, with real sign-in as the seeded owner |
+| API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |
+| End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, currently with `AUTH_DISABLED=true` in `server/.env` (no sign-in yet, §6); it moves to real sign-in as the seeded owner once the client has a sign-in screen |
 | Import | A fixture `.xlsx` folder (built with `scripts/legacy-excel/fixtures.ts`) imported into an empty local database, then checked through the API |
 
 The existing server test cases are the **parity contract**: each one is ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).
@@ -345,5 +359,6 @@ The existing server test cases are the **parity contract**: each one is ported w
 
 - Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as today.
 - Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month. The 403 for a locked month now reads `<Month> <year> is locked. Unlock it first from the app if you really need to add an entry there.` (the Excel edition also suggested unlocking "in Excel directly", which this edition has no way to do).
-- Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `routes.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). The database message is logged with `console.error` and never returned.
-- Function logs go to Netlify's function log: method, path, status and duration. Request bodies and financial values are never logged.
+- Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `app.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). For these mapped errors only the SQLSTATE and constraint name are logged, because Postgres's message and detail echo the offending input (`invalid input syntax for type numeric: "..."`, `Key (...)=(...)`). Neither is ever returned. Unmapped errors, which become a generic 500, are logged in full with `console.error` for debugging.
+- `app.ts` logs one line per request, `<METHOD> <path> <status> <ms>ms` (to Netlify's function log in production, the console locally). The path excludes the query string. Request bodies and headers (so tokens) are never logged, and neither is the input echoed by a mapped database error (above). The full log of an unexpected 500 is the one place a value could appear.
+- body-parser's own client errors (malformed JSON) still get Express's default response, as they did before the error handler moved from `routes.ts` to `app.ts`. They are only reachable after authentication, and in the deployed function the page carries no stack trace (§7).

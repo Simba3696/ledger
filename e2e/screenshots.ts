@@ -96,6 +96,15 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
 }
 
 async function main() {
+  // Same check as e2e/regression.ts: without auth configured the dev server
+  // won't start (LLD §6), and the client can't sign in yet.
+  if (serverEnv.AUTH_DISABLED !== "true") {
+    throw new Error(
+      "server/.env must set AUTH_DISABLED=true for screenshots until the client has a sign-in screen " +
+        "(see server/.env.example and docs/architecture/LLD.md §6).",
+    );
+  }
+
   // Every store module reads the LOCAL Supabase stack (server/.env's
   // DATABASE_URL) — empty it first. resetLocalDatabase refuses any non-local
   // host, which is what keeps this run away from real data.

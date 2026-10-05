@@ -45,4 +45,5 @@ npm run test:e2e       # full browser regression (isolated ports)
 npm run screenshots    # regenerate docs/screenshots (isolated)
 npx supabase start     # local Postgres :54322, API :54321, Studio :54323
 npx supabase db reset  # re-apply migrations + seed to the LOCAL stack
+(cd server && npx tsc -p ../netlify/tsconfig.json)  # typecheck the Netlify function
 ```

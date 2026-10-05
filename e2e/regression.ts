@@ -72,6 +72,16 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 }
 
 async function main() {
+  // The dev server refuses to start without auth configured (LLD §6), which
+  // would otherwise surface only as a timeout waiting on its port. The
+  // client has no sign-in screen yet, so this run needs AUTH_DISABLED=true.
+  if (serverEnv.AUTH_DISABLED !== "true") {
+    throw new Error(
+      "server/.env must set AUTH_DISABLED=true for e2e until the client has a sign-in screen " +
+        "(see server/.env.example and docs/architecture/LLD.md §6).",
+    );
+  }
+
   // Every store module reads the LOCAL Supabase stack (via server/.env's
   // DATABASE_URL) — reset it to empty + seed so every "starts empty" check
   // below holds. resetLocalDatabase refuses any non-local host, which is

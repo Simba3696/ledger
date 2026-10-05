@@ -21,5 +21,8 @@
     "exceljs": "^4.4.0",
     "playwright": "^1.61.1",
     "tsx": "^4.23.1"
+  },
+  "dependencies": {
+    "serverless-http": "^4.0.0"
   }
 }

@@ -3,14 +3,14 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import { router } from "./routes.js";
+import { createApp } from "./app.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = path.resolve(__dirname, "../../client/dist");
 
-const app = express();
-app.use(express.json());
-app.use("/api", router);
+// Local entry point only. The hosted edition runs the same createApp() inside
+// netlify/functions/api.ts, and Netlify serves the client itself.
+const app = createApp();
 
 // Serves the production client build (npm run start), so the whole app is
 // reachable from one port with no dev-server/HMR overhead. Gated on actually

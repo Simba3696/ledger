@@ -1,0 +1,19 @@
+{
+  // Typecheck-only config for the Netlify function, which lives outside the
+  // server package. Bundler resolution matches how Netlify's esbuild bundles
+  // it. Run with the server's TypeScript:
+  // `cd server && npx tsc -p ../netlify/tsconfig.json`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["functions/*.ts"]
+}
