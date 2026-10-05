@@ -5,13 +5,17 @@ dist/
 # moment anything's added through the app. A `git worktree`/second clone has
 # no server/.env (gitignored, checkout-local) and falls back to this folder,
 # so this also guards against accidentally committing real data that way.
-db/
+# Anchored to the repo root (where workbookIO's default DB_DIR resolves) —
+# an unanchored `db/` also matched source folders like server/src/db/.
+/db/
 *.tmp-*
 .env
 .backups/
-# Shared project agents/skills are committed; only machine-local settings aren't.
-.claude/settings.local.json
-.claude/worktrees/
+# Shared project agents/skills are committed; everything else under .claude/
+# (local settings, scheduled-task locks, worktrees) is machine-local.
+.claude/*
+!.claude/agents/
+!.claude/skills/
 # Supabase CLI local state (the project config and migrations are committed).
 supabase/.branches/
 supabase/.temp/

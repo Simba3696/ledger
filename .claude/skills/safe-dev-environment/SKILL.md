@@ -27,6 +27,8 @@ npx supabase stop      # stop containers (data kept in the Docker volume)
 ```
 Ports: API 54321, Postgres 54322, Studio 54323, Mailpit 54324. None collide with the live app.
 
+`npm test` shares this local database with `npm run dev` and **truncates tables**. After a test run, local dev data (including the seeded categories) is gone, so run `npx supabase db reset` to restore the seed. `server/test/dbHelpers.ts` refuses to run against any host but `127.0.0.1`/`localhost`.
+
 ## Verification commands
 ```bash
 (cd client && npx tsc -b)
