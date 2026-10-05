@@ -1,6 +1,6 @@
 import { listDebts } from "../store/debts.js";
 import { listEmis, nextDueDateAfter } from "./emi.js";
-import { listSubscriptions } from "./subscriptions.js";
+import { listSubscriptions } from "../store/subscriptions.js";
 import { getMonthBills, type CardBill } from "./creditCardBills.js";
 import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";
 import { parseDate, formatDate, startOfDay, makeDate } from "./dateMath.js";

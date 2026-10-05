@@ -39,7 +39,9 @@ function validateEntry(name: string, amount: number) {
   // would fail inside Postgres as a "numeric field overflow" (a 500), so
   // reject it here as a clear validation error instead. (Sub-cent fractions
   // are rounded to 2 decimals by the column, per LLD §2: all money is numeric(14,2).)
-  if (Math.abs(amount) >= 1e12) throw new LedgerError("Amount is too large", 400);
+  // Checked on the rounded cents, since the column rounds first: e.g.
+  // 999999999999.995 is < 1e12 but rounds up to 1000000000000.00 and overflows.
+  if (Math.round(Math.abs(amount) * 100) >= 1e14) throw new LedgerError("Amount is too large", 400);
 }
 
 function notFound(row: number): LedgerError {

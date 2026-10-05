@@ -69,6 +69,9 @@ describe("debts", () => {
   it("rejects an amount too large for the column with a 400, not a database error", async () => {
     await expect(debts.addDebt({ name: "Someone", amount: 1e12 })).rejects.toMatchObject({ status: 400 });
     await expect(debts.addDebt({ name: "Someone", amount: -1e15 })).rejects.toMatchObject({ status: 400 });
+    // Under 1e12, but the column rounds them to +/-1000000000000.00.
+    await expect(debts.addDebt({ name: "Someone", amount: 999999999999.995 })).rejects.toMatchObject({ status: 400 });
+    await expect(debts.addDebt({ name: "Someone", amount: -999999999999.995 })).rejects.toMatchObject({ status: 400 });
     await expect(debts.updateDebt({ row: ummaRow, name: "Umma", amount: 1e12 })).rejects.toMatchObject({ status: 400 });
     // The largest value that fits still round-trips.
     const big = await debts.addDebt({ name: "Big", amount: 999999999999.99 });

@@ -29,7 +29,7 @@ import {
   listSubscriptions,
   updateSubscription,
   type SubscriptionEditsInput,
-} from "./excel/subscriptions.js";
+} from "./store/subscriptions.js";
 import { dashboardOverview } from "./excel/overview.js";
 
 export const router = Router();
