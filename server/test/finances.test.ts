@@ -1,25 +1,33 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+// Finances now live in Postgres: dbHelpers must load before any store module.
+import { resetTables, closeSql } from "./dbHelpers.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-// Same pattern as ledger.test.ts: LEDGER_DB_DIR must be set before finances.ts's
-// (and ledger.ts's) top-level DB_DIR evaluates, so both are imported dynamically
+// financeSummary still reads monthly expense totals from the Excel ledger
+// (not ported yet), so LEDGER_DB_DIR must be set before ledger.ts's top-level
+// DB_DIR evaluates: the store module (which imports it) and fixtures.js
+// (which depends on DB_DIR via categoryColors.ts) are imported dynamically
 // after the env var is set rather than via a static top-level import.
-// fixtures.js transitively depends on DB_DIR too now (via categoryColors.ts),
-// so it needs the same dynamic-import treatment.
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-finance-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
-const finances = await import("../src/excel/finances.js");
+const finances = await import("../src/store/finances.js");
 const { buildFixtureWorkbook } = await import("./fixtures.js");
+
+// The cases below build on each other in order, the same way the Excel
+// edition's shared scratch Finances.xlsx did, so the tables are wiped once up
+// front rather than before every case.
+await resetTables("finance_months", "savings_balances");
 
 function workbookPath(year: number): string {
   return path.join(scratchDir, `Expenses (${year}).xlsx`);
 }
 
-afterAll(() => {
+afterAll(async () => {
   fs.rmSync(scratchDir, { recursive: true, force: true });
+  await closeSql();
 });
 
 describe("getMonthIncome / setMonthIncome", () => {
@@ -276,5 +284,101 @@ describe("financeSummary", () => {
         { name: "NPS", amount: 40000 },
       ],
     });
+  });
+});
+
+describe("Postgres storage", () => {
+  const YEAR = 2097;
+
+  it("keeps savings schemes in the order they were saved, and a resave with fewer schemes drops the rest", async () => {
+    const savings = ["Zeta", "Alpha", "Mid"].map((name, i) => ({ name, amount: 100 * (i + 1) }));
+    const saved = await finances.setMonthIncome({ year: YEAR, month: 1, salary: 1000, otherIncome: null, savings });
+    expect(saved.savings).toEqual(savings);
+    expect((await finances.getMonthIncome(YEAR, 1)).savings.map((s) => s.name)).toEqual(["Zeta", "Alpha", "Mid"]);
+
+    await finances.setMonthIncome({ year: YEAR, month: 1, salary: 1000, otherIncome: null, savings: [savings[2], savings[0]] });
+    expect((await finances.getMonthIncome(YEAR, 1)).savings.map((s) => s.name)).toEqual(["Mid", "Zeta"]);
+    // Other months are untouched by a month's replace.
+    expect((await finances.getMonthIncome(2093, 1)).savings).toHaveLength(2);
+  });
+
+  it("treats a month whose savings were cleared as not entered, so the baseline skips back past it", async () => {
+    await finances.setMonthIncome({ year: YEAR, month: 2, salary: null, otherIncome: null, savings: [{ name: "PPF", amount: 5 }] });
+    await finances.setMonthIncome({ year: YEAR, month: 2, salary: 2000, otherIncome: null, savings: [] });
+    const mar = await finances.getMonthIncome(YEAR, 3);
+    expect(mar.previousSavings).toEqual([
+      { name: "Mid", amount: 300 },
+      { name: "Zeta", amount: 100 },
+    ]);
+  });
+
+  it("still accepts negative income and savings amounts, as the Excel edition did", async () => {
+    const input = { year: YEAR, month: 4, salary: -100, otherIncome: -0.5, savings: [{ name: "Loan", amount: -2500.25 }] };
+    expect(await finances.setMonthIncome(input)).toMatchObject({
+      salary: -100,
+      otherIncome: -0.5,
+      savings: [{ name: "Loan", amount: -2500.25 }],
+    });
+  });
+
+  it("names the field in a too-large rejection", async () => {
+    const base = { year: YEAR, month: 5, salary: 100, otherIncome: null, savings: [{ name: "PPF", amount: 1 }] };
+    await expect(finances.setMonthIncome({ ...base, salary: 1e12 })).rejects.toMatchObject({
+      status: 400,
+      message: "Salary is too large",
+    });
+    await expect(finances.setMonthIncome({ ...base, otherIncome: -1e12 })).rejects.toMatchObject({
+      status: 400,
+      message: "Other income is too large",
+    });
+    await expect(
+      finances.setMonthIncome({ ...base, savings: [{ name: "PPF", amount: 1e12 }] }),
+    ).rejects.toMatchObject({ status: 400, message: 'Savings amount for "PPF" is too large' });
+  });
+
+  it("rejects values the database columns can't hold with a 400, not a database error", async () => {
+    const base = { year: YEAR, month: 5, salary: 100, otherIncome: null, savings: [{ name: "PPF", amount: 1 }] };
+    for (const bad of [
+      { ...base, salary: 1e12 },
+      { ...base, otherIncome: -1e12 },
+      { ...base, savings: [{ name: "PPF", amount: 1e12 }] },
+      { ...base, savings: [{ name: "P\u0000PF", amount: 1 }] },
+    ]) {
+      await expect(finances.setMonthIncome(bad)).rejects.toMatchObject({ status: 400 });
+    }
+    // A rejected save leaves the month as it was (nothing half-written).
+    expect(await finances.getMonthIncome(YEAR, 5)).toMatchObject({ salary: null, otherIncome: null, savings: [] });
+    // The largest value the column holds round-trips exactly; others come back at 2 decimals.
+    const saved = await finances.setMonthIncome({
+      ...base,
+      salary: 999999999999.99,
+      savings: [{ name: "PPF", amount: 10.006 }],
+    });
+    expect(saved).toMatchObject({ salary: 999999999999.99, savings: [{ name: "PPF", amount: 10.01 }] });
+    expect((await finances.getMonthIncome(YEAR, 5)).savings).toEqual([{ name: "PPF", amount: 10.01 }]);
+  });
+
+  it("rejects a year past the column's range with the store's own 400", async () => {
+    await expect(finances.getMonthIncome(2147483648, 1)).rejects.toMatchObject({
+      status: 400,
+      message: "Invalid year: 2147483648",
+    });
+    await expect(
+      finances.setMonthIncome({ year: 2147483648, month: 1, salary: 1, otherIncome: null, savings: [] }),
+    ).rejects.toMatchObject({ status: 400, message: "Invalid year: 2147483648" });
+  });
+
+  it("lets overlapping saves to the same month both succeed, the last one winning", async () => {
+    const a = [{ name: "A1", amount: 1 }, { name: "A2", amount: 2 }];
+    const b = [{ name: "B1", amount: 3 }];
+    await Promise.all([
+      finances.setMonthIncome({ year: YEAR, month: 6, salary: 1, otherIncome: null, savings: a }),
+      finances.setMonthIncome({ year: YEAR, month: 6, salary: 2, otherIncome: null, savings: b }),
+    ]);
+    const after = await finances.getMonthIncome(YEAR, 6);
+    expect([
+      { salary: 1, savings: a },
+      { salary: 2, savings: b },
+    ]).toContainEqual({ salary: after.salary, savings: after.savings });
   });
 });
