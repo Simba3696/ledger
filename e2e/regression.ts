@@ -14,7 +14,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { resetLocalDatabase } from "./localDb.js";
+import { insertLocalCategory, resetLocalDatabase } from "./localDb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -75,31 +75,44 @@ async function main() {
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-e2e-"));
   console.log("Scratch data dir:", scratchDir);
 
-  // fixtures.js transitively reads DB_DIR (via categoryColors.ts's
-  // categories.json read-or-create) — set this script's own LEDGER_DB_DIR
-  // and import fixtures.js dynamically *after*, so buildFixtureWorkbook's
-  // categories.json write lands in the scratch dir the spawned server below
-  // also uses, not the real repo db/ folder (a static top-level import would
-  // have resolved DB_DIR before scratchDir even existed).
+  // Modules already ported to Postgres (categories included) read the LOCAL
+  // Supabase stack (via server/.env's DATABASE_URL), not scratchDir — reset it
+  // to empty + seed so every "starts empty" check below still holds. Local
+  // hosts only. Done first because buildFixtureWorkbook below reads the
+  // category list from it.
+  await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
+
+  // Set this script's own LEDGER_DB_DIR and import the Excel-backed modules
+  // dynamically *after*, so anything that resolves DB_DIR lands in the
+  // scratch dir the spawned server below also uses, not the real repo db/
+  // folder (a static top-level import would have resolved DB_DIR before
+  // scratchDir even existed). DATABASE_URL is set too (resetLocalDatabase
+  // above already refused any non-local host) so fixtures.js's
+  // loadCategoryConfig reads the same local database as the server.
   process.env.LEDGER_DB_DIR = scratchDir;
+  process.env.DATABASE_URL = serverEnv.DATABASE_URL;
   const { buildFixtureWorkbook } = await import("../server/test/fixtures.js");
-  const { DEFAULT_CATEGORIES } = await import("../server/src/excel/categoryColors.js");
+  const { closeSql } = await import("../server/src/db/client.js");
+  const { DEFAULT_CATEGORIES } = await import("../server/src/domain/categoryColors.js");
   // Reused (not reimplemented) for the EMI Duration test below — computing
   // "10 months from today" independently here risks silently drifting from
   // addMonths' actual clamp-at-month-end behavior on an edge-case day.
   const { addMonths, startOfDay, formatDate } = await import("../server/src/excel/dateMath.js");
   const { dueDateOnOrAfter } = await import("../server/src/domain/emiMath.js");
 
-  // Seed a custom 5th category alongside the defaults — proves
-  // categories.json actually drives the running app end to end, not just
+  // Seed a custom 5th category alongside the defaults — proves the
+  // categories table actually drives the running app end to end, not just
   // that the shipped defaults still work (every other check in this file
   // only ever exercises those). fg is deliberately omitted so this also
   // exercises the server's auto-derivation path for a category that doesn't
   // specify one, not just the explicit-fg default entries.
-  fs.writeFileSync(
-    path.join(scratchDir, "categories.json"),
-    JSON.stringify([...DEFAULT_CATEGORIES, { id: "health", label: "Health", bg: "#8B5CF6" }]),
-  );
+  // (fg null in the row = derived on read.)
+  await insertLocalCategory(serverEnv.DATABASE_URL, {
+    id: "health",
+    label: "Health",
+    bg: "#8B5CF6",
+    position: DEFAULT_CATEGORIES.length,
+  });
 
   const now = new Date();
   const year = now.getFullYear();
@@ -131,10 +144,9 @@ async function main() {
     })),
   );
 
-  // Modules already ported to Postgres read the LOCAL Supabase stack (via
-  // server/.env's DATABASE_URL), not scratchDir — reset it to empty + seed so
-  // every "starts empty" check below still holds. Local hosts only.
-  await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
+  // fixtures.js opened the server's shared postgres.js client to read the
+  // category list; close it so this script's own process can exit cleanly.
+  await closeSql();
 
   console.log("Starting dev server against scratch data...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
@@ -298,7 +310,7 @@ async function main() {
     check("Seeded entries loaded", (await page.locator(".entry-row").count()) === 2);
 
     // --- Custom category (configurable categories) ---
-    // Proves categories.json actually drives the UI end to end, not just
+    // Proves the categories table actually drives the UI end to end, not just
     // that the default 4 still work (every other check in this file only
     // ever exercises the shipped defaults, which would keep passing even if
     // the whole config-loading mechanism were silently broken).

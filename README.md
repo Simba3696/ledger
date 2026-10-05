@@ -461,9 +461,9 @@ auto-advances forward to the next real cycle, never silently going stale:
 
 ```
 server/   Express API (TypeScript). All Excel reading/writing lives in
-          server/src/excel/ — categoryColors.ts (loads/creates
-          categories.json — see Configuring categories above — and derives
-          a readable text color for any category that doesn't specify one),
+          server/src/excel/ — categoryColors.ts (maps a cell's fill color
+          to a category from the `categories` table — see Configuring
+          categories above),
           workbookIO.ts (shared safe-write: backup + temp-file-then-rename,
           used by every file below), dateMath.ts (shared month/day
           arithmetic for EMI's decay and Subscriptions' renewal-advance),
@@ -551,16 +551,19 @@ Windows-specific, and it's entirely optional.
 
 The default 4 categories (Food/Transportation/Rent/Other, matching the
 colors described in [How it works](#how-it-works)) are just that — a
-default, not a hardcoded limit. Categories live in `<LEDGER_DB_DIR>/categories.json`,
-auto-created with those 4 defaults the first time the server starts against
-a given data directory. Edit that file to add, remove, rename, or recolor
-categories for your own spreadsheet's scheme; changes take effect on the
-next request, no restart needed.
+default, not a hardcoded limit. Categories live in the Postgres
+`categories` table (one row per category, shown in `position` order). When
+the table is empty, the server fills it with those 4 defaults on the first
+read, so a fresh database needs no setup step. Insert, delete, or update rows
+(for example in Supabase Studio or with `psql`) to add, remove, rename, or
+recolor categories for your own spreadsheet's scheme. Changes take effect on
+the next request, no restart needed.
 
-Each entry:
+Each row:
 
-```json
-{ "id": "food", "label": "Food", "bg": "#FFFF00", "fg": "#3d3d00" }
+```sql
+insert into categories (id, label, bg, fg, position)
+values ('food', 'Food', '#FFFF00', '#3d3d00', 0);
 ```
 
 - `id` — stable key stored in the app's own data (not in the `.xlsx` files
@@ -571,15 +574,17 @@ Each entry:
   chart legend.
 - `bg` — the cell fill color, as plain CSS hex (`#RRGGBB`), not Excel's ARGB
   format — the app converts internally wherever it writes to a workbook.
-- `fg` — text color shown on that background. **Optional** — if omitted,
-  the app computes a readable one automatically (darkens the same hue, or
-  falls back to whichever of black/white contrasts better for an
-  already-dark/saturated background) — so a hand-written entry only ever
-  needs `id`/`label`/`bg`.
+- `fg` — text color shown on that background. **Optional** — if null,
+  the app computes a readable one from `bg` on every read (darkens the same
+  hue, or falls back to whichever of black/white contrasts better for an
+  already-dark/saturated background) — so a hand-written row only ever
+  needs `id`/`label`/`bg`/`position`.
+- `position` — display order (ascending) in the picker, entry list, and
+  chart legend.
 
 Adding a category is additive and safe — existing entries in your `.xlsx`
-files keep whatever color they already have regardless of what's in
-`categories.json` at the moment; a color that doesn't match any configured
+files keep whatever color they already have regardless of what's in the
+`categories` table at the moment; a color that doesn't match any configured
 category's `bg` just reads back as "Uncategorized" in the app (the
 underlying cell and its fill color are untouched either way).
 
@@ -823,19 +828,17 @@ Two suites, covering different layers:
   concurrently (`Promise.all`, no `await` between them) and asserting all 8
   land on distinct rows with none lost — the exact bug class `withFileLock`
   exists to close (see ARCHITECTURE's Safe writes). `server/test/categoryColors.test.ts` covers
-  `categories.json`'s read-or-create behavior (auto-creates with the 4
-  defaults on first read, returns a saved custom config afterward),
+  the `categories` table's read-or-create behavior (an empty table is filled
+  with the 4 defaults on first read and never refilled once it has rows, a
+  saved custom config is returned afterward in `position` order, and the
+  schema accepts a null `fg` but rejects a malformed one),
   `deriveForegroundColor`'s WCAG contrast math against a representative
   range of backgrounds (verified independently, not just trusting the
   implementation to grade its own homework) including the specific case
   that motivated picking whichever of black/white contrasts better rather
   than hardcoding white (pure red only reaches ~4:1 against white, short of
   the 4.5:1 AA bar, but ~5.25:1 against black), that an explicit `fg` in
-  the file is preserved rather than overwritten by the derivation, and that
-  a present-but-unusable file (invalid JSON, a non-array value, or every
-  entry missing a required field) throws rather than being silently
-  replaced with the defaults — and leaves the file itself untouched either
-  way.
+  the row is preserved rather than overwritten by the derivation.
   Fast (a few seconds), no browser or dev server needed — this is the one to
   run after any change under `server/src/excel/`.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
@@ -844,9 +847,9 @@ Two suites, covering different layers:
   dev server against it, and drives an actual browser through the full app:
   Dashboard-is-default, chart click-through navigation (main chart and the
   per-category mini-charts, including their synced hover), a custom 5th
-  category seeded into categories.json rendering correctly end to end (chip
+  category seeded into the `categories` table rendering correctly end to end (chip
   color, saved entry's color, its own dashboard mini-chart — proof
-  categories.json actually drives the app, not just that the shipped
+  the table actually drives the app, not just that the shipped
   defaults still work), month/year
   selects, add (cash + card), edit, drag-reorder, Move up/Move down via the
   overflow menu, delete, month locking (a never-locked month's unlocked

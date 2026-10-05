@@ -1,46 +1,54 @@
-import { describe, it, expect } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import { describe, it, expect, afterAll } from "vitest";
+// Categories now live in Postgres: dbHelpers must load before any store module.
+import { sql, resetTables, closeSql } from "./dbHelpers.js";
+import { loadCategoryConfig, deriveForegroundColor, DEFAULT_CATEGORIES } from "../src/store/categories.js";
+import { categoryArgb, colorToCategory } from "../src/excel/categoryColors.js";
 
-// Same pattern as workbookIO.test.ts: LEDGER_DB_DIR must be set before
-// workbookIO.ts's (and this module's) top-level DB_DIR evaluates, so it's
-// imported dynamically after the env var is set rather than via a static
-// top-level import.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-categories-test-"));
-process.env.LEDGER_DB_DIR = scratchDir;
+afterAll(async () => {
+  // Leave an empty table so the next reader re-creates the defaults, the
+  // state every other test file expects.
+  await resetTables("categories");
+  await closeSql();
+});
 
-const { loadCategoryConfig, deriveForegroundColor, categoryArgb, colorToCategory, DEFAULT_CATEGORIES } = await import(
-  "../src/excel/categoryColors.js"
-);
-const { LedgerError } = await import("../src/excel/workbookIO.js");
+/** Stands in for hand-writing categories.json: replaces the whole table with
+ * these entries, in order. A missing fg is stored as null (derived on read). */
+async function writeCategories(entries: { id: string; label: string; bg: string; fg?: string }[]): Promise<void> {
+  await resetTables("categories");
+  for (const [position, e] of entries.entries()) {
+    await sql`
+      insert into categories (id, label, bg, fg, position)
+      values (${e.id}, ${e.label}, ${e.bg}, ${e.fg ?? null}, ${position})`;
+  }
+}
 
-const CATEGORIES_PATH = path.join(scratchDir, "categories.json");
+async function categoryRowCount(): Promise<number> {
+  const [{ count }] = await sql<{ count: number }[]>`select count(*)::int as count from categories`;
+  return count;
+}
 
 describe("loadCategoryConfig", () => {
   it("auto-creates categories.json with DEFAULT_CATEGORIES on first read", async () => {
-    expect(fs.existsSync(CATEGORIES_PATH)).toBe(false);
+    await resetTables("categories");
+    expect(await categoryRowCount()).toBe(0);
     const categories = await loadCategoryConfig();
     expect(categories).toEqual(DEFAULT_CATEGORIES);
-    expect(fs.existsSync(CATEGORIES_PATH)).toBe(true);
+    expect(await categoryRowCount()).toBe(DEFAULT_CATEGORIES.length);
   });
 
   it("returns a previously-saved custom config on subsequent reads, not the defaults", async () => {
     const custom = [{ id: "groceries", label: "Groceries", bg: "#00FF00", fg: "#003300" }];
-    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify(custom));
+    await writeCategories(custom);
 
     const categories = await loadCategoryConfig();
     expect(categories).toEqual(custom);
   });
 
   it("fills in a computed fg when the file omits one, but preserves an explicit fg", async () => {
-    fs.writeFileSync(
-      CATEGORIES_PATH,
-      JSON.stringify([
-        { id: "no-fg", label: "No FG", bg: "#00FF00" },
-        { id: "with-fg", label: "With FG", bg: "#00FF00", fg: "#123456" },
-      ]),
-    );
+    await writeCategories([
+      { id: "no-fg", label: "No FG", bg: "#00FF00" },
+      { id: "with-fg", label: "With FG", bg: "#00FF00", fg: "#123456" },
+    ]);
 
     const categories = await loadCategoryConfig();
     const noFg = categories.find((c) => c.id === "no-fg")!;
@@ -50,29 +58,30 @@ describe("loadCategoryConfig", () => {
     expect(withFg.fg).toBe("#123456"); // untouched, not overwritten by the derivation
   });
 
-  // A present-but-unusable categories.json used to be silently replaced with
-  // DEFAULT_CATEGORIES — since this is the documented hand-edit path (see
-  // README's Configuring categories) and the file isn't covered by
-  // workbookIO's backup-on-write, one typo destroyed the real config with no
-  // way back, and every entry already colored under a removed id would read
-  // back as "Uncategorized". It must throw instead, and must leave the file
-  // on disk untouched either way.
-  it("throws rather than silently overwriting invalid JSON", async () => {
-    fs.writeFileSync(CATEGORIES_PATH, "{ not valid json,");
-    await expect(loadCategoryConfig()).rejects.toThrow(LedgerError);
-    expect(fs.readFileSync(CATEGORIES_PATH, "utf8")).toBe("{ not valid json,");
+  it("returns categories in position order, not insertion or id order", async () => {
+    await resetTables("categories");
+    await sql`
+      insert into categories (id, label, bg, fg, position) values
+        ('b', 'B', '#000000', null, 1),
+        ('c', 'C', '#000000', null, 2),
+        ('a', 'A', '#000000', null, 0)`;
+    expect((await loadCategoryConfig()).map((c) => c.id)).toEqual(["a", "b", "c"]);
   });
 
-  it("throws rather than silently overwriting a non-array JSON value", async () => {
-    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify({ id: "food" }));
-    await expect(loadCategoryConfig()).rejects.toThrow(LedgerError);
-    expect(JSON.parse(fs.readFileSync(CATEGORIES_PATH, "utf8"))).toEqual({ id: "food" });
+  it("does not re-insert the defaults once the table has rows", async () => {
+    await writeCategories([{ id: "groceries", label: "Groceries", bg: "#00FF00" }]);
+    await loadCategoryConfig();
+    await loadCategoryConfig();
+    expect(await categoryRowCount()).toBe(1);
   });
 
-  it("throws rather than silently overwriting a file with no usable entries", async () => {
-    fs.writeFileSync(CATEGORIES_PATH, JSON.stringify([{ label: "Missing id/bg" }]));
-    await expect(loadCategoryConfig()).rejects.toThrow(LedgerError);
-    expect(JSON.parse(fs.readFileSync(CATEGORIES_PATH, "utf8"))).toEqual([{ label: "Missing id/bg" }]);
+  it("the schema allows a null fg but still rejects a malformed non-null one", async () => {
+    await resetTables("categories");
+    await sql`insert into categories (id, label, bg, fg, position) values ('ok', 'OK', '#000000', null, 0)`;
+    expect(await categoryRowCount()).toBe(1);
+    await expect(
+      sql`insert into categories (id, label, bg, fg, position) values ('x', 'X', '#000000', 'red', 1)`,
+    ).rejects.toThrow(/check constraint/);
   });
 });
 

@@ -47,7 +47,7 @@ create table categories (
   id        text primary key,                      -- e.g. 'food'
   label     text not null,
   bg        text not null check (bg ~ '^#[0-9A-Fa-f]{6}$'),
-  fg        text not null check (fg ~ '^#[0-9A-Fa-f]{6}$'),
+  fg        text check (fg ~ '^#[0-9A-Fa-f]{6}$'), -- null = derived from bg on read (deriveForegroundColor)
   position  int  not null
 );
 

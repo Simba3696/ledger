@@ -1,5 +1,5 @@
 -- LOCAL STACK ONLY (applied by `supabase db reset`; never pushed to a hosted
--- project). Default categories match server/src/excel/categoryColors.ts's
+-- project). Default categories match server/src/domain/categoryColors.ts's
 -- DEFAULT_CATEGORIES so a fresh stack behaves like a fresh Excel install.
 insert into categories (id, label, bg, fg, position) values
   ('food',           'Food',           '#FFFF00', '#3d3d00', 0),

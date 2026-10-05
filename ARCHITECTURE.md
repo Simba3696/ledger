@@ -69,7 +69,7 @@ and writes the whole workbook back out.
 |---|---|---|
 | `workbookIO.ts` | — | Shared safe write path (see below) + `DB_DIR` resolution. Every other module imports `saveWorkbook`/`LedgerError`/`DB_DIR` from here — nothing else touches `fs`/`ExcelJS.writeFile` directly. |
 | `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
-| `categoryColors.ts` | — | Loads/creates `<DB_DIR>/categories.json` (`loadCategoryConfig`) — the configurable category id/label/color set Expenses rows are encoded against (category is a cell's fill color, not a column; see README's **Configuring categories**). Ships 4 defaults matching the app's original hardcoded scheme, auto-created on first read against a given `DB_DIR` so an unconfigured deployment behaves identically to before this was configurable. Also derives a WCAG-AA-readable text color for any category that doesn't specify one (`deriveForegroundColor`). |
+| `categoryColors.ts` | — | Excel fill-colour helpers only (`colorToCategory`, `categoryArgb`) — category is a cell's fill color, not a column; see README's **Configuring categories**. The category list itself now lives in the Postgres `categories` table, read by `store/categories.loadCategoryConfig` (read-or-create: an empty table is filled with the 4 `DEFAULT_CATEGORIES` on first read; a null `fg` is derived from `bg` on read by `domain/categoryColors.deriveForegroundColor`, a WCAG-AA-readable text color). |
 | `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. Also `isMonthLocked`/`setMonthLocked`, reusing Excel's native sheet-protection (`sheet.protect()`/`unprotect()`) as a real, per-month write lock — every mutating function above already calls the same `assertWritable` check a manually-protected sheet was already subject to, so locking a month enforces it with no separate code path. |
 | `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
 | `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
@@ -184,7 +184,7 @@ is a local/Tailscale-only single-user tool.
 
 | Method | Path | Module fn |
 |---|---|---|
-| GET | `/categories` | `categoryColors.loadCategoryConfig` |
+| GET | `/categories` | `store/categories.loadCategoryConfig` |
 | GET | `/months/:year/:month` | `ledger.listMonth` |
 | GET | `/months/:year/:month/lock` | `ledger.isMonthLocked` |
 | PUT | `/months/:year/:month/lock` | `ledger.setMonthLocked` |

@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+// Categories now live in Postgres: dbHelpers must load before any store module.
+import { resetTables, closeSql } from "./dbHelpers.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,16 +8,19 @@ import ExcelJS from "exceljs";
 
 // LEDGER_DB_DIR must be set before ledger.ts's top-level `const DB_DIR = ...`
 // evaluates, so the module is imported dynamically after the env var is set
-// rather than via a static top-level import. fixtures.js now transitively
-// depends on DB_DIR too (via categoryColors.ts), so it needs the same
-// treatment — a static import here would resolve DB_DIR against whatever
-// LEDGER_DB_DIR happened to be at process start (not this file's scratch
-// dir), and race other test files/workers over the same wrong shared path.
+// rather than via a static top-level import (a static import would resolve
+// DB_DIR against whatever LEDGER_DB_DIR happened to be at process start, not
+// this file's scratch dir). fixtures.js is imported the same way for
+// consistency; its category list now comes from Postgres, not DB_DIR.
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
 const ledger = await import("../src/excel/ledger.js");
 const { buildFixtureWorkbook } = await import("./fixtures.js");
+
+// Start from an empty categories table so the first read re-creates
+// DEFAULT_CATEGORIES, as a fresh scratch folder's missing categories.json did.
+await resetTables("categories");
 
 function workbookPath(year: number): string {
   return path.join(scratchDir, `Expenses (${year}).xlsx`);
@@ -29,8 +34,9 @@ async function readCell(year: number, sheetName: string, row: number, col: numbe
   return sheet.getRow(row).getCell(col);
 }
 
-afterAll(() => {
+afterAll(async () => {
   fs.rmSync(scratchDir, { recursive: true, force: true });
+  await closeSql();
 });
 
 describe("listMonth", () => {

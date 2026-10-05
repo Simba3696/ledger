@@ -7,9 +7,9 @@ import os from "node:os";
 
 // financeSummary still reads monthly expense totals from the Excel ledger
 // (not ported yet), so LEDGER_DB_DIR must be set before ledger.ts's top-level
-// DB_DIR evaluates: the store module (which imports it) and fixtures.js
-// (which depends on DB_DIR via categoryColors.ts) are imported dynamically
-// after the env var is set rather than via a static top-level import.
+// DB_DIR evaluates: the store module (which imports it) and fixtures.js are
+// imported dynamically after the env var is set rather than via a static
+// top-level import.
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-finance-test-"));
 process.env.LEDGER_DB_DIR = scratchDir;
 
@@ -19,7 +19,9 @@ const { buildFixtureWorkbook } = await import("./fixtures.js");
 // The cases below build on each other in order, the same way the Excel
 // edition's shared scratch Finances.xlsx did, so the tables are wiped once up
 // front rather than before every case.
-await resetTables("finance_months", "savings_balances");
+// categories too, so the first read re-creates DEFAULT_CATEGORIES (as a fresh
+// scratch folder's missing categories.json did) for the fixture workbooks.
+await resetTables("finance_months", "savings_balances", "categories");
 
 function workbookPath(year: number): string {
   return path.join(scratchDir, `Expenses (${year}).xlsx`);

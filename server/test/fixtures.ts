@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
-import { categoryArgb, loadCategoryConfig, type Category, type CategoryConfig } from "../src/excel/categoryColors.js";
+import { categoryArgb } from "../src/excel/categoryColors.js";
+import { loadCategoryConfig, type Category, type CategoryConfig } from "../src/store/categories.js";
 
 // Mirrors the real sheets' conventions (verified against the user's actual
 // workbooks during development) so tests exercise the same code paths a real

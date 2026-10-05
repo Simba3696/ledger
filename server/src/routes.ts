@@ -11,7 +11,7 @@ import {
   updateEntry,
   yearSummary,
 } from "./excel/ledger.js";
-import { loadCategoryConfig } from "./excel/categoryColors.js";
+import { loadCategoryConfig } from "./store/categories.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./store/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./store/debts.js";
 import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./store/creditCardBills.js";
