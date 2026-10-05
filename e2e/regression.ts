@@ -88,7 +88,7 @@ async function main() {
   // "10 months from today" independently here risks silently drifting from
   // addMonths' actual clamp-at-month-end behavior on an edge-case day.
   const { addMonths, startOfDay, formatDate } = await import("../server/src/excel/dateMath.js");
-  const { dueDateOnOrAfter } = await import("../server/src/excel/emi.js");
+  const { dueDateOnOrAfter } = await import("../server/src/domain/emiMath.js");
 
   // Seed a custom 5th category alongside the defaults — proves
   // categories.json actually drives the running app end to end, not just

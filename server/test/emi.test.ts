@@ -1,20 +1,24 @@
-import { describe, it, expect, afterAll } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import ExcelJS from "exceljs";
+import { describe, it, expect, afterAll, beforeAll } from "vitest";
+// dbHelpers must be imported before any store module (it sets DATABASE_URL
+// and refuses non-local hosts).
+import { resetTables, closeSql, sql } from "./dbHelpers.js";
+import * as emi from "../src/store/emi.js";
 
-// Same pattern as debts.test.ts: LEDGER_DB_DIR must be set before emi.ts's
-// top-level DB_DIR evaluates, so it's imported dynamically after the env var
-// is set rather than via a static top-level import.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-emi-test-"));
-process.env.LEDGER_DB_DIR = scratchDir;
-
-const emi = await import("../src/excel/emi.js");
-
-afterAll(() => {
-  fs.rmSync(scratchDir, { recursive: true, force: true });
+// The cases below build on each other in order (add -> decay -> update ->
+// delete, and the projection blocks see every earlier block's loans), the
+// same way the Excel edition's shared scratch workbook did, so the table is
+// wiped once up front rather than before every case.
+beforeAll(async () => {
+  await resetTables("emis");
 });
+
+afterAll(async () => {
+  await closeSql();
+});
+
+// Database id captured from the first add call; it stands in for the sheet
+// row number (2) the Excel edition returned for Coral.
+let coralRow = 0;
 
 const baseInput = {
   cardOrBank: "Coral",
@@ -32,7 +36,9 @@ describe("emi", () => {
 
   it("computes remaining as the untouched snapshot before any due date has passed", async () => {
     const added = await emi.addEmi(baseInput, new Date(2026, 0, 1)); // Jan 1, 2026
-    expect(added).toMatchObject({ row: 2, cardOrBank: "Coral", remaining: 5000, isPaidOff: false, asOfDate: "2026-01-01" });
+    coralRow = added.row;
+    // resetTables restarts the identity, so the first add is id 1.
+    expect(added).toMatchObject({ row: 1, cardOrBank: "Coral", remaining: 5000, isPaidOff: false, asOfDate: "2026-01-01" });
     // 5 more Jan-15ths (2026-01 already happened as of Jan 1? No: Jan1 < Jan15, so
     // the 5th future due date from Jan 1 is 2026-05 (Jan, Feb, Mar, Apr, May).
     expect(added.estimatedPayoffMonth).toBe("2026-05");
@@ -43,7 +49,7 @@ describe("emi", () => {
     const list = await emi.listEmis(new Date(2026, 1, 16)); // Feb 16, 2026 — Jan15 + Feb15 both passed
     expect(list).toEqual([
       expect.objectContaining({
-        row: 2,
+        row: coralRow,
         remaining: 3000,
         isPaidOff: false,
         estimatedPayoffMonth: "2026-05",
@@ -56,7 +62,7 @@ describe("emi", () => {
     const list = await emi.listEmis(new Date(2026, 5, 16)); // Jun 16 — Jan..Jun 15ths all passed (6 installments)
     expect(list).toEqual([
       expect.objectContaining({
-        row: 2,
+        row: coralRow,
         remaining: 0,
         isPaidOff: true,
         estimatedPayoffMonth: null,
@@ -66,14 +72,14 @@ describe("emi", () => {
   });
 
   it("clamps a due day past the end of a shorter month (e.g. 31 in February)", async () => {
-    await emi.updateEmi(2, { ...baseInput, dueDay: 31, remainingAsOf: 5000 }, new Date(2026, 0, 1));
+    await emi.updateEmi(coralRow, { ...baseInput, dueDay: 31, remainingAsOf: 5000 }, new Date(2026, 0, 1));
     // Due dates: Jan 31, Feb 28 (clamped), both <= Mar 1 — 2 installments passed.
     const list = await emi.listEmis(new Date(2026, 2, 1));
     expect(list[0]).toMatchObject({ remaining: 3000 });
   });
 
   it("updating an entry resets the decay anchor to the update's date", async () => {
-    const updated = await emi.updateEmi(2, { ...baseInput, remainingAsOf: 2500 }, new Date(2026, 3, 1));
+    const updated = await emi.updateEmi(coralRow, { ...baseInput, remainingAsOf: 2500 }, new Date(2026, 3, 1));
     expect(updated).toMatchObject({ remainingAsOf: 2500, asOfDate: "2026-04-01", remaining: 2500 });
   });
 
@@ -82,7 +88,7 @@ describe("emi", () => {
     const beforeDelete = await emi.listEmis(new Date(2026, 3, 1));
     expect(beforeDelete).toHaveLength(2);
 
-    await emi.deleteEmi(2); // remove Coral
+    await emi.deleteEmi(coralRow); // remove Coral
     const afterDelete = await emi.listEmis(new Date(2026, 3, 1));
     expect(afterDelete).toHaveLength(1);
     expect(afterDelete[0]).toMatchObject({ cardOrBank: "Amazon Pay" });
@@ -109,7 +115,35 @@ describe("emi", () => {
   it("404s updating or deleting a row that isn't a real entry", async () => {
     await expect(emi.updateEmi(99, baseInput)).rejects.toMatchObject({ status: 404 });
     await expect(emi.deleteEmi(99)).rejects.toMatchObject({ status: 404 });
-    await expect(emi.updateEmi(1, baseInput)).rejects.toMatchObject({ status: 404 });
+    // Was row 1 (the sheet header); now Coral's id, deleted above.
+    await expect(emi.updateEmi(coralRow, baseInput)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("404s an id that can't exist (not a positive integer) before querying", async () => {
+    for (const row of [0, -1, NaN, 1.5]) {
+      await expect(emi.updateEmi(row, baseInput)).rejects.toMatchObject({ status: 404 });
+      await expect(emi.deleteEmi(row)).rejects.toMatchObject({ status: 404 });
+      await expect(emi.recordEmiPayment(row, 1000)).rejects.toMatchObject({ status: 404 });
+    }
+  });
+
+  it("rejects values the database columns can't hold with a 400, not a database error", async () => {
+    // numeric(14,2): too many integer digits (incl. one that only overflows
+    // once rounded to cents), or a positive EMI amount that rounds to 0.00.
+    await expect(emi.addEmi({ ...baseInput, emiAmount: 1e12 })).rejects.toMatchObject({ status: 400 });
+    await expect(emi.addEmi({ ...baseInput, totalAmount: 999999999999.995 })).rejects.toMatchObject({ status: 400 });
+    await expect(emi.addEmi({ ...baseInput, remainingAsOf: 1e15 })).rejects.toMatchObject({ status: 400 });
+    await expect(emi.addEmi({ ...baseInput, emiAmount: 0.001 })).rejects.toMatchObject({ status: 400 });
+    // text: a NUL character in Card/Bank or Remarks.
+    await expect(emi.addEmi({ ...baseInput, cardOrBank: "Co\u0000ral" })).rejects.toMatchObject({ status: 400 });
+    await expect(emi.addEmi({ ...baseInput, remarks: "Doctor\u0000Plus" })).rejects.toMatchObject({ status: 400 });
+    // The largest amounts that fit still round-trip exactly.
+    const big = await emi.addEmi(
+      { ...baseInput, cardOrBank: "Big", emiAmount: 999999999999.99, totalAmount: 999999999999.99, remainingAsOf: 999999999999.99 },
+      new Date(2026, 3, 1),
+    );
+    expect(big).toMatchObject({ emiAmount: 999999999999.99, totalAmount: 999999999999.99, remainingAsOf: 999999999999.99 });
+    await emi.deleteEmi(big.row);
   });
 });
 
@@ -367,23 +401,12 @@ describe("emi interest rate (optional)", () => {
   });
 
   it("defaults a legacy entry with no interest-rate column (pre-dating the field) to null rather than rejecting it", async () => {
-    // Simulates a real pre-existing EMI.xlsx written before this column
-    // existed: only 8 columns, no 9th at all.
-    const emiPath = path.join(scratchDir, "EMI.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(emiPath);
-    const sheet = workbook.getWorksheet("EMI")!;
-    const row = sheet.getRow(sheet.rowCount + 1);
-    row.getCell(1).value = "Legacy Loan";
-    row.getCell(2).value = 500;
-    row.getCell(3).value = 10;
-    row.getCell(4).value = 5000;
-    row.getCell(5).value = "";
-    row.getCell(6).value = 5000;
-    row.getCell(7).value = "2026-01-01";
-    // No cell 8 (untilTarget) or 9 (interestRate) at all.
-    row.commit();
-    await workbook.xlsx.writeFile(emiPath);
+    // Simulates a row written before this column existed (e.g. imported
+    // from an 8-column EMI.xlsx): inserted directly, leaving until_target
+    // and interest_rate unset.
+    await sql`
+      insert into emis (card_or_bank, emi_amount, due_day, total_amount, remarks, remaining_as_of, as_of_date)
+      values ('Legacy Loan', 500, 10, 5000, '', 5000, '2026-01-01')`;
 
     const all = await emi.listEmis(new Date(2026, 0, 1));
     const legacy = all.find((e) => e.cardOrBank === "Legacy Loan");
@@ -442,23 +465,12 @@ describe("emi foreclosure charge (optional)", () => {
   });
 
   it("defaults a legacy entry with no foreclosure-charge column (pre-dating the field) to null rather than rejecting it", async () => {
-    // Simulates a real pre-existing EMI.xlsx written before this column
-    // existed: 9 columns (interestRate already existed), no 10th at all.
-    const emiPath = path.join(scratchDir, "EMI.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(emiPath);
-    const sheet = workbook.getWorksheet("EMI")!;
-    const row = sheet.getRow(sheet.rowCount + 1);
-    row.getCell(1).value = "Legacy Loan 2";
-    row.getCell(2).value = 500;
-    row.getCell(3).value = 10;
-    row.getCell(4).value = 5000;
-    row.getCell(5).value = "";
-    row.getCell(6).value = 5000;
-    row.getCell(7).value = "2026-01-01";
-    row.getCell(9).value = 15; // interestRate present, foreclosureCharge (10) not
-    row.commit();
-    await workbook.xlsx.writeFile(emiPath);
+    // Simulates a row written before this column existed (e.g. imported
+    // from a 9-column EMI.xlsx): interest_rate present, foreclosure_charge
+    // left unset.
+    await sql`
+      insert into emis (card_or_bank, emi_amount, due_day, total_amount, remarks, remaining_as_of, as_of_date, interest_rate)
+      values ('Legacy Loan 2', 500, 10, 5000, '', 5000, '2026-01-01', 15)`;
 
     const all = await emi.listEmis(new Date(2026, 0, 1));
     const legacy = all.find((e) => e.cardOrBank === "Legacy Loan 2");
@@ -467,13 +479,12 @@ describe("emi foreclosure charge (optional)", () => {
 });
 
 describe("emiMonthlyProjection", () => {
-  // The EMI.xlsx workbook is shared across this whole test file (one scratch
-  // dir, created once at the top), so by the time this block runs it already
-  // holds EMIs from every earlier describe block. Rather than asserting an
-  // exact full result (which every prior test's leftover data would break),
-  // each test here snapshots the projection *before* adding its own EMI(s)
-  // and asserts the delta — robust regardless of whatever else is already
-  // in the workbook.
+  // The emis table is shared across this whole test file (wiped once, at the
+  // top), so by the time this block runs it already holds EMIs from every
+  // earlier describe block. Rather than asserting an exact full result (which
+  // every prior test's leftover data would break), each test here snapshots
+  // the projection *before* adding its own EMI(s) and asserts the delta —
+  // robust regardless of whatever else is already in the table.
   it("returns exactly `months` entries, one per calendar month starting this month", async () => {
     const result = await emi.emiMonthlyProjection(5, new Date(2026, 0, 1));
     expect(result.map((m) => m.month)).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05"]);
@@ -652,7 +663,7 @@ describe("emiMonthlyProjection auto mode (until paid off)", () => {
   // the *real* current date with ~46 installments left, which a fixed
   // "2030" isn't safely past once run close enough to that date) —
   // comfortably clears every earlier test's leftover EMIs in this shared
-  // workbook (the longest-lived is that ~46-cycle loan, well under 4 years),
+  // table (the longest-lived is that ~46-cycle loan, well under 4 years),
   // so they've all decayed to 0 and are excluded via `isPaidOff`. Isolates
   // each test here to just its own loan(s), the same way the fixed-`months`
   // tests above use a before/after delta instead.

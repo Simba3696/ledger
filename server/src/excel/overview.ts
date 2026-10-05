@@ -1,5 +1,6 @@
 import { listDebts } from "../store/debts.js";
-import { listEmis, nextDueDateAfter } from "./emi.js";
+import { listEmis } from "../store/emi.js";
+import { nextDueDateAfter } from "../domain/emiMath.js";
 import { listSubscriptions } from "../store/subscriptions.js";
 import { getMonthBills, type CardBill } from "./creditCardBills.js";
 import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";

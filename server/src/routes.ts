@@ -23,7 +23,7 @@ import {
   recordEmiPayment,
   updateEmi,
   type EmiEditsInput,
-} from "./excel/emi.js";
+} from "./store/emi.js";
 import {
   addSubscription,
   deleteSubscription,
