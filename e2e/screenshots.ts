@@ -4,10 +4,11 @@
  * Loan/Home Loan, Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY —
  * the same cast every other screenshot in docs/screenshots already uses).
  *
- * Isolation follows the exact same recipe as e2e/regression.ts, for the same
- * reason: `LEDGER_DB_DIR` is passed as an env var straight to the spawned
- * `npm run dev` process, and the dev server runs on this checkout's normal
- * ports — never a separate custom port. A previous attempt at this used a
+ * Isolation follows the exact same recipe as e2e/regression.ts: the server
+ * reads only server/.env's DATABASE_URL, which e2e/localDb.ts's
+ * resetLocalDatabase empties first and refuses unless it points at a local
+ * host (127.0.0.1/localhost), and the dev server runs on this checkout's
+ * configured ports. A previous attempt at this used a
  * separate git worktree with its own overridden PORT/VITE_DEV_PORT so it
  * could run *alongside* the real server, which seemed safer but was the
  * opposite: `client/vite.config.ts`'s dev proxy defaults to
@@ -17,21 +18,20 @@
  * checkout's own ports means `predev`'s `kill-ports.js` frees them first
  * (stopping the real server, exactly like running `npm run test:e2e` does),
  * so there is only ever one server for the client to reach, and it's
- * guaranteed to be this scratch-backed one. Restart the real server
+ * guaranteed to be this local-database one. Restart the real server
  * (`npm run build` + `Start-ScheduledTask "Ledger"`, per the README's
  * Deployment step) once this script exits.
  *
  * Before writing anything, every tab is asserted empty first — the second
  * incident, layered on top of the proxy bug above, was filling a form by
  * row position (`.nth(0)`, `.nth(1)`) assuming those positions were blank,
- * when real pre-existing rows were sitting there instead. Against a fresh
- * scratch dir this assertion always passes; if it ever doesn't, that's this
+ * when real pre-existing rows were sitting there instead. Against a freshly
+ * reset local database this assertion always passes; if it ever doesn't, that's this
  * script telling you loudly to stop, not silently overwriting whatever it
  * finds.
  */
 import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -90,23 +90,21 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
   if (count !== 0) {
     throw new Error(
       `Refusing to seed ${label}: expected 0 existing rows but found ${count}. ` +
-        `This should be impossible against a fresh scratch dir — stopping before writing anything.`,
+        `This should be impossible against a freshly reset local database — stopping before writing anything.`,
     );
   }
 }
 
 async function main() {
-  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-screenshots-"));
-  console.log("Scratch data dir:", scratchDir);
-
-  // Postgres-backed modules read the LOCAL Supabase stack (server/.env's
-  // DATABASE_URL) — empty it first, same as the scratch dir is empty.
+  // Every store module reads the LOCAL Supabase stack (server/.env's
+  // DATABASE_URL) — empty it first. resetLocalDatabase refuses any non-local
+  // host, which is what keeps this run away from real data.
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
-  console.log("Starting dev server against scratch data...");
+  console.log("Starting dev server against the local database...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
     cwd: ROOT,
-    env: { ...process.env, LEDGER_DB_DIR: scratchDir },
+    env: process.env,
     shell: true,
   });
   devProcess.stdout.on("data", () => {});
@@ -116,11 +114,11 @@ async function main() {
     await waitForServer(`http://localhost:${SERVER_PORT}/api/categories`, 30000);
     await waitForServer(`http://localhost:${CLIENT_PORT}`, 30000);
 
-    // Belt-and-braces: the server log line itself names the directory it's
-    // actually reading/writing, independent of anything this script assumes.
+    // Belt-and-braces: ask the running server itself, independent of
+    // anything this script assumes about which database it's reading.
     const health = await fetch(`http://localhost:${SERVER_PORT}/api/debts`).then((r) => r.json());
     if (Array.isArray(health) && health.length !== 0) {
-      throw new Error(`Refusing to seed: /api/debts already has ${health.length} row(s) on a supposedly fresh scratch server.`);
+      throw new Error(`Refusing to seed: /api/debts already has ${health.length} row(s) on a supposedly freshly reset local database.`);
     }
 
     const browser = await chromium.launch();
@@ -263,7 +261,6 @@ async function main() {
     } catch {
       // best-effort cleanup
     }
-    fs.rmSync(scratchDir, { recursive: true, force: true });
   }
 
   console.log(

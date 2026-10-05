@@ -13,9 +13,7 @@ The owner's live app runs from a **different checkout** (`D:\codebase\personal\l
    ```bash
    cat server/.env client/.env
    ```
-3. **Data:** never point `LEDGER_DB_DIR` or `DATABASE_URL` at real data or a hosted Supabase project. Allowed targets:
-   - a fresh temporary directory (Excel edition), or
-   - the local Supabase stack: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`
+3. **Data:** never point `DATABASE_URL` at real data or a hosted Supabase project. The only allowed target is the local stack: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. (`LEDGER_DB_DIR` is no longer read by the server.)
 4. **Never** run `Start-ScheduledTask`, `Stop-ScheduledTask`, or anything against port 4000 from this worktree.
 
 ## Local Supabase stack
@@ -30,9 +28,12 @@ Ports: API 54321, Postgres 54322, Studio 54323, Mailpit 54324. None collide with
 `npm test` shares this local database with `npm run dev` and **truncates tables**. After a test run, local dev data (including the seeded categories) is gone, so run `npx supabase db reset` to restore the seed. `server/test/dbHelpers.ts` refuses to run against any host but `127.0.0.1`/`localhost`.
 
 ## Verification commands
+Run the server checks from `server/` so they use the server's own TypeScript (5.x). From the repo root, `npx tsc` resolves the client's hoisted TypeScript 6, which accepts code the server build rejects.
 ```bash
 (cd client && npx tsc -b)
-npx tsc -p server/tsconfig.build.json --noEmit
+(cd server && npx tsc --noEmit)                              # src + test
+(cd server && npx tsc -p tsconfig.build.json --noEmit)       # what `npm run build -w server` compiles
+(cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer's legacy Excel readers
 npm test
 npm run test:e2e        # uses 4100/5273 from the .env files
 npm run screenshots     # same isolation recipe; never a custom port setup

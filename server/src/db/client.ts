@@ -44,6 +44,12 @@ function createClient(url: string) {
 
 export type Sql = ReturnType<typeof createClient>;
 
+type ClientTypes = Sql extends postgres.Sql<infer T> ? T : never;
+
+/** The `sql` handed to a `withTransaction` callback, carrying the client's
+ * custom types above (a bare `TransactionSql` defaults them to `{}`). */
+export type Tx = postgres.TransactionSql<ClientTypes>;
+
 let client: Sql | null = null;
 
 /** Lazily created so modules can be imported (e.g. by tests that set

@@ -107,7 +107,7 @@ export function savingsBaselineFrom(months: FinanceMonth[], year: number, month:
  * (index 0 unused; 1-12 are the months). */
 export function computeFinanceSummary(
   months: FinanceMonth[],
-  expenseTotalsByYear: ReadonlyMap<number, number[]>,
+  expenseTotalsByYear: ReadonlyMap<number, readonly number[]>,
   uptoYear: number,
   uptoMonth: number,
 ): MonthFinanceSummary[] {

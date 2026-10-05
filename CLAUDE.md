@@ -12,14 +12,14 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 | Why the system is shaped this way | `docs/architecture/HLD.md`, `docs/adr/` |
 | Schema, module layout, transactions, API contract, auth, config | `docs/architecture/LLD.md` |
 | Domain rules (what each figure means, conventions, gotchas) | `README.md` |
-| Current (Excel) technical reference | `ARCHITECTURE.md` |
+| Excel-edition technical reference (storage sections superseded by the LLD) | `ARCHITECTURE.md` |
 
 ## Non-negotiables
 1. **Never disturb the live app.** It runs on port 4000 from another checkout and uses real data. Use this worktree's ports 4100/5273 and only the local Supabase stack or a temporary directory. See `.claude/skills/safe-dev-environment`.
 2. **API compatibility.** Request and response shapes stay byte-compatible with the Excel edition. `row` fields now carry database ids.
 3. **Keep calculations pure** in `server/src/domain/`. SQL and I/O live in `server/src/store/`. "Today" comes from `todayInAppZone()` or an injected `today` parameter, never a bare `new Date()`.
 4. **Schema changes only through new migrations** in `supabase/migrations/`. See `.claude/skills/supabase-migrations`.
-5. **Verify before calling anything done.** Run client and server `tsc`, the full `npm test`, then `npm run test:e2e`, and report the real counts. Rerun once only for the two known e2e flakes.
+5. **Verify before calling anything done.** Run client and server `tsc` (server checks from `server/`, so its own TypeScript runs, not the client's hoisted one; see `safe-dev-environment`), the full `npm test`, then `npm run test:e2e`, and report the real counts. Rerun once only for the two known e2e flakes.
 6. **Commits:** small, one concern each, with a body explaining *why*. No `Co-Authored-By` trailer. Don't push without being asked.
 
 ## Agents (`.claude/agents/`)

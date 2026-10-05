@@ -649,7 +649,7 @@ describe("Postgres storage", () => {
     ]);
     const [a, b] = ids[5];
     const message =
-      "May 2090 is locked. Unlock it first (from the app, or in Excel directly) if you really need to add an entry there.";
+      "May 2090 is locked. Unlock it first from the app if you really need to add an entry there.";
     const attempts = [
       () => ledger.appendEntry({ year: YEAR, month: 5, amount: 1, remarks: "x", category: "food", isCard: false }),
       () => ledger.updateEntry({ year: YEAR, month: 5, row: a, amount: 9, remarks: "x", category: "food", isCard: false }),
@@ -695,5 +695,20 @@ describe("Postgres storage", () => {
     expect(totals[12]).toBe(1);
     expect(totals.filter((t) => t !== 0)).toHaveLength(2);
     expect(await ledger.yearExpenseTotals(2999)).toEqual(Array.from({ length: 13 }, () => 0));
+  });
+
+  it("expenseTotalsForYears matches yearExpenseTotals for every year in the range, zeros included", async () => {
+    await seedYear(2071, [{ month: 1, entries: [{ amount: 2.5, remarks: "a", category: "food" }] }]);
+    await seedYear(2073, [
+      { month: 3, entries: [{ amount: 10.25, remarks: "b", category: "food" }, { amount: 4.75, remarks: "c", category: "rent" }] },
+    ]);
+    const years = [2070, 2071, 2072, 2073, 2074];
+    const byYear = await ledger.expenseTotalsForYears(2070, 2074);
+    expect([...byYear.keys()].sort()).toEqual(years);
+    for (const year of years) {
+      expect(byYear.get(year)).toEqual(await ledger.yearExpenseTotals(year));
+    }
+    expect(byYear.get(2071)![1]).toBe(2.5);
+    expect(byYear.get(2073)![3]).toBe(15);
   });
 });

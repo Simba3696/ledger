@@ -108,8 +108,11 @@ export async function setMonthBills(input: SetMonthBillsInput): Promise<MonthBil
       due_date: c.dueDate,
       settled: c.settled,
     }));
+    // Built outside the template: passed inline, TypeScript 5.x infers the
+    // helper's column list as a readonly tuple the template rejects.
+    const insert = tx(values, "year", "month", "position", "name", "due", "paid", "due_date", "settled");
     const rows = await tx<CardBillRow[]>`
-      insert into card_bills ${tx(values, "year", "month", "position", "name", "due", "paid", "due_date", "settled")}
+      insert into card_bills ${insert}
       returning month, position, name, due, paid, due_date, settled`;
     // insert ... returning doesn't promise row order, so sort by position.
     const saved = [...rows].sort((a, b) => a.position - b.position);

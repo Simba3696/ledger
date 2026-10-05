@@ -1,9 +1,8 @@
-import type { TransactionSql } from "postgres";
-import { getSql, type Sql } from "../db/client.js";
+import { getSql, type Sql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
 import { LedgerError } from "../errors.js";
 import { assertMoney, assertText } from "./validate.js";
-import { yearExpenseTotals } from "./ledger.js";
+import { expenseTotalsForYears } from "./ledger.js";
 import {
   EARLIEST_YEAR,
   computeFinanceSummary,
@@ -116,7 +115,7 @@ interface FinanceMonthSavingsRow extends FinanceMonthRow {
  * Excel edition read the whole workbook at once) rather than a month's
  * income from before a concurrent save and its savings from after. The
  * foreign key guarantees every savings row has its finance_months row. */
-async function loadMonthsThrough(q: Sql | TransactionSql, year: number, month: number): Promise<FinanceMonth[]> {
+async function loadMonthsThrough(q: Sql | Tx, year: number, month: number): Promise<FinanceMonth[]> {
   const rows = await q<FinanceMonthSavingsRow[]>`
     select f.year, f.month, f.salary, f.other_income, s.position, s.name, s.amount
     from finance_months f
@@ -177,8 +176,11 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
     let savedSavings: SavingsBalanceRow[] = [];
     if (savings.length > 0) {
       const values = savings.map((s, position) => ({ year, month, position, name: s.name, amount: s.amount }));
+      // Built outside the template: passed inline, TypeScript 5.x infers the
+      // helper's column list as a readonly tuple the template rejects.
+      const insert = tx(values, "year", "month", "position", "name", "amount");
       const rows = await tx<SavingsBalanceRow[]>`
-        insert into savings_balances ${tx(values, "year", "month", "position", "name", "amount")}
+        insert into savings_balances ${insert}
         returning year, month, position, name, amount`;
       // insert ... returning doesn't promise row order, so sort by position.
       savedSavings = [...rows].sort((a, b) => a.position - b.position);
@@ -202,14 +204,11 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
 /** The full chronological series from EARLIEST_YEAR through
  * (uptoYear, uptoMonth), returning only uptoYear's rows (see
  * computeFinanceSummary). Expense totals come from the ledger store's
- * yearExpenseTotals, one year at a time. */
+ * expenseTotalsForYears, one grouped query for the whole range. */
 export async function financeSummary(uptoYear: number, uptoMonth: number): Promise<MonthFinanceSummary[]> {
   validateYearMonth(uptoYear, uptoMonth);
 
   const months = await loadMonthsThrough(getSql(), uptoYear, uptoMonth);
-  const expenseTotalsByYear = new Map<number, number[]>();
-  for (let year = EARLIEST_YEAR; year <= uptoYear; year++) {
-    expenseTotalsByYear.set(year, await yearExpenseTotals(year));
-  }
+  const expenseTotalsByYear = await expenseTotalsForYears(EARLIEST_YEAR, uptoYear);
   return computeFinanceSummary(months, expenseTotalsByYear, uptoYear, uptoMonth);
 }

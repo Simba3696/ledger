@@ -1,6 +1,7 @@
 /**
- * Full-stack regression check: builds a synthetic data directory, starts the
- * real dev server against it, and drives the actual browser UI through every
+ * Full-stack regression check: resets the LOCAL Supabase database (e2e/localDb.ts,
+ * which refuses any host but 127.0.0.1/localhost) and seeds synthetic data,
+ * starts the real dev server against it, and drives the actual browser UI through every
  * feature (dashboard, add/edit/delete/reorder, theme, click-through
  * navigation). Run with `npm run test:e2e` after any client or server change.
  *
@@ -11,7 +12,6 @@
 import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { insertLocalCategory, insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
@@ -72,13 +72,11 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 }
 
 async function main() {
-  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-e2e-"));
-  console.log("Scratch data dir:", scratchDir);
-
   // Every store module reads the LOCAL Supabase stack (via server/.env's
-  // DATABASE_URL), not scratchDir — reset it to empty + seed so every
-  // "starts empty" check below still holds. Local hosts only. Done first
-  // because the expenses seeded below need the seeded categories.
+  // DATABASE_URL) — reset it to empty + seed so every "starts empty" check
+  // below holds. resetLocalDatabase refuses any non-local host, which is
+  // what keeps this run away from real data. Done first because the
+  // expenses seeded below need the seeded categories.
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
   const { DEFAULT_CATEGORIES } = await import("../server/src/domain/categoryColors.js");
@@ -87,6 +85,7 @@ async function main() {
   // addMonths' actual clamp-at-month-end behavior on an edge-case day.
   const { addMonths, startOfDay, formatDate } = await import("../server/src/domain/dateMath.js");
   const { dueDateOnOrAfter } = await import("../server/src/domain/emiMath.js");
+  const { todayInAppZone } = await import("../server/src/domain/today.js");
 
   // Seed a custom 5th category alongside the defaults — proves the
   // categories table actually drives the running app end to end, not just
@@ -102,7 +101,11 @@ async function main() {
     position: DEFAULT_CATEGORIES.length,
   });
 
-  const now = new Date();
+  // "Now" as the server sees it (APP_TIMEZONE, default Asia/Kolkata), not
+  // this machine's timezone — otherwise a run near midnight on a machine in
+  // another zone would seed and assert against a different month than the
+  // server treats as current.
+  const now = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined);
   const year = now.getFullYear();
   const monthIndex = now.getMonth(); // 0-11, matches the dashboard chart's tick order
   const monthName = now.toLocaleString("en-US", { month: "long" });
@@ -133,10 +136,10 @@ async function main() {
     );
   }
 
-  console.log("Starting dev server against scratch data...");
+  console.log("Starting dev server against the local database...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
     cwd: ROOT,
-    env: { ...process.env, LEDGER_DB_DIR: scratchDir },
+    env: process.env,
     shell: true,
   });
   devProcess.stdout.on("data", () => {});
@@ -466,8 +469,8 @@ async function main() {
 
     // --- Month locking (replaces the old "only the current calendar month
     // is editable" auto-lock rule — nothing auto-locks on the 1st anymore,
-    // locking is an explicit per-month choice backed by real Excel sheet
-    // protection on the server, not just a UI convenience). ---
+    // locking is an explicit per-month choice enforced by the server's
+    // month_locks table, not just a UI convenience). ---
     check(
       "A never-locked month shows the unlocked banner by default",
       (await page.locator(".month-lock-status").innerText()).includes("is unlocked"),
@@ -549,15 +552,15 @@ async function main() {
     await page.waitForTimeout(400);
     check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
-    // --- Auto-create next year's workbook on first entry ---
-    // The scratch dir only seeded the current year, so next year genuinely
-    // has no file yet — this exercises appendEntry's auto-create path (and
+    // --- Auto-create next year on first entry ---
+    // Only the current year was seeded, so next year genuinely has no
+    // ledger_years row yet — this exercises appendEntry's auto-create path (and
     // confirms YearSelect actually offers a year beyond the current one).
     const nextYear = String(year + 1);
     await page.selectOption(".month-picker select >> nth=1", nextYear);
     await page.waitForTimeout(300);
     check("Selecting next year shows no entries yet (no file, no crash)", (await page.locator(".entry-row").count()) === 0);
-    // That 404 is expected (confirming the file doesn't exist yet before we
+    // That 404 is expected (confirming the year doesn't exist yet before we
     // auto-create it below) — the browser logs it as a console error
     // regardless of the app handling it gracefully, so filter this one
     // known-expected occurrence out rather than let it fail the "no console
@@ -1670,7 +1673,6 @@ async function main() {
     } catch {
       // best-effort cleanup
     }
-    fs.rmSync(scratchDir, { recursive: true, force: true });
   }
 
   const failed = results.filter((r) => !r.ok);

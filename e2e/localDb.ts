@@ -1,8 +1,7 @@
 /**
  * Resets the LOCAL Supabase Postgres to a fresh state (every public table
  * truncated, identities restarted, supabase/seed.sql re-applied) so the e2e
- * and screenshot scripts start from known-empty data, the same guarantee a
- * fresh LEDGER_DB_DIR scratch folder gives the Excel-backed modules.
+ * and screenshot scripts start from known-empty data.
  *
  * Refuses any host but 127.0.0.1/localhost: this truncates every table, so
  * it must never be pointed at a hosted project or real data.

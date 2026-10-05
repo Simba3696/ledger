@@ -1,5 +1,4 @@
-import type { TransactionSql } from "postgres";
-import { getSql, type Sql } from "../db/client.js";
+import { getSql, type Sql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
 import { LedgerError } from "../errors.js";
 import type { Category } from "../domain/categoryColors.js";
@@ -117,7 +116,7 @@ function noYear(year: number): LedgerError {
 
 /** The Excel edition's loadWorkbook check, which ran before anything looked
  * at the month: a year nobody has written to is a 404. */
-async function assertYearExists(q: Sql | TransactionSql, year: number) {
+async function assertYearExists(q: Sql | Tx, year: number) {
   if (!(await yearExists(q, year))) throw noYear(year);
 }
 
@@ -132,7 +131,7 @@ function noEntry(row: number, year: number, month: number): LedgerError {
  * setMonthLocked and the entry writes exactly as a missing workbook did, and
  * deleting a year's last entry doesn't un-create it, as the emptied workbook
  * file stayed behind. */
-async function yearExists(q: Sql | TransactionSql, year: number): Promise<boolean> {
+async function yearExists(q: Sql | Tx, year: number): Promise<boolean> {
   if (!isStorableYear(year)) return false;
   const [{ found }] = await q<{ found: boolean }[]>`
     select exists (select 1 from ledger_years where year = ${year})
@@ -147,16 +146,16 @@ async function yearExists(q: Sql | TransactionSql, year: number): Promise<boolea
  * with another write to the same month. Released at commit/rollback. The
  * month key is hashed (year * 100 + month would overflow int4 for years the
  * column accepts); a collision only serialises two unrelated months. */
-async function lockMonthForWrite(tx: TransactionSql, year: number, month: number) {
+async function lockMonthForWrite(tx: Tx, year: number, month: number) {
   await tx`select pg_advisory_xact_lock(hashtext('expenses'), hashtext(${`${year}-${month}`}))`;
 }
 
 /** The Excel edition's assertWritable: a locked month rejects every write. */
-async function assertWritable(tx: TransactionSql, year: number, month: number) {
+async function assertWritable(tx: Tx, year: number, month: number) {
   const [locked] = await tx`select 1 from month_locks where year = ${year} and month = ${month}`;
   if (locked) {
     throw new LedgerError(
-      `${monthName(month)} ${year} is locked. Unlock it first (from the app, or in Excel directly) if you really need to add an entry there.`,
+      `${monthName(month)} ${year} is locked. Unlock it first from the app if you really need to add an entry there.`,
       403,
     );
   }
@@ -164,7 +163,7 @@ async function assertWritable(tx: TransactionSql, year: number, month: number) {
 
 /** The entry `row` (an id) in this month, row-locked for the rest of the
  * transaction; 404 unless it exists and belongs to (year, month). */
-async function findEntry(tx: TransactionSql, year: number, month: number, row: number): Promise<ExpenseRow> {
+async function findEntry(tx: Tx, year: number, month: number, row: number): Promise<ExpenseRow> {
   if (!isPossibleId(row)) throw noEntry(row, year, month);
   const [r] = await tx<ExpenseRow[]>`
     select id, position, amount, remarks, category_id, card_note
@@ -263,6 +262,34 @@ export async function yearExpenseTotals(year: number): Promise<number[]> {
     group by month`;
   for (const r of rows) totals[r.month] = r.total;
   return totals;
+}
+
+/** yearExpenseTotals for every year from `fromYear` through `toYear`, in one
+ * grouped query rather than one round trip per year. Years with nothing
+ * entered share a single all-zero array, so a far-future `toYear` costs no
+ * extra queries and little memory. */
+export async function expenseTotalsForYears(fromYear: number, toYear: number): Promise<Map<number, readonly number[]>> {
+  const zeros: readonly number[] = Object.freeze(Array.from({ length: 13 }, () => 0));
+  const byYear = new Map<number, readonly number[]>();
+  if (toYear >= fromYear) {
+    const sql = getSql();
+    const rows = await sql<{ year: number; month: number; total: number }[]>`
+      select year, month, sum(amount) as total
+      from expenses where year between ${fromYear} and ${toYear}
+      group by year, month`;
+    for (const r of rows) {
+      let totals = byYear.get(r.year) as number[] | undefined;
+      if (!totals) {
+        totals = Array.from({ length: 13 }, () => 0);
+        byYear.set(r.year, totals);
+      }
+      totals[r.month] = r.total;
+    }
+  }
+  for (let year = fromYear; year <= toYear; year++) {
+    if (!byYear.has(year)) byYear.set(year, zeros);
+  }
+  return byYear;
 }
 
 /** Adds an entry at the end of the month (LLD §4.3). The per-month advisory

@@ -19,10 +19,12 @@ server/
     store/                   one module per concern; same exported function names
       categories.ts  ledger.ts  finances.ts  debts.ts  emi.ts
       subscriptions.ts  creditCardBills.ts  overview.ts
+      validate.ts            shared input checks (assertText, assertMoney, isRealDate, isPossibleId)
     domain/                  pure calculations, no I/O (moved verbatim from excel/*)
-      dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  categoryColors.ts
+      dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
       today.ts               "today" in APP_TIMEZONE
     errors.ts                LedgerError
+    dbErrors.ts              SQLSTATE → 400/409 mapping (§11)
   test/                      vitest, against the local Supabase Postgres
 netlify/functions/api.ts     serverless-http(app)
 supabase/
@@ -32,6 +34,7 @@ supabase/
 scripts/
   import-xlsx.ts             one-time Excel → Postgres import
   legacy-excel/              the old Excel readers, kept only for the importer
+                             (typecheck-only tsconfig.json; exceljs is a root devDependency)
 netlify.toml
 ```
 
@@ -41,11 +44,13 @@ The rule for the port: **store modules keep their current exported names and ret
 
 All money is `numeric(14,2)`. All calendar dates are `date`. Months are `1..12`. `id` columns are `bigint generated always as identity`.
 
+`supabase/migrations/` is authoritative; this listing is the net effect of 20261005160517_init_schema, 20261005175741_categories_fg_optional, 20261005184504_ledger_years and 20261005190934_card_bills_name_not_blank. (The `ledger_years` migration also backfills one row per year that already had expenses or month locks.)
+
 ```sql
 -- categories (replaces categories.json)
 create table categories (
   id        text primary key,                      -- e.g. 'food'
-  label     text not null,
+  label     text not null check (length(btrim(label)) > 0),
   bg        text not null check (bg ~ '^#[0-9A-Fa-f]{6}$'),
   fg        text check (fg ~ '^#[0-9A-Fa-f]{6}$'), -- null = derived from bg on read (deriveForegroundColor)
   position  int  not null
@@ -56,7 +61,7 @@ create table expenses (
   id          bigint generated always as identity primary key,
   year        int  not null check (year >= 2018),
   month       int  not null check (month between 1 and 12),
-  position    int  not null,                       -- display order within the month
+  position    int  not null check (position >= 0),  -- display order within the month
   amount      numeric(14,2) not null check (amount > 0),
   remarks     text not null check (length(btrim(remarks)) > 0),
   category_id text references categories(id) on update cascade on delete restrict,  -- null only for imported rows with an unrecognised fill colour
@@ -67,7 +72,7 @@ create index expenses_year_month on expenses (year, month);
 
 -- month locks (replaces Excel sheet protection)
 create table month_locks (
-  year  int not null,
+  year  int not null check (year >= 2018),
   month int not null check (month between 1 and 12),
   primary key (year, month)
 );                                                 -- row present = locked
@@ -79,7 +84,7 @@ create table ledger_years (
 
 -- finances (replaces Finances.xlsx)
 create table finance_months (
-  year         int not null,
+  year         int not null check (year >= 2018),
   month        int not null check (month between 1 and 12),
   salary       numeric(14,2),
   other_income numeric(14,2),
@@ -88,7 +93,7 @@ create table finance_months (
 create table savings_balances (                    -- a month's snapshot; no rows = not entered
   year     int not null,
   month    int not null,
-  position int not null,
+  position int not null check (position >= 0),
   name     text not null check (length(btrim(name)) > 0),
   amount   numeric(14,2) not null,
   primary key (year, month, position),
@@ -128,8 +133,8 @@ create table card_bills (
   id       bigint generated always as identity primary key,
   year     int not null check (year >= 2018),
   month    int not null check (month between 1 and 12),
-  position int not null,
-  name     text not null,
+  position int not null check (position >= 0),
+  name     text not null check (length(btrim(name)) > 0),
   due      numeric(14,2) not null default 0,
   paid     numeric(14,2) not null default 0,
   due_date date,
@@ -172,15 +177,16 @@ alter table card_bills       enable row level security;
 These pure functions move from `excel/*` to `domain/*` with no logic changes:
 
 - `dateMath.ts`: `daysInMonth`, `clampDay`, `makeDate`, `addMonths`, `addYears`, `formatDate`, `parseDate`, `startOfDay`
-- `emiMath.ts`: `withComputed`, `countDueDatesPassed`, `nextDueDateAfter`, `dueDateOnOrAfter`, `nthFutureDueDate`, `computeOutstandingPrincipal`, `computeForeclosurePayoff`, plus the projection simulation behind `emiMonthlyProjection`
+- `emiMath.ts`: `withComputed`, `countDueDatesPassed`, `nextDueDateAfter`, `dueDateOnOrAfter`, `nthFutureDueDate`, `computeOutstandingPrincipal`, `computeForeclosurePayoff`, plus the projection simulation behind `emiMonthlyProjection`, `resolveUntilTarget`, `settleEmiPayment` (the recordEmiPayment rule), `projectEmiMonthly`, `round2`
 - `subscriptionMath.ts`: `withComputed`, `advanceToOnOrAfter`
 - `financeMath.ts`: balance, cumulative, minimum savings, the savings carry-forward and the `previousSavings` baseline. These take plain arrays of month rows, not sheets.
+- `creditCardMath.ts`: `summarize` (per-month due/paid/outstanding totals)
 - `categoryColors.ts`: `deriveForegroundColor`, `DEFAULT_CATEGORIES` (seed data)
 
 `today.ts` replaces every bare `new Date()` used as "today" ([ADR-0005](../adr/0005-explicit-app-timezone.md)):
 
 ```ts
-export function todayInAppZone(now = new Date(), tz = process.env.APP_TIMEZONE ?? "Asia/Kolkata"): Date {
+export function todayInAppZone(now = new Date(), tz = process.env.APP_TIMEZONE || "Asia/Kolkata"): Date {
   const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
     .format(now).split("-").map(Number);
   return new Date(y, m - 1, d); // local-midnight Date for that calendar day, matching dateMath's conventions
@@ -196,7 +202,9 @@ Functions that already accept an injectable `today` parameter keep it, so tests 
 `postgres` (postgres.js), configured once per process or function instance:
 
 ```ts
-export const sql = postgres(process.env.DATABASE_URL!, {
+export function getSql(): Sql  // created lazily on first call from DATABASE_URL; closeSql() ends it (tests call it in afterAll)
+// getSql() builds the client with:
+postgres(process.env.DATABASE_URL!, {
   prepare: false,           // required by Supabase's transaction pooler (port 6543)
   max: 1,                   // one connection per function instance; the pooler fans in
   idle_timeout: 20,
@@ -212,17 +220,23 @@ export const sql = postgres(process.env.DATABASE_URL!, {
 
 ### 4.3 Transactions
 
-`withTransaction(fn)` wraps `sql.begin`. Per-operation rules:
+`withTransaction(fn)` wraps `sql.begin`. Its callback gets a `Tx` (`db/client.ts`): the transaction `sql`, typed with the client's custom types. Per-operation rules:
 
 | Operation | Statement shape |
 |---|---|
-| `appendEntry` | lock check → `select coalesce(max(position)+1,0) … for update` → insert |
-| `deleteEntry` | lock check → delete → `update … set position = position - 1 where position > deleted` |
-| `moveEntry` | lock check → shift the positions between `from` and `to` by ±1 → set the moved row's position. Relies on the deferred unique constraint. |
-| `setMonthBills` | delete the month's `card_bills` → insert the new array with positions 0..n-1 (the same whole-month replace semantics as today) |
-| `setMonthIncome` | upsert into `finance_months` → delete and reinsert the month's `savings_balances` |
+| `appendEntry` | month advisory lock (`pg_advisory_xact_lock(hashtext('expenses'), hashtext('<year>-<month>'))`) → lock check → `insert into ledger_years … on conflict do nothing` → `select coalesce(max(position)+1,0)` → insert |
+| `updateEntry` | year check → month advisory lock → lock check → `select … for update` the entry (404 unless it's in that month) → update |
+| `deleteEntry` | year check → month advisory lock → lock check → find entry → delete → `update … set position = position - 1 where position > deleted` (relies on the deferred unique constraint) |
+| `moveEntry` | year check → month advisory lock → lock check → find both entries → shift the positions between `from` and `to` by ±1 → set the moved row's position. Relies on the deferred unique constraint. |
+| `setMonthLocked` | year check → month advisory lock → insert/delete the `month_locks` row |
+| `setMonthBills` | per-month advisory lock (`hashtext('card_bills')`) → delete the month's `card_bills` → insert the new array with positions 0..n-1 |
+| `setMonthIncome` | upsert into `finance_months` (its row lock serialises concurrent saves to that month; last writer wins) → delete and reinsert the month's `savings_balances` at positions 0..n-1 |
 | `recordEmiPayment` | `select … for update` → compute the new anchor in the domain layer → update |
 | every other single-row write | a single statement, which is atomic on its own |
+
+Every write to one expense month takes the same transaction-scoped advisory lock, so two devices writing to the same month queue rather than interleave. The lock-check-then-write in §4.4 therefore cannot race a concurrent lock toggle. Advisory locks are released at commit or rollback.
+
+Reads that span years use one grouped query, not one per year: `financeSummary` gets every year's monthly expense totals from `ledger.expenseTotalsForYears(2018, uptoYear)`, so a far-future year costs a single round trip.
 
 ### 4.4 Month lock enforcement
 
@@ -330,6 +344,6 @@ The existing server test cases are the **parity contract**: each one is ported w
 ## 11. Error handling and logging
 
 - Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as today.
-- Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month.
-- Database constraint violations (`23514` check, `23503` foreign key, `23505` unique) are mapped to 400 or 409 with a readable message.
+- Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month. The 403 for a locked month now reads `<Month> <year> is locked. Unlock it first from the app if you really need to add an entry there.` (the Excel edition also suggested unlocking "in Excel directly", which this edition has no way to do).
+- Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `routes.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). The database message is logged with `console.error` and never returned.
 - Function logs go to Netlify's function log: method, path, status and duration. Request bodies and financial values are never logged.

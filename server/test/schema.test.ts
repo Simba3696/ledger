@@ -92,6 +92,14 @@ describe("constraints mirror API validation", () => {
       sql`insert into expenses (year, month, position, amount, remarks, category_id) values (2026, 1, 0, 20, 'b', 'food')`,
     ).rejects.toThrow(/expenses_position_unique/);
   });
+
+  it("rejects a blank card bill name", async () => {
+    await resetTables("card_bills");
+    await expect(
+      sql`insert into card_bills (year, month, position, name) values (2026, 1, 0, '   ')`,
+    ).rejects.toThrow(/card_bills_name_not_blank/);
+    await sql`insert into card_bills (year, month, position, name) values (2026, 1, 0, 'Card A')`;
+  });
 });
 
 describe("withTransaction", () => {

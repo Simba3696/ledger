@@ -5,6 +5,8 @@ description: Step-by-step checklist for porting one Ledger storage module from E
 
 # Port one module to Supabase
 
+**Status:** complete. All eight modules were ported by de1d266 and `server/src/excel/` is deleted. The Excel readers survive only in `scripts/legacy-excel/` for the importer (LLD §8). Keep this checklist as the record of the porting conventions; new store code follows §3 (validate.ts helpers, withTransaction, contiguous positions).
+
 Port order (simplest first): debts → subscriptions → emi → creditCardBills → finances → categories → ledger → overview. Do one module per commit.
 
 ## 0. Before starting
@@ -44,7 +46,8 @@ Port order (simplest first): debts → subscriptions → emi → creditCardBills
 
 ## 6. Verify (use the `qa-verifier` agent or run these yourself)
 ```bash
-npx tsc -p server/tsconfig.build.json --noEmit
+(cd server && npx tsc --noEmit)                          # from server/, so the server's own TypeScript runs
+(cd server && npx tsc -p tsconfig.build.json --noEmit)
 npm test        # full suite: count must equal the baseline minus deliberately deleted Excel-only tests
 ```
 

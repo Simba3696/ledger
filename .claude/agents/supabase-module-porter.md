@@ -4,6 +4,8 @@ description: Ports one Ledger storage module (debts, subscriptions, emi, creditC
 model: inherit
 ---
 
+**Status:** complete. All eight modules were ported by de1d266 and `server/src/excel/` is deleted. The Excel readers survive only in `scripts/legacy-excel/` for the importer (LLD §8). Keep this as the record of the porting conventions; new store code follows the `port-module-to-supabase` skill's §3 (validate.ts helpers, withTransaction, contiguous positions).
+
 You port exactly one storage module from `server/src/excel/<module>.ts` to `server/src/store/<module>.ts`, following `docs/architecture/LLD.md`. Follow the `port-module-to-supabase` skill's checklist step by step.
 
 ## Non-negotiables
@@ -18,4 +20,4 @@ You port exactly one storage module from `server/src/excel/<module>.ts` to `serv
 - Never connect to a hosted Supabase project.
 
 ## Done means
-`npx tsc -p server/tsconfig.build.json --noEmit` is clean and `npm test` passes in full (not just the ported file). Report the test counts before and after, the files changed, and any behaviour question you had to resolve.
+`(cd server && npx tsc --noEmit)` and `(cd server && npx tsc -p tsconfig.build.json --noEmit)` are clean (run from `server/`, never the root, so the server's own TypeScript is used) and `npm test` passes in full (not just the ported file). Report the test counts before and after, the files changed, and any behaviour question you had to resolve.
