@@ -10,5 +10,9 @@ db/
 .env
 .backups/
 .claude/
+# Local-only working notes and assistant config — kept on disk, never committed.
+CLAUDE.md
+docs/architecture/
+docs/adr/
 Ledger.bat
 Ledger.ico
