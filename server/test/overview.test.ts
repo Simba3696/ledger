@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest";
-// Debts, EMIs and subscriptions now live in Postgres: dbHelpers must load before any store module.
+// Debts, EMIs, subscriptions and card bills now live in Postgres: dbHelpers must load before any store module.
 import { resetTables, closeSql } from "./dbHelpers.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,11 +15,11 @@ const overview = await import("../src/excel/overview.js");
 const debts = await import("../src/store/debts.js");
 const emi = await import("../src/store/emi.js");
 const subscriptions = await import("../src/store/subscriptions.js");
-const creditCardBills = await import("../src/excel/creditCardBills.js");
+const creditCardBills = await import("../src/store/creditCardBills.js");
 const finances = await import("../src/excel/finances.js");
 
-// Start from empty debts/emis/subscriptions tables, as the fresh scratch workbook folder did.
-await resetTables("debts", "emis", "subscriptions");
+// Start from empty debts/emis/subscriptions/card_bills tables, as the fresh scratch workbook folder did.
+await resetTables("debts", "emis", "subscriptions", "card_bills");
 
 afterAll(async () => {
   fs.rmSync(scratchDir, { recursive: true, force: true });

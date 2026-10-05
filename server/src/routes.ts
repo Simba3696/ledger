@@ -14,7 +14,7 @@ import {
 import { loadCategoryConfig } from "./excel/categoryColors.js";
 import { financeSummary, getMonthIncome, setMonthIncome } from "./excel/finances.js";
 import { addDebt, deleteDebt, listDebts, updateDebt } from "./store/debts.js";
-import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./excel/creditCardBills.js";
+import { getMonthBills, setMonthBills, yearBillsSummary, type CardBill } from "./store/creditCardBills.js";
 import {
   addEmi,
   deleteEmi,

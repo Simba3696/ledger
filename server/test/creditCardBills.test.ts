@@ -1,20 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import ExcelJS from "exceljs";
+// dbHelpers must be imported before any store module (it sets DATABASE_URL
+// and refuses non-local hosts).
+import { resetTables, closeSql, sql } from "./dbHelpers.js";
+import * as ccBills from "../src/store/creditCardBills.js";
 
-// Same pattern as ledger.test.ts / finances.test.ts / debts.test.ts:
-// LEDGER_DB_DIR must be set before creditCardBills.ts's top-level DB_DIR
-// evaluates, so it's imported dynamically after the env var is set rather
-// than via a static top-level import.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-ccbills-test-"));
-process.env.LEDGER_DB_DIR = scratchDir;
+// The cases below build on each other in order (save -> read -> overwrite),
+// the same way the Excel edition's shared scratch workbook did, so the table
+// is wiped once up front rather than before every case.
+beforeAll(async () => {
+  await resetTables("card_bills");
+});
 
-const ccBills = await import("../src/excel/creditCardBills.js");
-
-afterAll(() => {
-  fs.rmSync(scratchDir, { recursive: true, force: true });
+afterAll(async () => {
+  await closeSql();
 });
 
 describe("getMonthBills / setMonthBills", () => {
@@ -32,19 +30,13 @@ describe("getMonthBills / setMonthBills", () => {
   });
 
   it("defaults a legacy entry with no settled field (pre-dating the field) to false rather than rejecting it", async () => {
-    // Simulates data written before `settled` existed: write the raw cell
-    // JSON directly (bypassing setMonthBills, which now requires the field),
-    // then confirm the real getMonthBills path still reads it back cleanly.
-    const billsPath = path.join(scratchDir, "CreditCardBills.xlsx");
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(billsPath);
-    const sheet = workbook.getWorksheet("Bills")!;
-    const row = sheet.getRow(sheet.rowCount + 1);
-    row.getCell(1).value = 2094;
-    row.getCell(2).value = 8;
-    row.getCell(3).value = JSON.stringify([{ name: "Coral", due: 5000, paid: 4990, dueDate: "2094-07-07" }]);
-    row.commit();
-    await workbook.xlsx.writeFile(billsPath);
+    // Simulates data written before `settled` existed: insert the row
+    // directly, leaving `settled` to its column default (bypassing
+    // setMonthBills, which requires the field), then confirm the real
+    // getMonthBills path still reads it back cleanly.
+    await sql`
+      insert into card_bills (year, month, position, name, due, paid, due_date)
+      values (2094, 8, 0, 'Coral', 5000, 4990, '2094-07-07')`;
 
     expect(await ccBills.getMonthBills(2094, 8)).toEqual({
       year: 2094,
@@ -71,6 +63,16 @@ describe("getMonthBills / setMonthBills", () => {
 
   it("rejects a year before EARLIEST_YEAR", async () => {
     await expect(ccBills.setMonthBills({ year: 2000, month: 1, cards: [] })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("rejects a year past the column's int4 limit with the store's own 400, not a database error", async () => {
+    const tooBig = ccBills.LATEST_YEAR + 1;
+    const invalid = { status: 400, message: `Invalid year: ${tooBig}` };
+    await expect(ccBills.getMonthBills(tooBig, 1)).rejects.toMatchObject(invalid);
+    await expect(ccBills.setMonthBills({ year: tooBig, month: 1, cards: [] })).rejects.toMatchObject(invalid);
+    await expect(ccBills.yearBillsSummary(tooBig)).rejects.toMatchObject(invalid);
+    // The limit itself is still a valid (empty) year, as any year was before.
+    expect(await ccBills.getMonthBills(ccBills.LATEST_YEAR, 12)).toEqual({ year: ccBills.LATEST_YEAR, month: 12, cards: [] });
   });
 
   it("rejects an out-of-range month", async () => {
@@ -105,6 +107,67 @@ describe("getMonthBills / setMonthBills", () => {
         cards: [{ name: "Coral", due: 100, paid: 100, dueDate: "07/09/2094", settled: false }],
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("Postgres storage", () => {
+  it("keeps cards in the order they were saved, and a resave with fewer cards drops the rest", async () => {
+    const cards = ["Zeta", "Alpha", "Mid"].map((name) => ({ name, due: 100, paid: 0, dueDate: null, settled: false }));
+    expect(await ccBills.setMonthBills({ year: 2095, month: 1, cards })).toEqual({ year: 2095, month: 1, cards });
+    expect((await ccBills.getMonthBills(2095, 1)).cards.map((c) => c.name)).toEqual(["Zeta", "Alpha", "Mid"]);
+
+    await ccBills.setMonthBills({ year: 2095, month: 1, cards: [cards[2], cards[0]] });
+    expect((await ccBills.getMonthBills(2095, 1)).cards.map((c) => c.name)).toEqual(["Mid", "Zeta"]);
+    // Other months are untouched by a month's replace.
+    expect((await ccBills.getMonthBills(2094, 8)).cards).toHaveLength(1);
+  });
+
+  it("lets overlapping saves to the same month both succeed, the last one winning (no 409)", async () => {
+    // Smoke check only: getSql's single connection already serializes these
+    // within one process; the advisory lock is what covers separate servers.
+    const card = (name: string) => ({ name, due: 100, paid: 0, dueDate: null, settled: false });
+    const a = [card("A1"), card("A2")];
+    const b = [card("B1")];
+    await Promise.all([
+      ccBills.setMonthBills({ year: 2095, month: 4, cards: a }),
+      ccBills.setMonthBills({ year: 2095, month: 4, cards: b }),
+    ]);
+    expect([a, b]).toContainEqual((await ccBills.getMonthBills(2095, 4)).cards);
+  });
+
+  it("still accepts negative due/paid amounts, as the Excel edition did", async () => {
+    const cards = [{ name: "Refund", due: -250.5, paid: -10, dueDate: null, settled: true }];
+    expect(await ccBills.setMonthBills({ year: 2095, month: 2, cards })).toEqual({ year: 2095, month: 2, cards });
+  });
+
+  it("rejects an impossible due date with a 400, not a database error", async () => {
+    await expect(
+      ccBills.setMonthBills({
+        year: 2095,
+        month: 3,
+        cards: [{ name: "Coral", due: 100, paid: 100, dueDate: "2095-02-30", settled: false }],
+      }),
+    ).rejects.toMatchObject({ status: 400, message: 'Due date for "Coral" must be YYYY-MM-DD or null' });
+  });
+
+  it("rejects values the database columns can't hold with a 400, not a database error", async () => {
+    const card = { name: "Coral", due: 100, paid: 100, dueDate: null, settled: false };
+    for (const bad of [
+      { ...card, due: 1e12 },
+      { ...card, paid: -1e12 },
+      { ...card, name: "Co\u0000ral" },
+    ]) {
+      await expect(ccBills.setMonthBills({ year: 2095, month: 3, cards: [bad] })).rejects.toMatchObject({ status: 400 });
+    }
+    // A rejected save leaves the month as it was (nothing half-written).
+    expect((await ccBills.getMonthBills(2095, 3)).cards).toEqual([]);
+    // The largest value the column holds round-trips exactly; others come back at 2 decimals.
+    const saved = await ccBills.setMonthBills({
+      year: 2095,
+      month: 3,
+      cards: [{ ...card, due: 999999999999.99, paid: 10.006 }],
+    });
+    expect(saved.cards[0]).toMatchObject({ due: 999999999999.99, paid: 10.01 });
   });
 });
 
