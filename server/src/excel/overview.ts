@@ -148,11 +148,20 @@ export async function dashboardOverview(today: Date = new Date()): Promise<Dashb
 
   for (const emi of emis) {
     if (emi.isPaidOff || cardBilledNames.has(emi.cardOrBank)) continue;
-    // Anchored to the EMI's own stored asOfDate, not "today" — a payment
-    // just recorded via "Paid this month"/"Record payment" advances that
-    // anchor to the due date it settled, so this correctly moves on to the
-    // *next* cycle instead of recomputing the one just paid.
-    const due = nextDueDateAfter(parseDate(emi.asOfDate), emi.dueDay);
+    // Anchored to whichever is later: the EMI's own stored asOfDate — a
+    // payment just recorded via "Paid this month"/"Record payment" advances
+    // that anchor to the due date it settled, so this correctly moves on to
+    // the *next* cycle instead of recomputing the one just paid — or
+    // "today", so a *stale* asOfDate (the app untouched for days, no payment
+    // recorded) can't surface an already-passed due date as if it were still
+    // upcoming. Same fix, same reasoning, as emi.ts's own
+    // emiMonthlyProjection anchor — a real bug reported 2026-10-05: after
+    // several days offline, an EMI with no matching Credit Card Bill entry
+    // sat showing a stuck, already-overdue date in Upcoming until manually
+    // marked paid.
+    const asOf = parseDate(emi.asOfDate);
+    const anchor = asOf > day ? asOf : day;
+    const due = nextDueDateAfter(anchor, emi.dueDay);
     if (due <= windowEnd) {
       upcoming.push({ source: "EMI", name: emi.cardOrBank, amount: emi.emiAmount, dueDate: formatDate(due) });
     }

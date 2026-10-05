@@ -160,6 +160,28 @@ describe("dashboardOverview", () => {
     await emi.deleteEmi(added.row);
   });
 
+  it("re-anchors a stale asOfDate to today, instead of surfacing an already-passed due date as still upcoming", async () => {
+    // Reproduces a real user report (2026-10-05): the app went untouched for
+    // several days (no connectivity), and a standalone EMI's Upcoming due
+    // date stayed stuck on a cycle that had already passed by the time the
+    // app was opened again, until manually marked paid. The anchor was never
+    // re-dated to "today" — only ever to the EMI's own (here, stale)
+    // asOfDate — the same bug emiMonthlyProjection already had to fix once.
+    const added = await emi.addEmi(
+      { cardOrBank: "Stale Loan", emiAmount: 1000, dueDay: 10, totalAmount: 20000, remarks: "", remainingAsOf: 10000 },
+      new Date(2026, 0, 1), // Jan 1 — asOfDate stays here; nothing touches this EMI again
+    );
+
+    // By Mar 5, Jan 10 and Feb 10 have both passed (decayed out of `remaining`
+    // already) — the *real* next due date is Mar 10, not Jan 10 reappearing.
+    const result = await overview.dashboardOverview(new Date(2026, 2, 5));
+    expect(result.upcoming).toEqual([
+      { source: "EMI", name: "Stale Loan", amount: 1000, dueDate: "2026-03-10" },
+    ]);
+
+    await emi.deleteEmi(added.row);
+  });
+
   it("excludes an EMI from Upcoming when its card also has its own Credit Card Bill entry (already counted there), but keeps a standalone loan", async () => {
     // Converting a purchase to EMI on a real credit card bills it through
     // that card's own monthly bill, not separately — so "Coral" the EMI
