@@ -167,20 +167,22 @@ auto-advances forward to the next real cycle, never silently going stale:
   the same ledger data (no separate storage) — a year selector independent of
   the Expenses view's month/year. Clicking any month's bar (even an empty one)
   jumps to Expenses with that month/year selected, so you can view an existing
-  month or drop straight into adding a new entry. **Expenses has no button in
-  the nav bar** — the Dashboard chart is the only way in, by design, since the
-  Dashboard is meant to be the main view day to day. The rest of the nav bar
-  is ordered Dashboard, Credit Cards, Debts, EMI (Equated Monthly
+  month or drop straight into adding a new entry. Expenses also has its own
+  nav tab, right after Dashboard, so the chart click is a second way in
+  rather than the only one. The nav bar is ordered Dashboard, Expenses, Credit Cards, Debts, EMI (Equated Monthly
   Installment — the standard Indian-banking term for a fixed loan
-  repayment), Subscriptions, Finances — matching the sheet order in the old
-  `Expense Summary.xlsm` (see
+  repayment), Subscriptions, Finances — after Expenses, matching the sheet
+  order in the old `Expense Summary.xlsm` (see
   [History](#history-retiring-expense-summaryxlsm) below) rather than the
   order each tab happened to be built in. Below a ~600px viewport (a phone),
-  "Credit Cards" and "Subscriptions" — the two longest labels — shorten to
-  "CC Bills" and "Subs", and the nav's own spacing tightens slightly, so all
-  six tabs still fit on one row instead of the last one wrapping to a second
-  line. Verified by directly measuring rendered button/gap widths at 420px,
-  not just eyeballed.
+  "Dashboard", "Expenses", "Credit Cards" and "Subscriptions" — the longest
+  labels — shorten to "Home", "Spend", "CC Bills" and "Subs", and the nav's
+  own spacing tightens slightly, so all seven tabs still fit on one row
+  instead of the last ones wrapping to a second line. Verified by directly
+  measuring rendered button/gap widths at 420px, not just eyeballed. A
+  deployment can turn sections off with the server's `ENABLED_MODULES`
+  (see `server/.env.example` and ADR-0006); their tabs and Dashboard cards
+  then don't show.
 - The Dashboard also opens with an **overview widget** above the yearly
   chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
   Remaining − this month's unpaid Credit Card bills, all pulled live from
@@ -477,10 +479,10 @@ server/   Express API (TypeScript). All Excel reading/writing lives in
           aggregation across all of the above for the Dashboard's Net Worth
           + Upcoming widget — no workbook of its own, never writes).
           server/test/ — vitest suite + the synthetic-fixture builder.
-client/   React + Vite frontend. Nav bar order: Dashboard, Credit Cards,
-          Debts, EMI, Subscriptions, Finances — see src/components/. The
-          Add Expense form + current month's entry list (Expenses) has no
-          nav button; it's only reached via a Dashboard chart click.
+client/   React + Vite frontend. Nav bar order: Dashboard, Expenses,
+          Credit Cards, Debts, EMI, Subscriptions, Finances — see
+          src/components/. Expenses (the Add Expense form + the selected
+          month's entry list) is also reached via a Dashboard chart click.
 e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand; run-server.bat
           + run-server-hidden.vbs — the Scheduled Task launch chain (see
@@ -878,7 +880,11 @@ Two suites, covering different layers:
   logged), the Upcoming EMIs chart (empty state with no
   active EMIs, bars rendering once one exists, and its legend showing both
   series), and theme toggle + persistence — failing loudly on both
-  failed assertions and any browser console error. Seeds the *real current*
+  failed assertions and any browser console error. It then runs a second,
+  shorter pass, `e2e/expensesOnly.ts`, with the server started under
+  `ENABLED_MODULES=expenses`: only the Dashboard and Expenses tabs, expense
+  add/edit/delete, a Dashboard with no card from a disabled section, and a
+  disabled section's API answering 404. Seeds the *real current*
   month/year (not a hardcoded one), since edit/delete/reorder are only
   enabled in the UI for a month that isn't locked, and a freshly-seeded
   month never is by default. Slower (~20–25s) and needs

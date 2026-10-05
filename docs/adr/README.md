@@ -9,3 +9,4 @@ One short file per significant decision, numbered in order. Records are never re
 | [0003](0003-replace-excel-storage-on-main.md) | Replace Excel storage on `main`; keep it on `personal` | Accepted |
 | [0004](0004-express-as-single-netlify-function.md) | Keep Express, deploy as one Netlify Function with server-side SQL | Accepted |
 | [0005](0005-explicit-app-timezone.md) | Compute "today" in an explicit application timezone | Accepted |
+| [0006](0006-enabled-modules-per-deployment.md) | Choose a deployment's sections with `ENABLED_MODULES` | Accepted |

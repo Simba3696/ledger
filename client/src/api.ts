@@ -197,6 +197,19 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** A section a deployment can turn off with the server's ENABLED_MODULES.
+ * The Dashboard is always on. */
+export type ModuleName = "expenses" | "finances" | "debts" | "emi" | "credit-cards" | "subscriptions";
+
+export interface AppConfig {
+  /** The enabled modules, in canonical order. */
+  modules: ModuleName[];
+}
+
+export function getConfig(): Promise<AppConfig> {
+  return fetch(`${BASE}/config`).then((r) => handle(r));
+}
+
 export function getCategories(): Promise<CategoryOption[]> {
   return fetch(`${BASE}/categories`).then((r) => handle(r));
 }
@@ -391,12 +404,14 @@ export interface UpcomingItem {
   dueDate: string;
 }
 
+/** A figure is null when its module is disabled; netWorth is null unless
+ * all four inputs are enabled. */
 export interface NetWorthBreakdown {
-  currentSavings: number;
-  totalDebt: number;
-  emiRemaining: number;
-  creditCardOutstanding: number;
-  netWorth: number;
+  currentSavings: number | null;
+  totalDebt: number | null;
+  emiRemaining: number | null;
+  creditCardOutstanding: number | null;
+  netWorth: number | null;
 }
 
 export interface DashboardOverview {

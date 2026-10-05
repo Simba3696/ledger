@@ -30,8 +30,15 @@ import {
   type SubscriptionEditsInput,
 } from "./store/subscriptions.js";
 import { dashboardOverview } from "./store/overview.js";
+import { enabledModules } from "./modules.js";
 
 export const router = Router();
+
+// Which sections this deployment serves (ENABLED_MODULES, ADR-0006), so the
+// client shows only those tabs and Dashboard cards.
+router.get("/config", (req, res) => {
+  res.json({ modules: enabledModules(req) });
+});
 
 router.get("/categories", async (_req, res, next) => {
   try {
@@ -401,9 +408,9 @@ router.delete("/subscriptions/:row", async (req, res, next) => {
   }
 });
 
-router.get("/overview", async (_req, res, next) => {
+router.get("/overview", async (req, res, next) => {
   try {
-    res.json(await dashboardOverview());
+    res.json(await dashboardOverview(undefined, enabledModules(req)));
   } catch (err) {
     next(err);
   }

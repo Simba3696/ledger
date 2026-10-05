@@ -4,10 +4,12 @@ import "./shared.css";
 import {
   addEntry,
   getCategories,
+  getConfig,
   getMonth,
   getMonthLock,
   type CategoryOption,
   type LedgerEntry,
+  type ModuleName,
   type UpcomingItem,
 } from "./api";
 import { MonthYearPicker } from "./components/MonthYearPicker";
@@ -41,12 +43,37 @@ function TabFallback() {
 
 type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards" | "emi" | "subscriptions";
 
+// Every tab after Dashboard, in nav order, with the module (the server's
+// ENABLED_MODULES) that has to be on for it to show. `short` is the label
+// below 600px wide (App.css), where the full labels don't fit on one row.
+const NAV_TABS: { tab: Exclude<Tab, "dashboard">; module: ModuleName; label: string; short?: string }[] = [
+  { tab: "expenses", module: "expenses", label: "Expenses", short: "Spend" },
+  { tab: "creditCards", module: "credit-cards", label: "Credit Cards", short: "CC Bills" },
+  { tab: "debts", module: "debts", label: "Debts" },
+  { tab: "emi", module: "emi", label: "EMI" },
+  { tab: "subscriptions", module: "subscriptions", label: "Subscriptions", short: "Subs" },
+  { tab: "finances", module: "finances", label: "Finances" },
+];
+
+// Where each Upcoming item leads, so an item is never a link to a tab this
+// deployment doesn't have (the server already leaves those items out).
+const UPCOMING_MODULE: Record<UpcomingItem["source"], ModuleName> = {
+  EMI: "emi",
+  Subscription: "subscriptions",
+  "Credit Card": "credit-cards",
+  Salary: "finances",
+};
+
 function App() {
   const now = new Date();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1); // 1-12
 
+  // Null until GET /api/config answers; nothing module-specific renders or
+  // fetches before then, so a disabled module's routes are never called.
+  const [modules, setModules] = useState<ReadonlySet<ModuleName> | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,17 +114,22 @@ function App() {
     }
   }, [year, month]);
 
+  const expensesOn = modules?.has("expenses") ?? false;
+
   useEffect(() => {
+    getConfig()
+      .then((config) => setModules(new Set(config.modules)))
+      .catch((err) => setConfigError((err as Error).message));
     getCategories().then(setCategories).catch((err) => setLoadError((err as Error).message));
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (expensesOn) refresh();
+  }, [refresh, expensesOn]);
 
   useEffect(() => {
-    refreshLock();
-  }, [refreshLock]);
+    if (expensesOn) refreshLock();
+  }, [refreshLock, expensesOn]);
 
   function goToMonth(y: number, m: number) {
     setYear(y);
@@ -117,6 +149,7 @@ function App() {
 
   // EMI/Subscriptions are flat lists (no month scope) — just switch tabs.
   function goToUpcomingItem(item: UpcomingItem) {
+    if (!modules?.has(UPCOMING_MODULE[item.source])) return;
     if (item.source === "EMI") {
       setTab("emi");
     } else if (item.source === "Subscription") {
@@ -145,37 +178,33 @@ function App() {
 
       <nav className="tabs">
         <button type="button" className={tab === "dashboard" ? "selected" : ""} onClick={() => setTab("dashboard")}>
-          Dashboard
+          <span className="tab-label-full">Dashboard</span>
+          <span className="tab-label-short">Home</span>
         </button>
-        <button
-          type="button"
-          className={tab === "creditCards" ? "selected" : ""}
-          onClick={() => setTab("creditCards")}
-        >
-          <span className="tab-label-full">Credit Cards</span>
-          <span className="tab-label-short">CC Bills</span>
-        </button>
-        <button type="button" className={tab === "debts" ? "selected" : ""} onClick={() => setTab("debts")}>
-          Debts
-        </button>
-        <button type="button" className={tab === "emi" ? "selected" : ""} onClick={() => setTab("emi")}>
-          EMI
-        </button>
-        <button
-          type="button"
-          className={tab === "subscriptions" ? "selected" : ""}
-          onClick={() => setTab("subscriptions")}
-        >
-          <span className="tab-label-full">Subscriptions</span>
-          <span className="tab-label-short">Subs</span>
-        </button>
-        <button type="button" className={tab === "finances" ? "selected" : ""} onClick={() => setTab("finances")}>
-          Finances
-        </button>
+        {NAV_TABS.filter((t) => modules?.has(t.module)).map((t) => (
+          <button key={t.tab} type="button" className={tab === t.tab ? "selected" : ""} onClick={() => setTab(t.tab)}>
+            {t.short ? (
+              <>
+                <span className="tab-label-full">{t.label}</span>
+                <span className="tab-label-short">{t.short}</span>
+              </>
+            ) : (
+              t.label
+            )}
+          </button>
+        ))}
       </nav>
 
-      {tab === "dashboard" && (
-        <Dashboard categories={categories} onSelectMonth={goToMonth} onSelectUpcomingItem={goToUpcomingItem} />
+      {configError && <p className="error">{configError}</p>}
+      {!modules && !configError && <TabFallback />}
+
+      {modules && tab === "dashboard" && (
+        <Dashboard
+          categories={categories}
+          modules={modules}
+          onSelectMonth={goToMonth}
+          onSelectUpcomingItem={goToUpcomingItem}
+        />
       )}
       {tab !== "dashboard" && tab !== "expenses" && (
         <Suspense fallback={<TabFallback />}>
@@ -186,7 +215,7 @@ function App() {
           {tab === "finances" && <Finances year={year} month={month} />}
         </Suspense>
       )}
-      {/* Expenses has no nav button — only reachable via a Dashboard chart click (goToMonth). */}
+      {/* Reached from its nav tab or a Dashboard chart click (goToMonth). */}
       {tab === "expenses" && (
         <Suspense fallback={<TabFallback />}>
           <MonthLockToggle

@@ -5,6 +5,8 @@ import request from "supertest";
 import { createLocalJWKSet, errors, exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWTVerifyGetKey } from "jose";
 import { createApp } from "../src/app.js";
 import { listDebts } from "../src/store/debts.js";
+import { router } from "../src/routes.js";
+import { ALWAYS_ON_ROUTES, MODULE_LABELS, MODULES, ROUTE_MODULES, type ModuleName } from "../src/modules.js";
 
 // API layer tests (LLD §10): authentication and error mapping on
 // createApp(), plus the Netlify function's wiring. Tokens are signed with a
@@ -51,6 +53,7 @@ beforeEach(() => {
   vi.stubEnv("LAMBDA_TASK_ROOT", undefined);
   vi.stubEnv("SUPABASE_URL", SUPABASE_URL);
   vi.stubEnv("OWNER_EMAIL", OWNER);
+  vi.stubEnv("ENABLED_MODULES", undefined);
 });
 
 afterEach(() => {
@@ -282,6 +285,113 @@ describe("error mapping", () => {
     expect(res.status).toBe(400);
     expect(res.text).not.toContain("SyntaxError");
     expect(res.text).not.toMatch(/\bat \S+ \(/);
+  });
+});
+
+describe("enabled modules (ENABLED_MODULES)", () => {
+  // Every route in routes.ts, as [method, path with params filled in, first segment].
+  const routes = router.stack
+    .filter((layer) => layer.route)
+    .flatMap((layer) => {
+      const route = layer.route as unknown as { path: string; methods: Record<string, boolean> };
+      const path = route.path.replace(/:\w+/g, "1");
+      return Object.keys(route.methods).map((method) => ({ method, path, segment: route.path.split("/")[1] }));
+    });
+
+  async function call(method: string, path: string) {
+    const bearer = `Bearer ${await token()}`;
+    const req = request(app())[method as "get"](`/api${path}`).set("Authorization", bearer);
+    return method === "get" || method === "delete" ? req : req.send({});
+  }
+
+  it("assigns every route to exactly one module or to the always-on set", () => {
+    expect(routes.length).toBeGreaterThanOrEqual(30);
+    for (const { segment } of routes) {
+      expect(segment in ROUTE_MODULES !== ALWAYS_ON_ROUTES.has(segment), segment).toBe(true);
+    }
+  });
+
+  it("fails fast at startup on an unknown module name", () => {
+    vi.stubEnv("ENABLED_MODULES", "expenses,loans");
+    expect(() => app()).toThrow(
+      "Unknown module in ENABLED_MODULES: loans. Valid names: expenses, finances, debts, emi, credit-cards, subscriptions",
+    );
+  });
+
+  it("GET /api/config lists every module, in canonical order, when ENABLED_MODULES is unset", async () => {
+    const res = await call("get", "/config");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ modules: ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"] });
+  });
+
+  it("GET /api/config lists only the enabled modules, normalised", async () => {
+    vi.stubEnv("ENABLED_MODULES", " Debts, EXPENSES ");
+    expect((await call("get", "/config")).body).toEqual({ modules: ["expenses", "debts"] });
+  });
+
+  it("GET /api/config requires authentication like every other route", async () => {
+    vi.stubEnv("ENABLED_MODULES", "expenses");
+    const res = await request(app()).get("/api/config");
+    expect(res.status).toBe(401);
+  });
+
+  it.each(MODULES)("answers every %s route with a 404 when that module is disabled", async (module: ModuleName) => {
+    vi.stubEnv("ENABLED_MODULES", MODULES.filter((m) => m !== module).join(","));
+    const own = routes.filter((r) => ROUTE_MODULES[r.segment] === module);
+    expect(own.length).toBeGreaterThan(0);
+    for (const { method, path } of own) {
+      const res = await call(method, path);
+      expect(res.status, `${method} ${path}`).toBe(404);
+      expect(res.body).toEqual({ error: `${MODULE_LABELS[module]} is not enabled on this deployment` });
+    }
+  });
+
+  it("gates a disabled module's routes whatever the path's case", async () => {
+    // Express matches routes case-insensitively, so the gate must too.
+    vi.stubEnv("ENABLED_MODULES", "expenses");
+    const notEnabled = (label: string) => ({ error: `${label} is not enabled on this deployment` });
+    for (const path of ["/Debts", "/DEBTS", "/Debts/", "/EMI", "/Subscriptions", "/Credit-Card-Bills/2026/3"]) {
+      const res = await call("get", path);
+      expect(res.status, path).toBe(404);
+    }
+    expect((await call("get", "/DEBTS")).body).toEqual(notEnabled("Debts"));
+    const write = await call("post", "/Debts");
+    expect(write.status).toBe(404);
+    expect(write.body).toEqual(notEnabled("Debts"));
+  });
+
+  it("keeps the disabled-module 404 behind authentication", async () => {
+    vi.stubEnv("ENABLED_MODULES", "expenses");
+    expect((await request(app()).get("/api/debts")).status).toBe(401);
+  });
+
+  it("still serves the enabled modules and the always-on routes", async () => {
+    vi.stubEnv("ENABLED_MODULES", "expenses");
+    expect((await call("get", "/categories")).status).toBe(200);
+    expect((await call("get", "/summary/2026")).status).toBe(200);
+    // A LedgerError 404 from the store, not the module gate.
+    expect((await call("get", "/months/2018/1")).body).toEqual({ error: "No workbook found for year 2018" });
+  });
+
+  it("serves an expenses-only overview without reading any other module", async () => {
+    vi.stubEnv("ENABLED_MODULES", "expenses");
+    vi.mocked(listDebts).mockClear();
+    const res = await call("get", "/overview");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      netWorth: { currentSavings: null, totalDebt: null, emiRemaining: null, creditCardOutstanding: null, netWorth: null },
+      upcoming: [],
+      emiFreeDate: null,
+    });
+    expect(listDebts).not.toHaveBeenCalled();
+  });
+
+  it("serves the full overview, with numbers, when every module is on", async () => {
+    vi.mocked(listDebts).mockClear();
+    const res = await call("get", "/overview");
+    expect(res.status).toBe(200);
+    expect(res.body.netWorth).toMatchObject({ totalDebt: 0, netWorth: expect.any(Number) });
+    expect(listDebts).toHaveBeenCalledTimes(1);
   });
 });
 

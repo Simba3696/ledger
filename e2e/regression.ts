@@ -9,37 +9,10 @@
  * since it spins up real dev-server processes and a browser — it's meant to
  * be run on demand, not on every save.
  */
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chromium } from "playwright";
 import { insertLocalCategory, insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..");
-
-// Same minimal .env reader as scripts/kill-ports.js, for the same reason:
-// this checkout's server/.env / client/.env may override the default dev
-// ports (e.g. to run alongside another checkout without colliding) — the
-// dev server this script spawns picks that up automatically via its own
-// dotenv/vite loading, so this script must read the same values itself or
-// it'll wait on the wrong port forever (or worse, silently fall back to
-// whatever's actually on 4000, which could be a *different* checkout's
-// live server entirely).
-function readEnvFile(filePath: string): Record<string, string> {
-  const vars: Record<string, string> = {};
-  if (!fs.existsSync(filePath)) return vars;
-  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
-    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
-    if (match) vars[match[1]] = match[2].replace(/^["']|["']$/g, "");
-  }
-  return vars;
-}
-const serverEnv = readEnvFile(path.join(ROOT, "server", ".env"));
-const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
-const SERVER_PORT = Number(serverEnv.PORT) || 4000;
-const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
+import { CLIENT_PORT, ROOT, SERVER_PORT, assertAuthDisabled, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
 
 const results: { label: string; ok: boolean }[] = [];
 function check(label: string, ok: boolean) {
@@ -57,30 +30,8 @@ function toLocalDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.status < 500) return;
-    } catch {
-      // not up yet, keep polling
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  throw new Error(`Timed out waiting for ${url}`);
-}
-
 async function main() {
-  // The dev server refuses to start without auth configured (LLD §6), which
-  // would otherwise surface only as a timeout waiting on its port. The
-  // client has no sign-in screen yet, so this run needs AUTH_DISABLED=true.
-  if (serverEnv.AUTH_DISABLED !== "true") {
-    throw new Error(
-      "server/.env must set AUTH_DISABLED=true for e2e until the client has a sign-in screen " +
-        "(see server/.env.example and docs/architecture/LLD.md §6).",
-    );
-  }
+  assertAuthDisabled();
 
   // Every store module reads the LOCAL Supabase stack (via server/.env's
   // DATABASE_URL) — reset it to empty + seed so every "starts empty" check
@@ -147,19 +98,14 @@ async function main() {
   }
 
   console.log("Starting dev server against the local database...");
-  const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
-    cwd: ROOT,
-    env: process.env,
-    shell: true,
-  });
-  devProcess.stdout.on("data", () => {});
-  devProcess.stderr.on("data", () => {});
-
   const consoleErrors: string[] = [];
+  let devProcess: ChildProcessWithoutNullStreams | undefined;
 
   try {
-    await waitForServer(`http://localhost:${SERVER_PORT}/api/categories`, 30000);
-    await waitForServer(`http://localhost:${CLIENT_PORT}`, 30000);
+    // ENABLED_MODULES is pinned empty (every module) so a value in the
+    // calling shell can't turn this full-feature run into a partial one;
+    // e2e/expensesOnly.ts covers a partial deployment.
+    devProcess = await startDevServer({ ENABLED_MODULES: "" });
 
     const browser = await chromium.launch();
     const page = await browser.newPage();
@@ -184,6 +130,17 @@ async function main() {
 
     // --- Dashboard defaults + click-through navigation ---
     check("Default tab is Dashboard", (await page.locator(".tabs button.selected").innerText()) === "Dashboard");
+    const config = await fetch(`http://localhost:${SERVER_PORT}/api/config`).then((r) => r.json());
+    check(
+      "API: /api/config lists every module when ENABLED_MODULES is unset",
+      JSON.stringify(config) ===
+        JSON.stringify({ modules: ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"] }),
+    );
+    check(
+      "Nav bar: every tab shows, with Expenses right after Dashboard",
+      (await page.locator(".tabs button").allInnerTexts()).join(",") ===
+        "Dashboard,Expenses,Credit Cards,Debts,EMI,Subscriptions,Finances",
+    );
     check(
       "Upcoming EMIs chart shows the empty state when there are no active EMIs",
       (await page.locator(".emi-projection .empty").count()) === 1,
@@ -282,10 +239,8 @@ async function main() {
     await page.waitForTimeout(400);
     check(
       "Clicking a category mini-chart also navigates to Expenses",
-      // Expenses has no nav button (only reachable via a chart click), so
-      // there's no ".tabs button.selected" to check here — the add-expense
-      // form's presence is the reliable marker that we landed on that tab.
-      await page.locator(".add-expense-form").isVisible(),
+      (await page.locator(".add-expense-form").isVisible()) &&
+        (await page.locator(".tabs button.selected").innerText()) === "Expenses",
     );
     await page.click('.tabs button:has-text("Dashboard")');
     // App.tsx conditionally renders the Dashboard tab, so switching back to
@@ -306,6 +261,22 @@ async function main() {
       (await page.locator(".month-picker select").nth(1).inputValue()) === String(year),
     );
     check("Seeded entries loaded", (await page.locator(".entry-row").count()) === 2);
+
+    // --- Expenses nav tab (the chart click above is the other way in) ---
+    await page.click('.tabs button:has-text("Dashboard")');
+    await waitForDashboardData();
+    await page.click('.tabs button:has-text("Expenses")');
+    await page.waitForSelector(".add-expense-form");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check(
+      "Expenses nav tab: selects Expenses and shows the add form",
+      (await page.locator(".tabs button.selected").innerText()) === "Expenses",
+    );
+    check(
+      "Expenses nav tab: keeps the selected month and its entries",
+      (await page.locator(".month-picker select").first().inputValue()) === String(monthIndex + 1) &&
+        (await page.locator(".entry-row").count()) === 2,
+    );
 
     // --- Custom category (configurable categories) ---
     // Proves the categories table actually drives the UI end to end, not just
@@ -1471,22 +1442,22 @@ async function main() {
       (await page.locator(".upcoming-toggle h3").innerText()) === "Upcoming",
     );
 
-    // Same breakpoint: "Credit Cards"/"Subscriptions" shorten to "CC
-    // Bills"/"Subs" and the nav's gap tightens, together fitting all six
-    // tabs on one row instead of the last one wrapping to a second line.
+    // Same breakpoint: the longer tab labels shorten and the nav's gap
+    // tightens, together fitting all seven tabs on one row instead of the
+    // last ones wrapping to a second line.
     const navTabTops = await page.locator(".tabs button").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
     check(
-      "Nav bar: all six tabs fit on one row on a narrow viewport",
-      new Set(navTabTops).size === 1,
+      "Nav bar: all seven tabs fit on one row on a narrow viewport",
+      navTabTops.length === 7 && new Set(navTabTops).size === 1,
     );
     // Both label spans are always in the DOM (CSS just hides one), so a
     // `:has-text()` match alone can't tell visible text from hidden text —
     // .innerText() does respect display:none, unlike raw textContent.
-    // Nav order is Dashboard/Credit Cards/Debts/EMI/Subscriptions/Finances.
+    // Nav order is Dashboard/Expenses/Credit Cards/Debts/EMI/Subscriptions/Finances.
     const navButtons = page.locator(".tabs button");
     check(
-      "Nav bar: Credit Cards/Subscriptions shorten on a narrow viewport",
-      (await navButtons.nth(1).innerText()) === "CC Bills" && (await navButtons.nth(4).innerText()) === "Subs",
+      "Nav bar: Dashboard/Expenses/Credit Cards/Subscriptions shorten on a narrow viewport",
+      (await navButtons.allInnerTexts()).join(",") === "Home,Spend,CC Bills,Debts,EMI,Subs,Finances",
     );
 
     await page.setViewportSize({ width: 1280, height: 720 }); // restore Playwright's default
@@ -1664,25 +1635,7 @@ async function main() {
 
     await browser.close();
   } finally {
-    console.log("Stopping dev server...");
-    // `npm run dev` was spawned with `shell: true` (needed to resolve `npm`
-    // via PATH on Windows), which makes `devProcess` a wrapper around cmd.exe
-    // — plain `.kill()` only kills that wrapper, not the concurrently/vite/
-    // tsx descendants it spawned, leaving them as orphaned background
-    // node.exe processes. `taskkill /T` kills the whole tree rooted at the
-    // wrapper's PID instead.
-    if (devProcess.pid) {
-      try {
-        execSync(`taskkill /PID ${devProcess.pid} /T /F`, { stdio: "ignore" });
-      } catch {
-        // already gone
-      }
-    }
-    try {
-      execSync("node scripts/kill-ports.js", { cwd: ROOT, stdio: "ignore" });
-    } catch {
-      // best-effort cleanup
-    }
+    stopDevServer(devProcess);
   }
 
   const failed = results.filter((r) => !r.ok);

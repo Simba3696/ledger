@@ -7,6 +7,7 @@ import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";
 import { parseDate, formatDate, startOfDay, makeDate } from "../domain/dateMath.js";
 import { todayInAppZone } from "../domain/today.js";
 import { MONTH_NAMES } from "./ledger.js";
+import { MODULES, type ModuleName } from "../modules.js";
 
 /** Pure read-time aggregation across every other module — no table of its
  * own, no SQL, no writes. It only calls the other store modules' read
@@ -16,7 +17,13 @@ import { MONTH_NAMES } from "./ledger.js";
  * with (a bug here can never touch another concern's rows), while still
  * giving the Dashboard one place to ask "what does my overall picture look
  * like?" rather than stitching five separate fetches together on the
- * client. */
+ * client.
+ *
+ * Only the enabled modules' stores are read (ENABLED_MODULES, ADR-0006): a
+ * disabled module's figure is null and its Upcoming items are left out, so
+ * an expenses-only deployment never queries the debts, EMI, subscription,
+ * card bill or finance tables. With every module on, the response is the
+ * same as before modules existed. */
 
 const UPCOMING_WINDOW_DAYS = 14;
 
@@ -39,18 +46,23 @@ export interface UpcomingItem {
   dueDate: string; // YYYY-MM-DD
 }
 
+/** Each figure is null when its module is disabled; the client hides that
+ * card. */
 export interface NetWorthBreakdown {
   /** Most recently entered Current Savings snapshot from Finances, carried
    * forward the same way that tab already does. */
-  currentSavings: number;
+  currentSavings: number | null;
   /** Sum of every Debts entry's signed amount — positive (you owe) reduces
    * net worth, negative (owed to you) adds to it, so this is subtracted as-is. */
-  totalDebt: number;
+  totalDebt: number | null;
   /** Sum of every active EMI's live remaining balance. */
-  emiRemaining: number;
+  emiRemaining: number | null;
   /** This month's unpaid credit card total (due − paid, floored at 0). */
-  creditCardOutstanding: number;
-  netWorth: number;
+  creditCardOutstanding: number | null;
+  /** Only computed when all four inputs above are enabled: a net worth
+   * missing a whole category of liabilities would read as a real figure
+   * while overstating it. */
+  netWorth: number | null;
 }
 
 export interface DashboardOverview {
@@ -64,7 +76,8 @@ export interface DashboardOverview {
   /** The day the *last* active loan clears — same "latest finish date across
    * every active EMI" the EMI tab's own "EMI-Free On" stat shows, not any
    * individual loan's own payoff date. Null once there are no active loans
-   * (either none exist, or every one is already paid off). */
+   * (either none exist, or every one is already paid off), and whenever the
+   * EMI module is disabled. */
   emiFreeDate: string | null;
 }
 
@@ -81,35 +94,45 @@ function previousMonthOf(year: number, month: number): { year: number; month: nu
   return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 }
 
-export async function dashboardOverview(today: Date = todayInAppZone()): Promise<DashboardOverview> {
+export async function dashboardOverview(
+  today: Date = todayInAppZone(),
+  modules: readonly ModuleName[] = MODULES,
+): Promise<DashboardOverview> {
+  const on = new Set(modules);
   const day = startOfDay(today);
   const windowEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate() + UPCOMING_WINDOW_DAYS);
   const { year: nextYear, month: nextMonth } = nextMonthOf(day.getFullYear(), day.getMonth() + 1);
   const lastMonth = previousMonthOf(day.getFullYear(), day.getMonth() + 1);
 
+  // A disabled module's read is never started: null here, not an empty list.
   const [debts, emis, subscriptions, financeRows, thisMonthBills, nextMonthBills, lastMonthIncome] = await Promise.all([
-    listDebts(),
-    listEmis(today),
-    listSubscriptions(today),
-    financeSummary(day.getFullYear(), day.getMonth() + 1),
-    getMonthBills(day.getFullYear(), day.getMonth() + 1),
-    getMonthBills(nextYear, nextMonth),
-    lastMonth ? getMonthIncome(lastMonth.year, lastMonth.month) : null,
+    on.has("debts") ? listDebts() : null,
+    on.has("emi") ? listEmis(today) : null,
+    on.has("subscriptions") ? listSubscriptions(today) : null,
+    on.has("finances") ? financeSummary(day.getFullYear(), day.getMonth() + 1) : null,
+    on.has("credit-cards") ? getMonthBills(day.getFullYear(), day.getMonth() + 1) : null,
+    on.has("credit-cards") ? getMonthBills(nextYear, nextMonth) : null,
+    on.has("finances") && lastMonth ? getMonthIncome(lastMonth.year, lastMonth.month) : null,
   ]);
 
   // --- Net worth ---
-  const currentSavings = financeRows[financeRows.length - 1]?.currentSavings ?? 0;
-  const totalDebt = debts.reduce((sum, d) => sum + d.amount, 0);
-  const emiRemaining = emis.reduce((sum, e) => sum + e.remaining, 0);
-  const creditCardOutstanding = Math.max(
-    0,
-    thisMonthBills.cards.reduce((sum, c) => sum + cardOutstanding(c), 0),
-  );
-  const netWorth = currentSavings - totalDebt - emiRemaining - creditCardOutstanding;
+  const currentSavings = financeRows ? (financeRows[financeRows.length - 1]?.currentSavings ?? 0) : null;
+  const totalDebt = debts ? debts.reduce((sum, d) => sum + d.amount, 0) : null;
+  const emiRemaining = emis ? emis.reduce((sum, e) => sum + e.remaining, 0) : null;
+  const creditCardOutstanding = thisMonthBills
+    ? Math.max(
+        0,
+        thisMonthBills.cards.reduce((sum, c) => sum + cardOutstanding(c), 0),
+      )
+    : null;
+  const netWorth =
+    currentSavings !== null && totalDebt !== null && emiRemaining !== null && creditCardOutstanding !== null
+      ? currentSavings - totalDebt - emiRemaining - creditCardOutstanding
+      : null;
 
   // YYYY-MM-DD sorts lexicographically the same as chronologically, so a
   // plain string max works — same logic as the EMI tab's own stat.
-  const emiFreeDate = emis.reduce<string | null>(
+  const emiFreeDate = (emis ?? []).reduce<string | null>(
     (latest, e) => (!e.isPaidOff && e.estimatedPayoffDate && (!latest || e.estimatedPayoffDate > latest) ? e.estimatedPayoffDate : latest),
     null,
   );
@@ -147,11 +170,12 @@ export async function dashboardOverview(today: Date = todayInAppZone()): Promise
   // against whichever names actually appear in Credit Card Bills this month
   // or next, rather than a hardcoded card list, so a newly added card is
   // recognized automatically instead of silently falling through the cracks.
-  const cardBilledNames = new Set(
-    [...thisMonthBills.cards, ...nextMonthBills.cards].map((c) => c.name),
-  );
+  // With Credit Cards disabled there is no card entry to double up with, so
+  // every EMI lists on its own.
+  const cardBills = [thisMonthBills, nextMonthBills].filter((b) => b !== null);
+  const cardBilledNames = new Set(cardBills.flatMap((b) => b.cards).map((c) => c.name));
 
-  for (const emi of emis) {
+  for (const emi of emis ?? []) {
     if (emi.isPaidOff || cardBilledNames.has(emi.cardOrBank)) continue;
     // Anchored to whichever is later: the EMI's own stored asOfDate — a
     // payment just recorded via "Paid this month"/"Record payment" advances
@@ -172,14 +196,14 @@ export async function dashboardOverview(today: Date = todayInAppZone()): Promise
     }
   }
 
-  for (const sub of subscriptions) {
+  for (const sub of subscriptions ?? []) {
     const due = parseDate(sub.nextExpiry);
     if (due >= day && due <= windowEnd) {
       upcoming.push({ source: "Subscription", name: sub.service, amount: sub.amount, dueDate: sub.nextExpiry });
     }
   }
 
-  for (const bills of [thisMonthBills, nextMonthBills]) {
+  for (const bills of cardBills) {
     for (const card of bills.cards) {
       const outstanding = cardOutstanding(card);
       if (outstanding <= 0 || !card.dueDate) continue;

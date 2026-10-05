@@ -9,11 +9,12 @@ client/                      React app (unchanged except auth + api.ts headers)
   src/auth/                  Supabase client, <SignIn/>, session hook
 server/
   src/
-    app.ts                   createApp({ basePath }): request log, JSON body, auth, router, error handler
+    app.ts                   createApp({ basePath }): request log, auth, module gate, JSON body, router, error handler
                              (shared by the local server and the function)
     index.ts                 local entry: createApp() + the built client (npm start only) + app.listen(PORT)
-    routes.ts                unchanged route table (30 routes)
+    routes.ts                route table (30 routes from the Excel edition + GET /config)
     auth.ts                  auth config checks + JWT verification middleware (§6)
+    modules.ts               ENABLED_MODULES parsing, route → module map, disabled-module 404 (§5.1)
     db/
       client.ts              postgres.js connection + type parsers
       tx.ts                  withTransaction helper
@@ -249,6 +250,8 @@ Every expense write checks `month_locks` inside the same transaction and throws 
 
 The route table, request bodies and response shapes **stay byte-compatible** with the Excel edition, so the client and the e2e suite don't change ([ADR-0004](../adr/0004-express-as-single-netlify-function.md)). The one semantic change: every `row` field and `:row` path parameter now carries the database `id`. It's an opaque, stable integer, no longer a sheet row number.
 
+The one addition is `GET /api/config` and the per-deployment module switch ([§5.1](#51-enabled-modules)). With every module enabled (the default) it changes no existing response.
+
 | Method | Path | Store function |
 |---|---|---|
 | GET | `/api/categories` | `categories.list` |
@@ -271,8 +274,28 @@ The route table, request bodies and response shapes **stay byte-compatible** wit
 | GET / POST | `/api/subscriptions` | `subscriptions.listSubscriptions` / `addSubscription` |
 | PUT / DELETE | `/api/subscriptions/:row` | `subscriptions.updateSubscription` / `deleteSubscription` |
 | GET | `/api/overview` | `overview.dashboardOverview` |
+| GET | `/api/config` | `{ modules }` from `ENABLED_MODULES` (§5.1); new in this edition |
 
 Errors: `LedgerError(message, status)` → `{ error: message }` with that status, unchanged. Unknown errors → 500 with a generic message. The underlying database error is logged, never returned.
+
+### 5.1 Enabled modules
+
+`ENABLED_MODULES` (§9) chooses which sections a deployment serves ([ADR-0006](../adr/0006-enabled-modules-per-deployment.md)). It is a comma-separated list of `expenses`, `finances`, `debts`, `emi`, `credit-cards` and `subscriptions`, case-insensitive and whitespace-tolerant. Unset or blank enables all of them, which is the behaviour before this setting existed. An unknown name makes `createApp` throw at startup (`parseEnabledModules` in `server/src/modules.ts`).
+
+| Module | Routes (first path segment) |
+|---|---|
+| always on | `categories`, `config`, `overview` |
+| `expenses` | `months`, `summary`, `entries` |
+| `finances` | `finance`, `finance-summary` |
+| `debts` | `debts` |
+| `emi` | `emi`, `emi-monthly-projection` |
+| `credit-cards` | `credit-card-bills`, `credit-card-bills-summary` |
+| `subscriptions` | `subscriptions` |
+
+- `requireEnabledModule` runs once per request, after auth and before the body parser. A disabled module's route is a 404 `{ error: "<Module> is not enabled on this deployment" }` (`Expenses`, `Finances`, `Debts`, `EMI`, `Credit Cards`, `Subscriptions`). It never reaches a store.
+- `GET /api/config` returns `{ "modules": [...] }`, the enabled names in the canonical order above.
+- `GET /api/overview` reads only enabled modules' stores. Each `netWorth` figure is `null` when its module is off: `currentSavings` (finances), `totalDebt` (debts), `emiRemaining` (emi), `creditCardOutstanding` (credit-cards). `netWorth.netWorth` is `null` unless all four are on. `emiFreeDate` is `null` without emi. `upcoming` includes Salary only with finances, EMI only with emi, Credit Card only with credit-cards, and Subscription only with subscriptions. With credit-cards off, no EMI is treated as card-billed. With every module on, the response is byte-identical to the Excel edition's.
+- The client loads `/api/config` at startup, before rendering any tab. The nav shows Dashboard and then the enabled tabs (Expenses, Credit Cards, Debts, EMI, Subscriptions, Finances). The Dashboard renders the overview only if one of its modules is on, Upcoming only if one of its sources is on, each stat card only when its figure isn't `null`, the EMI projection chart only with emi, and the yearly expense charts only with expenses.
 
 ## 6. Authentication
 
@@ -341,6 +364,7 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | `OWNER_EMAIL` | server, function | The only account allowed through |
 | `APP_TIMEZONE` | server, function | IANA zone for "today" (default `Asia/Kolkata`) |
 | `AUTH_DISABLED` | local only | `true` skips JWT checks in dev and tests; refused under `NODE_ENV=production`, `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT` |
+| `ENABLED_MODULES` | server, function | Comma-separated sections to serve: `expenses`, `finances`, `debts`, `emi`, `credit-cards`, `subscriptions`. Unset or blank = all. Unknown names fail at startup (§5.1, [ADR-0006](../adr/0006-enabled-modules-per-deployment.md)) |
 | `PORT` | local only | Dev server port (`main` worktree: 4100) |
 
 ## 10. Testing
@@ -349,8 +373,9 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 |---|---|
 | Domain | Unit tests on the pure functions, no database |
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
-| API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |
-| End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, currently with `AUTH_DISABLED=true` in `server/.env` (no sign-in yet, §6); it moves to real sign-in as the seeded owner once the client has a sign-in screen |
+| Modules | `server/test/modules.test.ts` (parsing `ENABLED_MODULES`) and `server/test/overviewModules.test.ts` (`dashboardOverview` per module subset, with spies proving a disabled module's store is never called) |
+| API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers enabled modules (every route mapped to a module or always on, `/api/config`, a 404 on every route of each disabled module, an expenses-only overview, unknown names failing at startup), auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |
+| End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, currently with `AUTH_DISABLED=true` in `server/.env` (no sign-in yet, §6); it moves to real sign-in as the seeded owner once the client has a sign-in screen. `npm run test:e2e` then runs `e2e/expensesOnly.ts`, which starts the server with `ENABLED_MODULES=expenses` in its environment (never by editing `.env`) and checks the two-tab nav, expense add/edit/delete, a Dashboard with no disabled-module cards or console errors, and a disabled route's 404. Both scripts share `e2e/devServer.ts` |
 | Import | A fixture `.xlsx` folder (built with `scripts/legacy-excel/fixtures.ts`) imported into an empty local database, then checked through the API |
 
 The existing server test cases are the **parity contract**: each one is ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).

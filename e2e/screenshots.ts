@@ -30,31 +30,14 @@
  * script telling you loudly to stop, not silently overwriting whatever it
  * finds.
  */
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { CLIENT_PORT, ROOT, SERVER_PORT, assertAuthDisabled, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
 import { resetLocalDatabase } from "./localDb.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..");
 const SCREENSHOTS_DIR = path.join(ROOT, "docs", "screenshots");
-
-// Same minimal .env reader as e2e/regression.ts / scripts/kill-ports.js.
-function readEnvFile(filePath: string): Record<string, string> {
-  const vars: Record<string, string> = {};
-  if (!fs.existsSync(filePath)) return vars;
-  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
-    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
-    if (match) vars[match[1]] = match[2].replace(/^["']|["']$/g, "");
-  }
-  return vars;
-}
-const serverEnv = readEnvFile(path.join(ROOT, "server", ".env"));
-const clientEnv = readEnvFile(path.join(ROOT, "client", ".env"));
-const SERVER_PORT = Number(serverEnv.PORT) || 4000;
-const CLIENT_PORT = Number(clientEnv.VITE_DEV_PORT) || 5173;
 
 // Every "Upcoming (next 2 weeks)" item needs to land inside that window
 // relative to whenever this script actually runs, not a fixed calendar date
@@ -68,20 +51,6 @@ function daysFromNow(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(url);
-      if (res.status < 500) return;
-    } catch {
-      // not up yet, keep polling
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  throw new Error(`Timed out waiting for ${url}`);
 }
 
 /** Fails loudly instead of silently writing into whatever's already there. */
@@ -98,12 +67,7 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
 async function main() {
   // Same check as e2e/regression.ts: without auth configured the dev server
   // won't start (LLD §6), and the client can't sign in yet.
-  if (serverEnv.AUTH_DISABLED !== "true") {
-    throw new Error(
-      "server/.env must set AUTH_DISABLED=true for screenshots until the client has a sign-in screen " +
-        "(see server/.env.example and docs/architecture/LLD.md §6).",
-    );
-  }
+  assertAuthDisabled();
 
   // Every store module reads the LOCAL Supabase stack (server/.env's
   // DATABASE_URL) — empty it first. resetLocalDatabase refuses any non-local
@@ -111,17 +75,13 @@ async function main() {
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
   console.log("Starting dev server against the local database...");
-  const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
-    cwd: ROOT,
-    env: process.env,
-    shell: true,
-  });
-  devProcess.stdout.on("data", () => {});
-  devProcess.stderr.on("data", () => {});
+  let devProcess: ChildProcessWithoutNullStreams | undefined;
 
   try {
-    await waitForServer(`http://localhost:${SERVER_PORT}/api/categories`, 30000);
-    await waitForServer(`http://localhost:${CLIENT_PORT}`, 30000);
+    // ENABLED_MODULES is pinned empty (every module), as in regression.ts:
+    // this script seeds every tab, so a value in the calling shell must not
+    // hide any of them.
+    devProcess = await startDevServer({ ENABLED_MODULES: "" });
 
     // Belt-and-braces: ask the running server itself, independent of
     // anything this script assumes about which database it's reading.
@@ -257,19 +217,7 @@ async function main() {
     await browser.close();
     console.log(`\nWrote dashboard.png and dashboard-dark.png to ${SCREENSHOTS_DIR}`);
   } finally {
-    console.log("Stopping dev server...");
-    if (devProcess.pid) {
-      try {
-        execSync(`taskkill /PID ${devProcess.pid} /T /F`, { stdio: "ignore" });
-      } catch {
-        // already gone
-      }
-    }
-    try {
-      execSync("node scripts/kill-ports.js", { cwd: ROOT, stdio: "ignore" });
-    } catch {
-      // best-effort cleanup
-    }
+    stopDevServer(devProcess);
   }
 
   console.log(

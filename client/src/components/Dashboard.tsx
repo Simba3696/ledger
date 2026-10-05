@@ -10,7 +10,7 @@ import {
   CartesianGrid,
   type MouseHandlerDataParam,
 } from "recharts";
-import { getYearSummary, type CategoryOption, type MonthSummary, type UpcomingItem } from "../api";
+import { getYearSummary, type CategoryOption, type ModuleName, type MonthSummary, type UpcomingItem } from "../api";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { DashboardOverview } from "./DashboardOverview";
@@ -77,11 +77,35 @@ function CategoryMiniChart({
 
 interface Props {
   categories: CategoryOption[];
+  /** The enabled modules: each section below renders only when the module
+   * it reads is on, so a disabled module's API is never called. */
+  modules: ReadonlySet<ModuleName>;
   onSelectMonth: (year: number, month: number) => void;
   onSelectUpcomingItem: (item: UpcomingItem) => void;
 }
 
-export function Dashboard({ categories, onSelectMonth, onSelectUpcomingItem }: Props) {
+// The modules GET /api/overview reads; with none of them on there is no
+// overview to show (an expenses-only deployment).
+const OVERVIEW_MODULES: ModuleName[] = ["finances", "debts", "emi", "credit-cards", "subscriptions"];
+
+export function Dashboard(props: Props) {
+  const { modules, onSelectUpcomingItem } = props;
+  return (
+    <div className="dashboard">
+      {OVERVIEW_MODULES.some((m) => modules.has(m)) && (
+        <DashboardOverview modules={modules} onSelectUpcomingItem={onSelectUpcomingItem} />
+      )}
+
+      {modules.has("emi") && <EmiProjectionChart />}
+
+      {modules.has("expenses") && <YearlyOverview {...props} />}
+    </div>
+  );
+}
+
+/** The expense charts: the year's stacked monthly totals plus one mini-chart
+ * per category, each clickable through to that month's Expenses. */
+function YearlyOverview({ categories, onSelectMonth }: Props) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [data, setData] = useState<MonthSummary[]>([]);
@@ -114,11 +138,7 @@ export function Dashboard({ categories, onSelectMonth, onSelectUpcomingItem }: P
   }
 
   return (
-    <div className="dashboard">
-      <DashboardOverview onSelectUpcomingItem={onSelectUpcomingItem} />
-
-      <EmiProjectionChart />
-
+    <>
       <div className="dashboard-header">
         <h2>Yearly Overview</h2>
         <YearSelect value={year} onChange={setYear} />
@@ -168,6 +188,6 @@ export function Dashboard({ categories, onSelectMonth, onSelectUpcomingItem }: P
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

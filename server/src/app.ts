@@ -3,6 +3,7 @@ import type { JWTVerifyGetKey } from "jose";
 import { isDeployedRuntime, readAuthConfig, requireOwner } from "./auth.js";
 import { mapDatabaseError } from "./dbErrors.js";
 import { LedgerError } from "./errors.js";
+import { parseEnabledModules, requireEnabledModule } from "./modules.js";
 import { router } from "./routes.js";
 
 export interface AppOptions {
@@ -57,11 +58,15 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
 };
 
 /** Builds the API app shared by the local server (index.ts) and the Netlify
- * function (netlify/functions/api.ts). Throws on a bad auth configuration,
- * so a misconfigured deploy fails at startup instead of per request. */
+ * function (netlify/functions/api.ts). Throws on a bad auth configuration or
+ * an unknown ENABLED_MODULES name, so a misconfigured deploy fails at startup
+ * instead of per request. */
 export function createApp({ basePath, authKeySet, log = console.log }: AppOptions = {}): Express {
   const auth = requireOwner(readAuthConfig(), authKeySet);
+  const modules = parseEnabledModules(process.env.ENABLED_MODULES);
   const app = express();
+  // Read by GET /api/config and GET /api/overview (modules.ts's enabledModules).
+  app.locals.enabledModules = modules;
   // Express decides from its "env" setting whether its default error page
   // (used for body-parser's 400s) includes the stack trace. Netlify doesn't
   // set NODE_ENV=production at function runtime, so pin it here: a deployed
@@ -70,8 +75,11 @@ export function createApp({ basePath, authKeySet, log = console.log }: AppOption
   app.use(requestLogger(log));
   // Authentication runs before the body is parsed, so a request without a
   // valid token is a 401 whatever its body, and never costs a JSON parse.
+  // A disabled module's routes are a 404 after authentication, so an
+  // anonymous caller can't probe which sections a deployment has.
+  const moduleGate = requireEnabledModule(modules);
   for (const mount of new Set(["/api", basePath ?? "/api"])) {
-    app.use(mount, auth, express.json(), router);
+    app.use(mount, auth, moduleGate, express.json(), router);
   }
   app.use(errorHandler);
   return app;
