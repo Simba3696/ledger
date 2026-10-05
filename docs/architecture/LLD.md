@@ -159,6 +159,13 @@ alter table debts            enable row level security;
 alter table emis             enable row level security;
 alter table subscriptions    enable row level security;
 alter table card_bills       enable row level security;
+
+-- Belt and braces (migration revoke_api_roles): anon and authenticated also
+-- lose Supabase's default grants on every public table, sequence and
+-- function, now and (default privileges) for objects created later, so a
+-- table that forgot RLS still isn't reachable through the Data API.
+revoke all on all tables in schema public from anon, authenticated;
+alter default privileges in schema public revoke all on tables from anon, authenticated;
 ```
 
 ### 2.1 Mapping from the Excel model
@@ -337,6 +344,14 @@ The JWKS only publishes **asymmetric** signing keys, so the project must sign ac
 [functions]
   node_bundler = "esbuild"
 
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.supabase.co; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+
 [[redirects]]
   from = "/api/*"
   to   = "/.netlify/functions/api/:splat"
@@ -350,7 +365,11 @@ The JWKS only publishes **asymmetric** signing keys, so the project must sign ac
 
 `netlify/functions/api.ts` exports `handler = serverless(createApp({ basePath: "/.netlify/functions/api" }))` (`serverless-http`, a root dependency since the function lives at the root). `createApp` always mounts the router (behind auth) at `/api`, and also at `basePath` when one is given, because the path the function receives depends on how it was reached: through the `/api/*` rewrite the event keeps the original `/api/...` path, while a direct call arrives as `/.netlify/functions/api/...`. `serverless-http` passes the event's path through unchanged (its own `basePath` option, which strips a single prefix, isn't used). `routes.ts` is shared verbatim.
 
-Netlify bundles the function with esbuild from the repo root. esbuild resolves the server's ESM `.js` import specifiers to their `.ts` sources and inlines every dependency (including the ESM-only `jose`) into a CommonJS bundle, so no `included_files` are needed. The server's static-client serving stays in `index.ts`, out of the function.
+Netlify bundles the function with esbuild from the repo root. esbuild resolves the server's ESM `.js` import specifiers to their `.ts` sources and inlines every dependency (including the ESM-only `jose`) into a CommonJS bundle, so no `included_files` are needed. The bundle must stay CommonJS: Netlify emits ESM instead if the root `package.json` gains `"type": "module"` or the file becomes `api.mts`, and that bundle crashes at load (`Dynamic require of "http" is not supported`, from the inlined `serverless-http`), so every request fails. A comment in `api.ts` and `netlify.toml` says so.
+
+The build command keeps `npm ci` deliberately, although Netlify has already installed the dependencies by then: it reinstalls (and skips Netlify's dependency cache), but fails on a lockfile out of step with `package.json` rather than resolving something untested.
+
+**Response headers.** The `[[headers]]` block gives every page a CSP that allows only the site's own scripts, Google Fonts (the logo's font) and connections to itself and `https://*.supabase.co` (Auth), and forbids framing (`frame-ancestors 'none'`, `X-Frame-Options: DENY`): the Supabase session, refresh token included, lives in localStorage, so framing (clickjacking) and injected script are what it has to be kept from. A Supabase custom domain would need adding to `connect-src`. `createApp` itself disables `X-Powered-By` and sends `Cache-Control: no-store` on every API response (the figures are financial, and Express's ETag would otherwise let a browser keep them). The server's static-client serving stays in `index.ts`, out of the function.
 
 Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go in `[build.environment]`, where it would make `npm ci` skip the client's build tools), so Express would run in `development` mode and its default error page, used for body-parser's 400s, would include the stack trace with the bundle's paths. `createApp` therefore sets Express's `env` to `production` whenever it detects the deployed runtime (the same `NETLIFY`/Lambda check as `AUTH_DISABLED`'s refusal, §6). `netlify/tsconfig.json` typechecks the function (`cd server && npx tsc -p ../netlify/tsconfig.json`).
 
@@ -396,6 +415,6 @@ The existing server test cases are the **parity contract**: each one is ported w
 
 - Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as today.
 - Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month. The 403 for a locked month now reads `<Month> <year> is locked. Unlock it first from the app if you really need to add an entry there.` (the Excel edition also suggested unlocking "in Excel directly", which this edition has no way to do).
-- Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `app.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). For these mapped errors only the SQLSTATE and constraint name are logged, because Postgres's message and detail echo the offending input (`invalid input syntax for type numeric: "..."`, `Key (...)=(...)`). Neither is ever returned. Unmapped errors, which become a generic 500, are logged in full with `console.error` for debugging.
-- `app.ts` logs one line per request, `<METHOD> <path> <status> <ms>ms` (to Netlify's function log in production, the console locally). The path excludes the query string. Request bodies and headers (so tokens) are never logged, and neither is the input echoed by a mapped database error (above). The full log of an unexpected 500 is the one place a value could appear.
+- Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `app.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). For these mapped errors only the SQLSTATE and constraint name are logged, because Postgres's message and detail echo the offending input (`invalid input syntax for type numeric: "..."`, `Key (...)=(...)`). Neither is ever returned. Unmapped errors become a generic 500. A Postgres one is logged as its SQLSTATE, routine and constraint/table/column names, plus its message only for classes that never quote a row (08 connection, 28 authentication, 3D, 42 missing table or column, 53/54, 57/58, XX, e.g. the pooler's "Tenant or user not found"); its `detail` and `where`, which echo row values, never are. Any other error is logged with its stack.
+- `app.ts` logs one line per request, `<METHOD> <path> <status> <ms>ms` (to Netlify's function log in production, the console locally). The path excludes the query string. Request bodies and headers (so tokens) are never logged, and neither is the input echoed by a mapped database error (above). The message of a non-database 500 is the one place a value could still appear.
 - body-parser's own client errors (malformed JSON) still get Express's default response, as they did before the error handler moved from `routes.ts` to `app.ts`. They are only reachable after authentication, and in the deployed function the page carries no stack trace (§7).

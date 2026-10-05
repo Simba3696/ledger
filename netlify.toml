@@ -7,7 +7,11 @@
 [build]
   # `npm ci` at the root installs every workspace (client and server) from
   # the lockfile: the client's build tools for this command, and the
-  # server's runtime dependencies for the function bundle below.
+  # server's runtime dependencies for the function bundle below. Netlify has
+  # already run its own install by then, so this installs a second time and
+  # forgoes Netlify's dependency cache (some 15 s). That's deliberate: `npm ci`
+  # fails on a lockfile out of step with package.json instead of quietly
+  # resolving something else, and the deploy gets exactly what was tested.
   command   = "npm ci && npm run build -w client"
   publish   = "client/dist"
   functions = "netlify/functions"
@@ -18,7 +22,23 @@
 [functions]
   # esbuild resolves the server's `.js` import specifiers to its `.ts`
   # sources and bundles every dependency, so no included_files are needed.
+  # The bundle must stay CommonJS (see netlify/functions/api.ts): no
+  # "type": "module" in the root package.json and no api.mts.
   node_bundler = "esbuild"
+
+# Security headers for the website. The session (with its refresh token) is
+# kept in localStorage, so no other site may frame the app
+# (frame-ancestors/X-Frame-Options), and the CSP only lets the page run its
+# own bundle and talk to itself and Supabase Auth. Google Fonts serves the
+# logo's font. A Supabase custom domain would need adding to connect-src.
+# The API sets its own Cache-Control: no-store (server/src/app.ts).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.supabase.co; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
 
 # The function sees the original /api/... path through this rewrite;
 # createApp mounts the API there as well as at /.netlify/functions/api.

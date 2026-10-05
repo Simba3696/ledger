@@ -66,8 +66,18 @@ needs.
    shows it again. A password of only letters and digits saves you from
    having to escape it in step 6. (If you lose it: **Project Settings →
    Database → Reset database password**.)
-4. **Region:** pick the one closest to where the owner lives. It can't be
-   changed later, and every request travels there and back.
+4. **Region:** pick **East US (Ohio)** (`us-east-2`), or **East US (North
+   Virginia)** (`us-east-1`), even if the owner lives elsewhere. It can't be
+   changed later. What matters is the distance to the API, not to the
+   owner: on Netlify's free plan the API function always runs in the US
+   (`us-east-2`), so the owner's requests travel there wherever the
+   database is, and the function then makes many trips to the database for
+   each one (a write is about eight). A database next to the function makes
+   those trips nearly free; one on another continent adds a fifth of a
+   second or more to each, and every screen takes seconds to load. (On a
+   paid Netlify plan you can move the function's region instead, under
+   the project's **Functions** settings (functions region), and then
+   put both close to the owner.)
 5. Click **Create new project** and wait a minute or two while it starts.
 6. Note the **project ref**: the random string in the dashboard's URL
    (`https://supabase.com/dashboard/project/<project-ref>`). Your
@@ -190,6 +200,17 @@ API Keys** (older dashboards: **Project Settings → API**):
 
 Never use the **secret** or **service_role** key anywhere in this app.
 
+**Optional check that sign-ups are refused** (step 2). From a terminal, with
+the project URL and public key filled in:
+
+```
+curl -X POST "https://<project-ref>.supabase.co/auth/v1/signup" -H "apikey: <public key>" -H "Content-Type: application/json" -d "{\"email\":\"stranger@example.com\",\"password\":\"not-the-owner-123\"}"
+```
+
+The answer must contain `signup_disabled`. If it instead returns a user,
+sign-ups are still on: go back to step 2, then delete that `stranger@`
+user under **Authentication → Users**.
+
 ## 7. Set the environment variables
 
 These are all the settings a deployment needs. Nothing goes in the
@@ -198,7 +219,7 @@ case-sensitive.
 
 | Variable | Example | Used | What it is |
 |---|---|---|---|
-| `DATABASE_URL` | `postgresql://postgres.abcd…:…@aws-0-ap-south-1.pooler.supabase.com:6543/postgres` | runtime (API function) | The transaction-pooler URI from step 6, password filled in. Secret. |
+| `DATABASE_URL` | `postgresql://postgres.abcd…:…@aws-0-us-east-2.pooler.supabase.com:6543/postgres` | runtime (API function) | The transaction-pooler URI from step 6, password filled in. Secret. |
 | `SUPABASE_URL` | `https://abcd….supabase.co` | runtime | The project URL. The API fetches the signing keys from it and checks that tokens were issued by it. |
 | `OWNER_EMAIL` | `alex@example.com` | runtime | The owner's email from step 5. Compared case-insensitively. |
 | `APP_TIMEZONE` | `Asia/Kolkata` | runtime | The owner's IANA time zone. Decides which calendar day "today" is for due dates, renewals and reminders, since the function itself runs in UTC ([ADR-0005](adr/0005-explicit-app-timezone.md)). Defaults to `Asia/Kolkata` if unset. |
@@ -228,12 +249,18 @@ Don't set these on Netlify:
 
 1. In Netlify, choose **Add new project → Import an existing project →
    GitHub**, authorize Netlify if asked, and pick the repository.
+   The repository is an npm workspace (`server` and `client`), so Netlify
+   may ask which project or package to deploy, or fill in a **Base
+   directory** or **Package directory** such as `client`. Choose the
+   **repository root**, and leave both directories **empty**: only then does
+   the root `netlify.toml` (website, API function and redirects) apply.
 2. **Branch to deploy:** the branch that contains `netlify.toml` and
    `supabase/migrations/` (the hosted edition): `main` once the
    `supabase-migration` branch has been merged into it, and
    `supabase-migration` until then. An older `main` is the Excel edition,
    with no `netlify.toml` and no function, so it would not deploy.
-3. Leave the build settings as Netlify fills them in. They come from the
+3. Leave the build settings as Netlify fills them in (apart from the base
+   and package directory above, which must be empty). They come from the
    repository's `netlify.toml`: build command `npm ci && npm run build -w client`,
    publish directory `client/dist`, functions directory `netlify/functions`,
    Node 22.
@@ -356,8 +383,9 @@ commit it.
 
 **Where the API's log is:** in Netlify, **Logs → Functions → api** (older
 UI: **Functions → api**). Each request is one line,
-`<METHOD> <path> <status> <ms>ms`, and unexpected errors are printed in
-full. Request bodies, amounts and tokens are never logged
+`<METHOD> <path> <status> <ms>ms`. An unexpected error is printed with its
+stack or, for a database error, its code and (for connection and schema
+problems) its message. Request bodies, amounts and tokens are never logged
 ([LLD §11](architecture/LLD.md#11-error-handling-and-logging)). A setting
 that stops the API from starting (below) appears there as an error at
 startup.
@@ -370,7 +398,7 @@ startup.
 | "This account is not allowed on this deployment." (a **403** on `/api/config`) | The signed-in email isn't `OWNER_EMAIL`. Check for a typo in either. Case and surrounding spaces don't matter. |
 | A **403** when adding or editing an expense | That month is locked. Unlock it from the banner above the form. |
 | A **404** "… is not enabled on this deployment" | That section is off in `ENABLED_MODULES`. |
-| Every API call fails right after a deploy, and the function log shows "SUPABASE_URL and OWNER_EMAIL must be set…", "Unknown module in ENABLED_MODULES…" or "AUTH_DISABLED=true is refused…" | A missing or mistyped runtime variable stops the API at startup. Fix the variable and trigger a deploy. |
+| Every API call fails right after a deploy: the browser's network tab shows a **502** (or "Function invocation failed") with no JSON body, so the app shows a generic error or keeps loading. The function log shows "SUPABASE_URL and OWNER_EMAIL must be set…", "Unknown module in ENABLED_MODULES…" or "AUTH_DISABLED=true is refused…" | A missing or mistyped runtime variable stops the API at startup. Fix the variable and trigger a deploy. |
 | **500** "Internal server error", log shows `DATABASE_URL is not set` | Add `DATABASE_URL` (scope must include Functions) and redeploy. |
 | **500**, log shows a timeout, `ENOTFOUND`, `ENETUNREACH`, "Tenant or user not found" or "password authentication failed" | `DATABASE_URL` is wrong. Use the **Transaction pooler** string on port **6543**, not the direct connection (`db.<project-ref>.supabase.co`, IPv6-only). Check the user part is `postgres.<project-ref>`, the password has no leftover `[ ]` and is percent-encoded. Also check the project isn't paused. |
 | **500**, log shows `RangeError: Invalid time zone specified` | `APP_TIMEZONE` isn't a valid IANA name. Use the exact spelling from the tz database list, for example `Asia/Kolkata`. |

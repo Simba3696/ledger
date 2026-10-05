@@ -69,10 +69,12 @@ interface TokenOptions {
   kid?: string;
   /** null leaves the `exp` claim out. */
   expiresIn?: string | number | null;
+  /** Extra payload claims. */
+  claims?: Record<string, unknown>;
 }
 
-function token({ email = OWNER, iss = ISSUER, aud = "authenticated", key, kid = "test-key", expiresIn = "1h" }: TokenOptions = {}) {
-  const jwt = new SignJWT({ email, role: "authenticated" })
+function token({ email = OWNER, iss = ISSUER, aud = "authenticated", key, kid = "test-key", expiresIn = "1h", claims = {} }: TokenOptions = {}) {
+  const jwt = new SignJWT({ email, role: "authenticated", ...claims })
     .setProtectedHeader({ alg: "ES256", kid, typ: "JWT" })
     .setSubject("00000000-0000-4000-8000-000000000001")
     .setIssuer(iss)
@@ -169,6 +171,13 @@ describe("authentication", () => {
     expect(res.body).toEqual({ error: "This account isn't allowed to use this app" });
   });
 
+  it("refuses an anonymous user's token even if it names the owner's email (403)", async () => {
+    const res = await request(app())
+      .get("/api/categories")
+      .set("Authorization", `Bearer ${await token({ claims: { is_anonymous: true } })}`);
+    expect(res.status).toBe(403);
+  });
+
   it("lets the owner through (200), matching the email case-insensitively", async () => {
     vi.stubEnv("OWNER_EMAIL", "  Owner@Example.COM ");
     const res = await request(app())
@@ -176,6 +185,17 @@ describe("authentication", () => {
       .set("Authorization", `Bearer ${await token({ email: "OWNER@example.com" })}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: "food", label: "Food", bg: "#FFFF00", fg: "#3d3d00" }]);
+  });
+
+  it("marks every API response no-store and doesn't advertise Express", async () => {
+    const ok = await request(app()).get("/api/debts").set("Authorization", `Bearer ${await token()}`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers["cache-control"]).toBe("no-store");
+    expect(ok.headers["x-powered-by"]).toBeUndefined();
+    const refused = await request(app()).get("/api/debts");
+    expect(refused.status).toBe(401);
+    expect(refused.headers["cache-control"]).toBe("no-store");
+    expect(refused.headers["x-powered-by"]).toBeUndefined();
   });
 
   it("accepts a SUPABASE_URL with a trailing slash", async () => {
@@ -273,6 +293,44 @@ describe("error mapping", () => {
     expect(logged).toContain("23505");
     expect(logged).not.toContain("12345");
     expect(logged).not.toContain("Car Loan");
+  });
+
+  it("logs an unmapped database error without its detail or where, which can echo row values", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(listDebts).mockRejectedValueOnce(
+      Object.assign(new Error("conflicting key value violates exclusion constraint \"debts_no_overlap\""), {
+        name: "PostgresError",
+        severity: "ERROR",
+        code: "23P01",
+        routine: "check_exclusion_or_unique_constraint",
+        constraint_name: "debts_no_overlap",
+        table_name: "debts",
+        detail: "Key (name, amount)=(Car Loan, 98765.43) conflicts with existing key.",
+        where: "SQL statement with 98765.43",
+      }),
+    );
+    const res = await authed("/api/debts");
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "Internal server error" });
+    const logged = consoleError.mock.calls.flat().map(String).join(" ");
+    expect(logged).toContain("23P01");
+    expect(logged).toContain("debts_no_overlap");
+    expect(logged).not.toContain("98765");
+    expect(logged).not.toContain("Car Loan");
+  });
+
+  it("keeps the message of a connection or schema database error, which names no row", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(listDebts).mockRejectedValueOnce(
+      Object.assign(new Error('password authentication failed for user "postgres"'), {
+        name: "PostgresError",
+        severity: "FATAL",
+        code: "28P01",
+      }),
+    );
+    const res = await authed("/api/debts");
+    expect(res.status).toBe(500);
+    expect(consoleError.mock.calls.flat().map(String).join(" ")).toContain("password authentication failed");
   });
 
   it("answers an authenticated malformed-JSON body with a 400 that carries no stack trace when deployed", async () => {

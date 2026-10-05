@@ -32,6 +32,32 @@ describe("schema contract (LLD §2)", () => {
     const policies = await sql`select 1 from pg_policies where schemaname = 'public'`;
     expect(policies.length).toBe(0);
   });
+
+  it("gives the Data API roles (anon, authenticated) no privileges on any public table or sequence", async () => {
+    const tableGrants = await sql`
+      select grantee, table_name, privilege_type from information_schema.role_table_grants
+      where table_schema = 'public' and grantee in ('anon', 'authenticated')`;
+    expect(tableGrants).toEqual([]);
+    const sequenceGrants = await sql`
+      select grantee, object_name from information_schema.role_usage_grants
+      where object_schema = 'public' and object_type = 'SEQUENCE' and grantee in ('anon', 'authenticated')`;
+    expect(sequenceGrants).toEqual([]);
+  });
+
+  it("keeps a table created by a later migration closed to the Data API roles too", async () => {
+    // A rolled-back probe: the default privileges decide what a new table
+    // grants, whether or not its migration remembered RLS.
+    await expect(
+      withTransaction(async (tx) => {
+        await tx`create table public.privilege_probe (id int)`;
+        const [row] = await tx<{ anon: boolean; authed: boolean }[]>`
+          select has_table_privilege('anon', 'public.privilege_probe', 'select,insert,update,delete') as anon,
+                 has_table_privilege('authenticated', 'public.privilege_probe', 'select,insert,update,delete') as authed`;
+        expect(row).toEqual({ anon: false, authed: false });
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+  });
 });
 
 describe("driver type parsing (LLD §4.2)", () => {

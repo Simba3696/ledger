@@ -102,7 +102,9 @@ export function requireOwner(config: AuthConfig, keySet?: JWTVerifyGetKey): Requ
         algorithms: ["ES256", "RS256", "EdDSA"],
         requiredClaims: ["exp", "sub", "email"],
       });
-      email = payload.email;
+      // An anonymous Supabase user has no email, so the check below already
+      // refuses it; this keeps that true even if a token ever carried one.
+      email = payload.is_anonymous === true ? undefined : payload.email;
     } catch (err) {
       const code = (err as { code?: unknown } | null)?.code;
       if (typeof code === "string" && INVALID_TOKEN_CODES.has(code)) {

@@ -53,8 +53,45 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
     res.status(mapped.status).json({ error: mapped.message });
     return;
   }
-  console.error(err);
+  console.error(describeUnexpectedError(err));
   res.status(500).json({ error: "Internal server error" });
+};
+
+// SQLSTATE classes whose message is about the connection, the server or the
+// schema, never about a row: 08 connection, 28 authentication ("password
+// authentication failed"), 3D unknown database, 42 a missing table or column
+// (e.g. a migration not yet pushed), 53/54 resources and limits, 57/58
+// operator intervention and system errors, XX internal (the pooler's "Tenant
+// or user not found"). Any other class's message (22 data exception, 23
+// constraint, P0 raise, ...) can quote the offending value.
+const SAFE_MESSAGE_CLASSES = new Set(["08", "28", "3D", "42", "53", "54", "57", "58", "XX"]);
+
+/** What the 500 path logs (LLD §11). A Postgres error is reduced to its
+ * SQLSTATE, routine and the names of the constraint, table and column
+ * involved, plus its message only for the classes above. Its `detail` and
+ * `where` are never logged: they echo row values, amounts included. Any other
+ * error keeps its stack, which is code locations, not data. */
+function describeUnexpectedError(err: unknown): string {
+  const e = err as Record<string, unknown> | null | undefined;
+  if (e && typeof e.code === "string" && (e.name === "PostgresError" || typeof e.severity === "string")) {
+    const names = (["constraint_name", "table_name", "column_name"] as const)
+      .filter((key) => typeof e[key] === "string")
+      .map((key) => `${key}=${e[key]}`);
+    const parts = [`Database error ${e.code}`];
+    if (typeof e.routine === "string") parts.push(`routine=${e.routine}`);
+    parts.push(...names);
+    if (SAFE_MESSAGE_CLASSES.has(e.code.slice(0, 2)) && typeof e.message === "string") parts.push(`message=${e.message}`);
+    return parts.join(" ");
+  }
+  if (err instanceof Error) return err.stack ?? String(err);
+  return String(err);
+}
+
+/** API responses carry financial figures: never let a browser or proxy keep
+ * a copy (Express's ETag would otherwise make them cacheable). */
+const noStore: RequestHandler = (_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
 };
 
 /** Builds the API app shared by the local server (index.ts) and the Netlify
@@ -65,6 +102,7 @@ export function createApp({ basePath, authKeySet, log = console.log }: AppOption
   const auth = requireOwner(readAuthConfig(), authKeySet);
   const modules = parseEnabledModules(process.env.ENABLED_MODULES);
   const app = express();
+  app.disable("x-powered-by");
   // Read by GET /api/config and GET /api/overview (modules.ts's enabledModules).
   app.locals.enabledModules = modules;
   // Express decides from its "env" setting whether its default error page
@@ -79,7 +117,7 @@ export function createApp({ basePath, authKeySet, log = console.log }: AppOption
   // anonymous caller can't probe which sections a deployment has.
   const moduleGate = requireEnabledModule(modules);
   for (const mount of new Set(["/api", basePath ?? "/api"])) {
-    app.use(mount, auth, moduleGate, express.json(), router);
+    app.use(mount, noStore, auth, moduleGate, express.json(), router);
   }
   app.use(errorHandler);
   return app;

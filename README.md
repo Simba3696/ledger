@@ -331,8 +331,8 @@ auto-advances to the next real cycle, never silently going stale:
   is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
 - **Your data** lives in the copy's own Supabase Postgres database. Every
-  table has row-level security on with no policies, so Supabase's public
-  data API can't read it; only the app's API, after checking the owner's
+  table has row-level security on with no policies, and the public roles
+  have no privileges on it, so Supabase's public data API can't read it; only the app's API, after checking the owner's
   sign-in, can. Free Supabase projects have no restorable backups and pause
   after about a week unused. See [DEPLOY.md](docs/DEPLOY.md#backups) for
   taking your own backup and unpausing.
