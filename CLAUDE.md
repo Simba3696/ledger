@@ -11,8 +11,10 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 |---|---|
 | Why the system is shaped this way | `docs/architecture/HLD.md`, `docs/adr/` |
 | Schema, module layout, transactions, API contract, auth, config | `docs/architecture/LLD.md` |
-| Domain rules (what each figure means, conventions, gotchas) | `README.md` |
-| Excel-edition technical reference (storage sections superseded by the LLD) | `ARCHITECTURE.md` |
+| Domain rules (what each figure means, conventions, gotchas), local setup, testing | `README.md` |
+| Technical reference: module map, request lifecycle, design principles | `ARCHITECTURE.md` |
+| Standing up a hosted copy: Supabase project, migrations, owner account, Netlify site, every env var, troubleshooting | `docs/DEPLOY.md` |
+| Every environment variable the code reads | `server/.env.example`, `client/.env.example` (kept complete by `server/test/envDocs.test.ts`), LLD §9 |
 
 ## Non-negotiables
 1. **Never disturb the live app.** It runs on port 4000 from another checkout and uses real data. Use this worktree's ports 4100/5273 and only the local Supabase stack or a temporary directory. See `.claude/skills/safe-dev-environment`.
@@ -37,13 +39,25 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 | `supabase-migrations` | Schema change conventions and commands |
 | `write-adr` | Recording a decision in `docs/adr/` |
 
+## Environment
+- `server/.env` (gitignored): `PORT=4100`, `DATABASE_URL` (local stack, `127.0.0.1:54322`), `SUPABASE_URL=http://127.0.0.1:54321`, `OWNER_EMAIL=owner@example.test`, optionally `APP_TIMEZONE` and `ENABLED_MODULES`. `AUTH_DISABLED=true` exists for local experiments only; e2e refuses it.
+- `client/.env` (gitignored): `VITE_DEV_PORT=5273`, `VITE_API_PROXY_TARGET=http://localhost:4100`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (from `npx supabase status`).
+- Local sign-in: `owner@example.test` / `local-owner-password` (created by `supabase/seed.sql`, local stack only).
+- A new variable goes in the matching `.env.example` with a comment, LLD §9, and (if a deployment sets it) `docs/DEPLOY.md` step 7. `envDocs.test.ts` fails otherwise.
+- Never point anything at a hosted Supabase project. `npx supabase link` / `db push` are owner actions (`docs/DEPLOY.md`).
+
 ## Commands
 ```bash
-npm run dev            # server :4100 + client :5273 (from .env)
-npm test               # server vitest suite
-npm run test:e2e       # full browser regression (isolated ports)
-npm run screenshots    # regenerate docs/screenshots (isolated)
-npx supabase start     # local Postgres :54322, API :54321, Studio :54323
+npm run dev            # server :4100 + client :5273 (from .env); kill-ports frees those ports first
+npm test               # server vitest suite against the local Postgres (truncates local tables)
+npm run test:e2e       # resets the local DB, then regression.ts + expensesOnly.ts on 4100/5273
+npm run screenshots    # regenerate docs/screenshots/dashboard{,-dark}.png (same isolation)
+npx supabase start     # local Postgres :54322, API :54321, Studio :54323, Mailpit :54324
+npx supabase status    # local URLs and keys
 npx supabase db reset  # re-apply migrations + seed to the LOCAL stack
-(cd server && npx tsc -p ../netlify/tsconfig.json)  # typecheck the Netlify function
+npx supabase migration new <name>                       # new schema change (never edit an applied one)
+(cd client && npx tsc -b)                               # client typecheck
+(cd server && npx tsc --noEmit)                         # server src + test
+(cd server && npx tsc -p tsconfig.build.json --noEmit)  # what the server build compiles
+(cd server && npx tsc -p ../netlify/tsconfig.json)      # the Netlify function
 ```

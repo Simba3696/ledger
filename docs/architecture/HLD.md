@@ -88,11 +88,11 @@ Every write is one SQL transaction. That replaces the Excel edition's per-file l
 
 | Attribute | Approach |
 |---|---|
-| Availability | Managed CDN and serverless functions, no single home machine. Supabase's free tier pauses a project after about 7 days without activity. The README documents this, and the owner can upgrade if it matters. |
+| Availability | Managed CDN and serverless functions, no single home machine. Supabase's free tier pauses a project after about 7 days without activity. [DEPLOY.md](../DEPLOY.md#free-tier-pausing) documents this and how to restore, and the owner can upgrade if it matters. |
 | Security | One owner account, public sign-ups off. Every API request needs a valid JWT for `OWNER_EMAIL`. Row Level Security is enabled with no policies on every table, so Supabase's auto-generated public Data API can read nothing. Only the API function connects, using the database role. HTTPS end to end. |
 | Data integrity | Constraints (positive amounts, valid months, valid due days) enforce in the database the same rules the API validates. Every write is transactional. |
 | Correctness of dates | Every "today" calculation uses an explicit `APP_TIMEZONE`, because serverless runtimes run in UTC ([ADR-0005](../adr/0005-explicit-app-timezone.md)). |
-| Backups | The free tier has no point-in-time recovery. The README documents a periodic `pg_dump` and the planned Excel export. |
+| Backups | The free tier has no point-in-time recovery. [DEPLOY.md](../DEPLOY.md#backups) documents a periodic dump or CSV export. An Excel export is planned. |
 | Performance | Per-owner data volumes are tiny (thousands of rows). The heaviest endpoint, the finance summary since 2018, is a handful of indexed queries. |
 | Cost | Netlify and Supabase free tiers. |
 | Testability | Everything runs against a local Supabase stack in Docker: the server suites, e2e and screenshot scripts. Nothing touches a hosted project or the owner's live data. |

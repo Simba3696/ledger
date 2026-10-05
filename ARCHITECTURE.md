@@ -1,10 +1,19 @@
 # Architecture
 
-This is the technical reference for how Ledger is built — module map, data
-flow, and the design principles that recur across every feature. For *what*
-each tab does and *why* it works the way it does domain-wise (category
-colors, EMI decay, credit card settlement, etc.), see [README.md](README.md)
-instead — this document is about the system's shape, not its feature history.
+This is the technical reference for how Ledger's hosted edition is built:
+module map, request lifecycle, and the design principles that recur across
+every feature. For *what* each tab does and *why* domain-wise (category
+colors, EMI decay, credit card settlement, etc.), see [README.md](README.md).
+The design documents go deeper and are authoritative where they overlap
+with this file:
+
+- [HLD](docs/architecture/HLD.md): context, goals, system topology, quality
+  attributes.
+- [LLD](docs/architecture/LLD.md): schema (§2), transactions (§4), the API
+  contract (§5), authentication (§6), Netlify packaging (§7), configuration
+  (§9), testing (§10), errors and logging (§11).
+- [ADRs](docs/adr/README.md): why each of those choices was made.
+- [docs/DEPLOY.md](docs/DEPLOY.md): standing up a copy.
 
 ## System overview
 
@@ -13,374 +22,326 @@ flowchart LR
     subgraph Browser
         UI["React SPA<br/>(client/)"]
     end
-    subgraph Server["Node process (server/)"]
-        API["Express API<br/>routes.ts"]
-        EX["server/src/excel/*.ts<br/>one module per concern"]
+    subgraph Netlify
+        CDN["Static site<br/>client/dist"]
+        FN["Function: api<br/>netlify/functions/api.ts<br/>createApp() from server/"]
     end
-    subgraph Disk["Real files on disk"]
-        XL1[("Expenses (YYYY).xlsx<br/>one per year")]
-        XL2[("Finances.xlsx")]
-        XL3[("Debts.xlsx")]
-        XL4[("CreditCardBills.xlsx")]
-        XL5[("EMI.xlsx")]
-        XL6[("Subscriptions.xlsx")]
+    subgraph Supabase
+        AUTH["Supabase Auth"]
+        PG[("Postgres<br/>supabase/migrations")]
     end
 
-    UI <-- "fetch('/api/...')<br/>JSON over HTTP" --> API
-    API --> EX
-    EX <-- "ExcelJS<br/>read + write" --> XL1
-    EX <-- ExcelJS --> XL2
-    EX <-- ExcelJS --> XL3
-    EX <-- ExcelJS --> XL4
-    EX <-- ExcelJS --> XL5
-    EX <-- ExcelJS --> XL6
+    UI -- "HTML/JS/CSS" --> CDN
+    UI -- "email + password sign-in<br/>(supabase-js, Auth only)" --> AUTH
+    UI -- "fetch('/api/...')<br/>Authorization: Bearer JWT" --> FN
+    FN -- "verify signature<br/>(JWKS)" --> AUTH
+    FN -- "SQL (postgres.js)<br/>transaction pooler :6543" --> PG
 ```
 
-**There is no database.** The `.xlsx` files are the entire persistence layer
-— opened, mutated, and saved directly via [ExcelJS](https://github.com/exceljs/exceljs)
-on every read and write. This is a deliberate constraint, not a stopgap: the
-files predate the app (some since 2018), need to stay fully readable/editable
-in Excel by hand, and the whole point of the project is to give that existing
-data a better front end without migrating it anywhere.
+Each copy is one Netlify site plus one Supabase project with a single owner
+([ADR-0001](docs/adr/0001-host-on-netlify-and-supabase.md),
+[ADR-0002](docs/adr/0002-self-host-single-owner.md)). The browser talks to
+Supabase only to sign in. Every read and write goes through the app's own
+API, which is the only thing that connects to the database. Row Level
+Security is on with no policies on every table, so Supabase's auto-generated
+data API exposes nothing.
+
+Locally, the same `createApp()` runs as a plain Express server
+(`server/src/index.ts`) against the Supabase CLI's Docker stack, with Vite
+serving the client.
 
 ## Request lifecycle
 
 1. A component calls a typed function from `client/src/api.ts` (e.g.
-   `getEmis()`, `setMonthBills(...)`) — this is the *only* place the client
-   knows about HTTP; components never call `fetch` directly.
-2. That hits an Express route in `server/src/routes.ts`, which does light
-   input coercion (`Number(...)`, `String(...)`, null-handling) and calls
-   straight into the matching `server/src/excel/*.ts` module — routes.ts has
-   no business logic of its own.
-3. The Excel module opens the relevant workbook (creating it with headers if
-   it doesn't exist yet), reads or mutates rows via ExcelJS, and — for
-   writes — saves through `workbookIO.ts`'s shared safe-write path (below).
-4. The response is plain JSON; errors are a `LedgerError(message, status)`
-   thrown from anywhere in the excel layer and caught by a single Express
-   error-handling middleware at the bottom of `routes.ts`.
+   `getEmis()`, `setMonthBills(...)`). This is the *only* place the client
+   knows about HTTP. Its shared `request()` reads the current Supabase
+   session on every call (refreshing the access token near expiry) and adds
+   `Authorization: Bearer <access_token>`.
+2. Netlify rewrites `/api/*` to the `api` function (`netlify.toml`), which is
+   `serverless-http` around `createApp()` (`server/src/app.ts`). Locally,
+   Vite's dev proxy forwards `/api` to the Express server instead.
+3. `createApp` runs, in order: a one-line request log (method, path, status,
+   duration; never bodies, headers or query strings), the owner check
+   (`auth.ts`: JWT verified against the project's JWKS, email must equal
+   `OWNER_EMAIL`, else 401/403), the section gate (`modules.ts`: a disabled
+   module's route is a 404), the JSON body parser, then `routes.ts`.
+4. `routes.ts` does light input coercion and calls straight into the
+   matching `server/src/store/*.ts` function. It has no business logic.
+5. The store module validates input (`store/validate.ts`), runs its SQL,
+   and for any multi-statement write wraps it in `withTransaction`
+   (`db/tx.ts`). Calculations come from the pure `server/src/domain/*`
+   functions.
+6. The response is plain JSON. Errors are a `LedgerError(message, status)`
+   thrown from anywhere below the routes, turned into `{ error }` by one
+   error handler in `app.ts`. Database refusals that slip past validation
+   are mapped to a 400/409 by `dbErrors.ts`; anything else is a generic 500
+   with the details logged, never returned.
 
-There's no ORM, no query builder, no schema migrations — each module reads
-the whole relevant sheet into memory, works with it as plain arrays/objects,
-and writes the whole workbook back out.
+`createApp` reads its configuration once, at startup, and throws on a bad
+one (missing `SUPABASE_URL`/`OWNER_EMAIL`, `AUTH_DISABLED` where it isn't
+allowed, an unknown `ENABLED_MODULES` name), so a misconfigured deploy fails
+loudly instead of per request.
 
-## Backend module map (`server/src/excel/`)
+## Backend module map (`server/src/`)
 
-| Module | Owns | Responsibility |
-|---|---|---|
-| `workbookIO.ts` | — | Shared safe write path (see below) + `DB_DIR` resolution. Every other module imports `saveWorkbook`/`LedgerError`/`DB_DIR` from here — nothing else touches `fs`/`ExcelJS.writeFile` directly. |
-| `dateMath.ts` | — | Shared month/day arithmetic (`addMonths`, `addYears`, `clampDay`, `parseDate`/`formatDate`, `startOfDay`) used by EMI's decay and Subscriptions' renewal-advance. Local-midnight `Date`s throughout, deliberately avoiding UTC to sidestep timezone off-by-one bugs. |
-| `categoryColors.ts` | — | Excel fill-colour helpers only (`colorToCategory`, `categoryArgb`) — category is a cell's fill color, not a column; see README's **Configuring categories**. The category list itself now lives in the Postgres `categories` table, read by `store/categories.loadCategoryConfig` (read-or-create: an empty table is filled with the 4 `DEFAULT_CATEGORIES` on first read; a null `fg` is derived from `bg` on read by `domain/categoryColors.deriveForegroundColor`, a WCAG-AA-readable text color). |
-| `ledger.ts` | `Expenses (YYYY).xlsx` | Expense CRUD + reordering (`listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`) and `yearSummary` (category totals per month for the dashboard chart). One workbook per year, one sheet per month. Also `isMonthLocked`/`setMonthLocked`, reusing Excel's native sheet-protection (`sheet.protect()`/`unprotect()`) as a real, per-month write lock — every mutating function above already calls the same `assertWritable` check a manually-protected sheet was already subject to, so locking a month enforces it with no separate code path. |
-| `finances.ts` | `Finances.xlsx` | Salary/Other Income/Current-Savings-breakdown per month; derives Balance, Cumulative, Minimum Savings, Money Earned/Spent. Also computes `previousSavings` — the last non-empty savings snapshot strictly before a given month — so the client can offer delta ("+deposit/−withdrawal") entry while the stored value stays a plain absolute balance per scheme. |
-| `debts.ts` | `Debts.xlsx` | Flat who-owes-whom list, signed amounts. |
-| `creditCardBills.ts` | `CreditCardBills.xlsx` | Per-card bill entries per month (due/paid/dueDate/settled), stored as a JSON array in one cell per month-row (card count isn't fixed). |
-| `emi.ts` | `EMI.xlsx` | Loan snapshots with auto-decay (`remainingAsOf` + `asOfDate` anchor, projected forward to "now" on every read, never stored as a running total) and payment recording. Also `emiMonthlyProjection` — walks every active loan's future installments forward (reusing the same `nextDueDateAfter` due-date logic as the payoff estimate), bucketing installment count + total amount by calendar month for the Dashboard's Upcoming EMIs chart. Derives `foreclosurePayoff` — the true cost to close a loan today (standard reducing-balance amortization of the outstanding principal, plus `foreclosureCharge`% if set) — from the optional `interestRate`/`foreclosureCharge` fields; equals `remaining` exactly when no `interestRate` is on record (see README's EMI section). |
-| `subscriptions.ts` | `Subscriptions.xlsx` | Recurring subscriptions with an auto-advancing `nextExpiry` (never written back — always derived fresh). |
-| `overview.ts` | *(none — read-only)* | Cross-module aggregation for the Dashboard's Net Worth + Upcoming widget. Calls into every module above via `Promise.all`, never writes anywhere itself. Upcoming also includes a reminder to log last month's salary (via `finances.ts`'s `getMonthIncome`) during the first two weeks of a new month, if it isn't on record yet. |
-
-Each concern owns exactly one workbook and is the only module that ever
-writes to it — see **Per-concern isolation** below.
+| Module | Responsibility |
+|---|---|
+| `app.ts` | `createApp({ basePath })`: request log, auth, section gate, body parser, router, error handler. Shared by the local server and the function. |
+| `index.ts` | Local entry point: `createApp()` + `app.listen(PORT)`, plus serving `client/dist` when run from a build (`npm start`). Not used on Netlify. |
+| `routes.ts` | The route table ([LLD §5](docs/architecture/LLD.md#5-api-contract)), input coercion only. |
+| `auth.ts` | `readAuthConfig` (startup checks) and `requireOwner` (bearer JWT, `ES256`/`RS256`/`EdDSA` only, `iss`/`aud`/`exp` checks, owner email). |
+| `modules.ts` | `ENABLED_MODULES` parsing, the route → module map, the disabled-module 404. |
+| `errors.ts`, `dbErrors.ts` | `LedgerError`; SQLSTATE → client error mapping. |
+| `db/client.ts` | The postgres.js client: lazy, one connection per process or function instance, `prepare: false` for the transaction pooler, and type parsers keeping `date` as `YYYY-MM-DD` strings and `numeric`/`int8` as numbers. |
+| `db/tx.ts` | `withTransaction(fn)`. |
+| `store/ledger.ts` | Expenses: `listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`, `yearSummary` (category totals per month), `isMonthLocked`/`setMonthLocked`. Every write checks the month lock inside its transaction under a per-month advisory lock. |
+| `store/categories.ts` | The `categories` table, read-or-create: an empty table is filled with `DEFAULT_CATEGORIES` on first read. |
+| `store/finances.ts` | Salary/Other Income/savings per month; `financeSummary` (Balance, Cumulative, Minimum Savings, Money Earned/Spent) and `previousSavings`. |
+| `store/debts.ts` | Who-owes-whom list, signed amounts. |
+| `store/creditCardBills.ts` | Per-card bills per month (due/paid/dueDate/settled), saved as a whole month at a time. |
+| `store/emi.ts` | Loan snapshots, payments, and `emiMonthlyProjection` for the Dashboard chart. |
+| `store/subscriptions.ts` | Recurring subscriptions. |
+| `store/overview.ts` | Read-only aggregation for the Dashboard (Net Worth, Upcoming, EMI-free date), reading only enabled modules' stores. Never writes. |
+| `store/validate.ts` | Shared input checks matching the schema's bounds. |
+| `domain/*.ts` | Pure calculations, no I/O: `dateMath`, `emiMath`, `subscriptionMath`, `financeMath`, `creditCardMath`, `categoryColors`, and `today.ts` (`todayInAppZone`). |
 
 ## Design principles
 
-These aren't incidental — they're decisions that shaped nearly every feature
-built on top of them, and any new module should follow the same shape.
+These shaped nearly every feature, and new code should follow them.
 
-### 1. Per-concern write-path isolation
+### 1. Calculations are pure; storage is separate
 
-Every tab's data lives in its own `.xlsx` file, owned by exactly one module.
-A bug in, say, `emi.ts`'s write path can structurally never corrupt
-`Debts.xlsx`, because `emi.ts` never opens it. `overview.ts` is the one
-deliberate exception to "one module per file" — it reads across all of them
-for the Dashboard, but it has no workbook of its own and no write function at
-all, so the isolation guarantee for the other six is untouched.
+Everything that computes (EMI decay, payoff and foreclosure math, renewal
+advance, finance series, card totals, the overview's rules) lives in
+`server/src/domain/` as pure functions over plain values, with "today"
+passed in. SQL and I/O live only in `server/src/store/`. That kept behaviour
+identical through the move from Excel to Postgres (the domain code moved
+unchanged and the existing tests became the parity contract), and it's what
+still lets calculation and UI changes cherry-pick between this edition and
+the `personal` (Excel) edition.
 
-### 2. Safe writes (`workbookIO.ts`)
+### 2. Every write is one transaction
 
-Every mutating call — `appendEntry`, `setMonthLocked`, `addEmi`, `setMonthBills`,
-and every other exported read-modify-write function across `excel/*.ts` — runs
-its entire body (load, mutate, `saveWorkbook`) inside `withFileLock(filePath, fn)`:
+A write that touches more than one row runs inside `withTransaction`
+([LLD §4.3](docs/architecture/LLD.md#43-transactions)): an expense write
+takes a per-month advisory lock, checks the month lock, then writes, so two
+devices writing the same month queue instead of interleaving, and a
+lock toggle can't race a write. Reordering relies on a deferred unique
+constraint on `(year, month, position)`. Any throw rolls everything back.
 
-0. **Serialized per file** — every call for the same absolute `filePath` runs
-   strictly after the previous one for that same file finishes, via an
-   in-memory per-path promise chain. Without this, two overlapping requests
-   against the same workbook (the phone and the desktop both adding an
-   expense in the same second, reachable precisely because the app is meant
-   to be usable from both over Tailscale) could both read the same
-   pre-write state and both save — the second save wins outright, silently
-   discarding the first. `appendEntry` was the sharpest case: both calls
-   would compute the same "next row number" from the same stale read and
-   write to that same row. This is in-memory and per-process only — it
-   doesn't (and isn't meant to) protect against a second server process, or
-   Excel itself, writing concurrently; that's what points 2-3 below already
-   cover. A handful of functions (`recordEmiPayment`, in `emi.ts`) need their
-   own read *and* a nested write to happen under one lock acquisition rather
-   than two separate ones — see the comment on `updateEmiUnlocked` for why
-   `withFileLock` is deliberately not reentrant and how that's worked around.
-1. **Backup once per process run** — before the *first* write to a given file
-   in a server run, it's copied to `<DB_DIR>/.backups/<file>.<ISO
-   timestamp>.xlsx`. Cheap insurance against a bad edit, given this is
-   irreplaceable financial data with no other backup mechanism. Pruned down
-   to the most recent `MAX_BACKUPS_PER_FILE` (10) per source file on every
-   new backup — a count-based cap rather than a time cutoff, since a
-   rarely-touched file (e.g. `Debts.xlsx`) shouldn't lose its one and only
-   backup to a 30-day-style expiry it never had a chance to refresh.
-2. **Write to a temp file, then rename over the original** — never writes
-   in place, so a crash mid-write can't leave a truncated/corrupt file.
-3. **Locked-file detection** — if the file is open in Excel (rename fails),
-   this surfaces as a clear `LedgerError` ("close it and try again"), not a
-   raw stack trace.
+### 3. The database enforces the same rules as the API
 
-One residual, accepted risk: `saveWorkbook` round-trips the *entire* workbook
-through ExcelJS on every write (12 sheets, to change a handful of cells), and
-that round-trip is lossy for Excel features this app never reads or writes
-itself — charts, pivot tables, conditional formatting, data validation, some
-defined names. The app is careful to only ever *touch* columns A-C (see
-README's How it works), but every write still *rewrites* every other column
-and sheet through ExcelJS's model. The `.backups/` mechanism above is the
-mitigation, not a fix — worth knowing before adding, say, conditional
-formatting to a sheet this app writes to.
+Constraints mirror API validation (positive amounts, months 1–12, due days
+1–31, non-blank names), so bad data can't get in even through a bug.
+`store/validate.ts` checks the same bounds first, so the user gets a
+specific message; `dbErrors.ts` turns anything that still reaches the
+database into a generic 400/409 without echoing the input. Schema changes
+happen only through new files in `supabase/migrations/`.
 
-### 3. Computed, never stored, derived values
+### 4. Computed, never stored, derived values
 
-Anything that can drift out of sync with reality if hand-maintained is
-computed fresh on every read instead of written back to the sheet:
+Anything that would drift if hand-maintained is computed on every read:
 
-- EMI `remaining` — decayed from `remainingAsOf`/`asOfDate` forward to "now",
-  one `emiAmount` per due day that's passed. The *stored* fields are just the
-  last real snapshot; `remaining` itself is never persisted.
-- Subscriptions' `nextExpiry` — advances the stored `expiryAnchor` forward by
-  whole cycles until it's on/after today, computed fresh every time.
-- The entire Dashboard Overview (Net Worth, Upcoming) — pure aggregation at
-  request time, nothing cached or precomputed.
+- EMI `remaining`: decayed from `remaining_as_of`/`as_of_date` to today, one
+  `emiAmount` per due day passed. Only the last real snapshot is stored.
+- Subscriptions' `nextExpiry`: the stored `expiry_anchor` advanced by whole
+  cycles until it's on or after today.
+- Finances' Balance, Cumulative, Minimum Savings and running totals.
+- The whole Dashboard overview (Net Worth, Upcoming).
 
-This trades a small amount of compute (all cheap in-memory arithmetic over a
-handful of rows) for a correctness guarantee: the numbers can never be stale,
-because there's no stale copy to begin with.
+The numbers can never be stale, because there's no stale copy.
 
-### 4. Dynamic cross-referencing over hardcoded lists
+### 5. "Today" is explicit
 
-Where one module's data needs to reference another's (e.g. excluding an EMI
-from Upcoming because it's already billed through a specific credit card),
-the matching is done by cross-referencing the *live* data each request — a
-`Set` built from whichever card names actually appear in that month's Credit
-Card Bills — rather than a hardcoded name list. A newly added or renamed card
-is picked up automatically on the next request, with no code change.
+The function runs in UTC, so every "today" comes from `todayInAppZone()`
+(`APP_TIMEZONE`, default `Asia/Kolkata`) or an injected `today` parameter,
+never a bare `new Date()`
+([ADR-0005](docs/adr/0005-explicit-app-timezone.md)). Calendar dates are
+`date` columns read back as `YYYY-MM-DD` strings, never JS `Date`s built at
+UTC midnight.
 
-### 5. Excel-native storage, not a serialization format bolted on
+### 6. Dynamic cross-referencing over hardcoded lists
 
-Where the app's own domain rows don't map to their own dedicated Excel
-columns cleanly, ExcelJS is used to preserve the *actual* pre-existing
-convention — category is a cell's fill color (not a text column), because
-that's how the file already encoded it by hand since 2018. Newer data that
-has no pre-existing convention (e.g. a card's per-month bill list, since the
-number of cards isn't fixed) is stored as a JSON array in a single cell
-rather than inventing a variable-width column layout.
+Where one module's data references another's (e.g. leaving an EMI out of
+Upcoming because it's already billed through a credit card), the match is
+made against the live data on each request (a `Set` of whichever card
+names appear in that month's bills), not a hardcoded list, so a new card is
+picked up automatically.
+
+### 7. One codebase, sections chosen per deployment
+
+`ENABLED_MODULES` turns sections off without forking the code or the
+schema ([ADR-0006](docs/adr/0006-enabled-modules-per-deployment.md)). Every
+table exists in every copy; the setting only changes which routes are
+served and what the overview reads. A new route must be added to
+`ROUTE_MODULES` or `ALWAYS_ON_ROUTES` in `modules.ts`, or the API test
+fails.
 
 ## API surface
 
-All routes are mounted under `/api` (`server/src/index.ts`). No auth — this
-is a local/Tailscale-only single-user tool.
+The route table, request bodies and response shapes are byte-compatible
+with the Excel edition; [LLD §5](docs/architecture/LLD.md#5-api-contract)
+has the full table. The differences:
 
-| Method | Path | Module fn |
-|---|---|---|
-| GET | `/categories` | `store/categories.loadCategoryConfig` |
-| GET | `/months/:year/:month` | `ledger.listMonth` |
-| GET | `/months/:year/:month/lock` | `ledger.isMonthLocked` |
-| PUT | `/months/:year/:month/lock` | `ledger.setMonthLocked` |
-| GET | `/summary/:year` | `ledger.yearSummary` |
-| POST | `/entries` | `ledger.appendEntry` |
-| PUT | `/entries/:year/:month/:row` | `ledger.updateEntry` |
-| DELETE | `/entries/:year/:month/:row` | `ledger.deleteEntry` |
-| PATCH | `/entries/:year/:month/:row/move` | `ledger.moveEntry` |
-| GET | `/finance/:year/:month` | `finances.getMonthIncome` |
-| PUT | `/finance/:year/:month` | `finances.setMonthIncome` |
-| GET | `/finance-summary/:year` | `finances.financeSummary` |
-| GET | `/debts` | `debts.listDebts` |
-| POST | `/debts` | `debts.addDebt` |
-| PUT | `/debts/:row` | `debts.updateDebt` |
-| DELETE | `/debts/:row` | `debts.deleteDebt` |
-| GET | `/credit-card-bills/:year/:month` | `creditCardBills.getMonthBills` |
-| PUT | `/credit-card-bills/:year/:month` | `creditCardBills.setMonthBills` |
-| GET | `/credit-card-bills-summary/:year` | `creditCardBills.yearBillsSummary` |
-| GET | `/emi` | `emi.listEmis` |
-| POST | `/emi` | `emi.addEmi` |
-| PUT | `/emi/:row` | `emi.updateEmi` |
-| DELETE | `/emi/:row` | `emi.deleteEmi` |
-| PATCH | `/emi/:row/pay` | `emi.recordEmiPayment` |
-| GET | `/emi-monthly-projection` | `emi.emiMonthlyProjection` |
-| GET | `/subscriptions` | `subscriptions.listSubscriptions` |
-| POST | `/subscriptions` | `subscriptions.addSubscription` |
-| PUT | `/subscriptions/:row` | `subscriptions.updateSubscription` |
-| DELETE | `/subscriptions/:row` | `subscriptions.deleteSubscription` |
-| GET | `/overview` | `overview.dashboardOverview` |
-
-Rows are addressed by their real 1-indexed Excel row number (`:row`) rather
-than a synthetic ID — there's no ID column anywhere in these sheets, and the
-row number is already the natural, stable-within-a-session identity ExcelJS
-gives every entry.
+- Every route is behind the owner check: 401 without a valid token, 403 for
+  any account other than `OWNER_EMAIL`.
+- `GET /api/config` returns `{ "modules": [...] }`, the enabled sections.
+  `/api/categories`, `/api/config` and `/api/overview` are always on; a
+  disabled section's routes are a 404.
+- Every `row` field and `:row` parameter is a database id: an opaque,
+  stable integer, no longer a sheet row number. Deleting a row doesn't
+  change other rows' ids.
+- The API is mounted at `/api` and, in the function, also at
+  `/.netlify/functions/api` ([LLD §7](docs/architecture/LLD.md#7-netlify-packaging)).
 
 ## Frontend architecture (`client/src/`)
 
-- **No router, no global state library.** `App.tsx` holds a single `tab:
-  Tab` string in `useState` and conditionally renders one top-level component
-  per tab — switching tabs fully unmounts the previous one. This is
-  intentional: every tab is either a self-contained flat list (Debts, EMI,
-  Subscriptions — fetch-on-mount, no shared state needed) or month/year-
-  scoped (Expenses, Finances, Credit Cards — `year`/`month` live in `App.tsx`
-  and are passed down as props, since `MonthYearPicker` needs to drive all
-  three).
-- **`api.ts`** is the single boundary to the backend — every exported
-  function does one `fetch` call and returns a typed result. Components never
-  construct a URL or call `fetch` themselves.
-- **Component shape**: most tabs follow the same three-piece pattern —
-  `<Tab>.tsx` (fetch + state + form), `<Item>Row.tsx` (display), `Edit<Item>Row.tsx`
-  (inline edit, swapped in for the row being edited). Shared row-action
-  affordances (Edit/Delete/Copy/etc.) go through `OverflowMenu.tsx`, a
-  generic `items: {label, onClick, ...}[]` menu, not a bespoke dropdown per
-  tab. A signed amount (Debts, the Finances savings delta) goes through
-  `SignedAmountInput.tsx` rather than a plain `<input type="number">` —
-  splitting sign (an explicit two-button toggle) from magnitude sidesteps a
-  phone's numeric keypad having no "-" key at all, which made a negative
-  value impossible to type on iOS.
-- **CSS**: one file per component, co-located (e.g. `Debts.css` next to
-  `Debts.tsx`), imported directly (Vite bundles them into one global
-  stylesheet, so anything genuinely shared lives in `shared.css` instead of
-  being duplicated or accidentally leaking from one component into another).
-  Theming is CSS custom properties (`--bg`, `--card-bg`, `--text`,
-  `--text-h`, `--border`, `--success`, `--danger`, …) redefined per theme in
-  `index.css`; `ThemeToggle.tsx` sets `data-theme` on `<html>` and persists
-  the choice to `localStorage`, falling back to `prefers-color-scheme` until
-  an explicit choice is made.
+- **Auth** (`auth/`): `supabase.ts` creates the Supabase client from
+  `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY`, used for Auth only.
+  `session.ts`'s `useSession()` follows the session; `App` renders only
+  `<SignIn/>` until there is one. A 401 from the API signs out locally and
+  shows a notice; a 403 on `GET /api/config` shows the "not allowed" screen.
+  If the build lacks the two variables, the sign-in screen says so.
+  [LLD §6](docs/architecture/LLD.md#6-authentication) has the details.
+- **Sections**: after sign-in, `App` loads `GET /api/config` and categories
+  before rendering any tab, then shows the Dashboard plus only the enabled
+  tabs. The Dashboard renders each part only when its section is on (and
+  each stat card only when its figure isn't `null`). No client rebuild is
+  needed to change sections.
+- **No router, no global state library.** `App.tsx` holds a single `tab`
+  string in `useState` and renders one top-level component per tab;
+  switching tabs unmounts the previous one. Every tab is either a
+  self-contained flat list (Debts, EMI, Subscriptions: fetch on mount) or
+  month/year-scoped (Expenses, Finances, Credit Cards: `year`/`month` live in
+  `App.tsx` and are passed down, since `MonthYearPicker` drives all three).
+- **`api.ts`** is the single boundary to the backend: every exported
+  function makes one request and returns a typed result. A non-2xx response
+  throws an `ApiError` carrying its `status`. Components never build a URL
+  or call `fetch` themselves.
+- **Component shape**: most tabs follow the same pattern: `<Tab>.tsx`
+  (fetch + state + form), `<Item>Row.tsx` (display), `Edit<Item>Row.tsx`
+  (inline edit, swapped in for the row being edited). Row actions go through
+  `OverflowMenu.tsx`, a generic `items: {label, onClick, ...}[]` menu, and
+  confirmations through the in-app `Dialog.tsx`. A signed amount (Debts, the
+  Finances savings delta) goes through `SignedAmountInput.tsx`, which splits
+  sign (a two-button toggle) from magnitude, since a phone's numeric keypad
+  has no "-" key.
+- **CSS**: one file per component, co-located and imported directly (Vite
+  bundles them into one stylesheet, so anything shared lives in
+  `shared.css`). Theming is CSS custom properties (`--bg`, `--card-bg`,
+  `--text`, `--text-h`, `--border`, `--success`, `--danger`, …) redefined
+  per theme in `index.css`; `ThemeToggle.tsx` sets `data-theme` on `<html>`
+  and persists the choice to `localStorage`, falling back to
+  `prefers-color-scheme` until an explicit choice is made.
 - **Dashboard** (`Dashboard.tsx` + `DashboardOverview.tsx`) is the default
-  tab and the only place that reads across multiple concerns — via the one
-  `/api/overview` aggregation endpoint, not multiple parallel fetches to
-  each tab's own API.
-- **Code-splitting**: every tab except Dashboard (Expenses, Finances, Debts,
-  Credit Cards, EMI, Subscriptions) is `React.lazy`-loaded, wrapped in a
-  shared `<Suspense>` fallback in `App.tsx`. Dashboard stays eager since it's
-  the default tab — deferring it would just move its download earlier or
-  later without shrinking what a typical session actually loads, and would
-  add a loading flash to the first thing anyone sees. The other six are only
-  ever needed after an explicit tab click, so splitting them trims the
-  initial bundle by whatever they weigh (each one's own chunk is small,
-  1-8KB gzipped) — worth doing, but not the dominant factor in bundle size:
-  most of the ~570KB main chunk is `recharts` (Dashboard's charting library)
-  plus React itself, neither of which can be deferred without hurting the
-  default view.
+  tab and the only place that reads across concerns, through the one
+  `/api/overview` endpoint, not parallel fetches to each tab's API.
+- **Code-splitting**: every tab except Dashboard is `React.lazy`-loaded
+  behind a shared `<Suspense>` fallback. Dashboard stays eager since it's
+  the default view. Most of the main chunk is `recharts` and React itself,
+  which the default view needs anyway.
 - **Reordering** (`RecentEntries.tsx`/`EntryRow.tsx`) is driven by Pointer
-  Events, not the HTML5 Drag and Drop API — the latter never fires on touch
-  input on mobile Safari/Chrome, silently breaking the feature on a phone.
-  The drag handle (`aria-hidden`, since it's a decorative grip icon) listens
-  for `pointerdown`, then tracks `pointermove`/`pointerup` on `window` and
-  hit-tests `document.elementFromPoint` against each row's `data-row`
-  attribute to find the current drop target — `touch-action: none` on the
-  handle stops the browser's own scroll gesture from competing with the
-  drag. The overflow menu's **Move up**/**Move down** items call the same
-  underlying `moveEntry` swap with an adjacent row's number computed
-  client-side, as a keyboard/no-touch-accessible equivalent to dragging. The
-  Credit Cards tab reuses the same Pointer-Events drag mechanism for its own
-  rows, but purely client-side — that array's saved order is already what
-  persists, so no backend counterpart to `moveEntry` was needed there.
-- **Sorting** (Debts, EMI, Subscriptions) follows one shared shape: a
-  `SortField` union type, a `SORT_OPTIONS: {field, label}[]` array driving a
-  row of buttons, and clicking the already-active field's button flips
-  `SortDir` instead of picking a new one — no dedicated sort component, each
-  tab just repeats the same few lines rather than sharing an abstraction for
-  what's a handful of lines each time.
-- **`MonthLockToggle.tsx`** shows/toggles the current month's lock state
-  (`GET`/`PUT /api/months/:year/:month/lock`) above the Add Expense form.
-  `App.tsx` also passes the fetched `locked` boolean down to disable the
-  form (a `<fieldset disabled>` wrapping every field, rather than disabling
-  each input individually) and to hide `RecentEntries`' drag handle/overflow
-  menu — the same 403 the server would return either way, surfaced ahead of
-  time instead of only after a failed request.
+  Events, not the HTML5 Drag and Drop API, which never fires on touch input.
+  The handle (`aria-hidden`) listens for `pointerdown`, then tracks
+  `pointermove`/`pointerup` on `window` and hit-tests
+  `document.elementFromPoint` against each row's `data-row` attribute;
+  `touch-action: none` stops the browser's scroll gesture from competing.
+  The overflow menu's **Move up**/**Move down** call the same `moveEntry`
+  with an adjacent entry's id. Credit Cards reuses the drag mechanism
+  client-side only, since the saved array's order is what persists.
+- **Sorting** (Debts, EMI, Subscriptions) follows one shape: a `SortField`
+  union, a `SORT_OPTIONS: {field, label}[]` array driving a row of buttons,
+  and clicking the active field again flips `SortDir`.
+- **`MonthLockToggle.tsx`** shows and toggles the month's lock
+  (`GET`/`PUT /api/months/:year/:month/lock`). `App.tsx` passes the
+  `locked` flag down to disable the Add Expense form (one
+  `<fieldset disabled>`) and hide `RecentEntries`' drag handle and overflow
+  menu, surfacing the server's 403 ahead of time.
 
 ## Testing
 
-- **`server/test/*.test.ts` (vitest)** — one file per excel module, each
-  spinning up a scratch temp directory (`LEDGER_DB_DIR` env override, read
-  *before* any module's top-level `DB_DIR` evaluates, so imports are dynamic
-  `await import(...)` rather than static) so tests never touch real data.
-  Fast, no browser.
-- **`e2e/regression.ts` (Playwright, plain script)** — builds a full scratch
-  data directory, boots the real dev server against it, and drives an actual
-  browser through the entire app end to end: every tab's add/edit/delete,
-  cross-tab flows (Dashboard Overview combining Finances/Debts/EMI/Credit
-  Cards), theme persistence. Not the `@playwright/test` runner — a plain
-  script was simpler than wiring up its `webServer` orchestration for one
-  script.
-- **`e2e/screenshots.ts` (Playwright, plain script)** — regenerates the
-  Dashboard screenshots in `docs/screenshots/` against a fixed fictional
-  demo dataset, reusing `regression.ts`'s exact isolation recipe (scratch
-  `LEDGER_DB_DIR` passed to a `npm run dev` spawned on this checkout's own
-  ports) rather than any custom port setup, plus an explicit empty-tab
-  assertion before writing anything — both specifically to prevent a repeat
-  of the 2026-09-19 incident where an ad hoc screenshot script wrote
-  demo data into the real production files. See README's **Notes / gotchas**
-  for the full story.
+All of it runs against the local Supabase stack in Docker; nothing touches
+a hosted project. [LLD §10](docs/architecture/LLD.md#10-testing) has the
+full coverage list, and README's **Testing** section the commands.
 
-See the **Testing** section of `README.md` for exact commands and current
-coverage detail.
+- **`server/test/*.test.ts` (vitest)**: domain unit tests with no database;
+  store tests against the local Postgres (each file truncates the tables it
+  touches; `fileParallelism: false` since the files share one database;
+  `dbHelpers.ts` refuses any non-local host); schema constraint tests;
+  `api.test.ts` with supertest on `createApp()` and a test-generated ES256
+  key pair injected as the JWKS.
+- **`e2e/regression.ts` and `e2e/expensesOnly.ts` (Playwright, plain
+  scripts)**: reset the local database (`e2e/localDb.ts`, local hosts only),
+  start the dev server on this checkout's ports (`e2e/devServer.ts`), sign
+  in through the real form as the seeded owner (`e2e/auth.ts`, which refuses
+  a non-local Supabase URL or `AUTH_DISABLED`), and drive the whole app;
+  the second script runs with `ENABLED_MODULES=expenses`.
+- **`e2e/screenshots.ts`**: regenerates the Dashboard screenshots from a
+  fixed fictional dataset with the same isolation, asserting every tab is
+  empty before writing anything.
 
 ## Deployment
 
-`npm run build` (`tsc` for both packages + `vite build` for the client)
-produces `client/dist/` and `server/dist/`; `npm start` then runs the built
-server, which serves the client's static build itself (`server/src/index.ts`)
-— a single port, no separate dev servers, no HMR. For always-on personal use
-this runs as a Windows **Scheduled Task** ("Ledger"), reachable over
-**Tailscale** as well as `localhost`. See `README.md`'s **Remote access** and
-**Running** sections for the exact setup.
+- **Hosted:** Netlify builds the client (`npm ci && npm run build -w client`,
+  publishing `client/dist`) and bundles `netlify/functions/api.ts` with
+  esbuild, which resolves the server's `.js` imports to its `.ts` sources
+  and inlines every dependency. The schema is applied to the Supabase
+  project with `npx supabase db push`. All configuration is environment
+  variables ([LLD §9](docs/architecture/LLD.md#9-configuration)); the
+  `VITE_*` ones are build-time, the rest are read by the function at
+  startup. Step by step: [docs/DEPLOY.md](docs/DEPLOY.md).
+- **Local:** `npm run dev` runs the server (`tsx watch`) and Vite with hot
+  reload. `npm run build` + `npm start` serve the built client and API from
+  one process on `PORT`.
 
 **Ports are overridable, not hardcoded**, so a second checkout (a different
-clone, branch, or `git worktree`) can run at the same time as an existing
-one without colliding. The server reads `PORT` (`server/src/index.ts`,
-default 4000); `client/vite.config.ts` reads `VITE_DEV_PORT` (default 5173)
-and `VITE_API_PROXY_TARGET` (default `http://localhost:4000`, must match
-whatever `PORT` the paired server checkout uses) via Vite's `loadEnv`.
-`scripts/kill-ports.js` reads the same two values from `server/.env`/
-`client/.env` (a small dependency-free parser, since it's invoked directly
-by `predev`/`prestart` rather than through a workspace that has `dotenv`
-available) — this matters because it unconditionally force-kills whatever's
-listening on its target ports before every `dev`/`start`, so an unaware
-second checkout would otherwise kill the *first* checkout's server on
-startup rather than just failing to bind. Both `.env` files are gitignored
-(checkout-local, never shared) and unset by default, so a single checkout's
-behavior is completely unchanged unless it opts in. See README's **Running**
-section for the exact setup steps.
+clone, branch, or `git worktree`) can run at the same time as another. The
+server reads `PORT` (default 4000); `client/vite.config.ts` reads
+`VITE_DEV_PORT` (default 5173) and `VITE_API_PROXY_TARGET` (default
+`http://localhost:4000`, must match the paired server's `PORT`) via Vite's
+`loadEnv`. `scripts/kill-ports.js` reads the same two ports from
+`server/.env`/`client/.env` (a small dependency-free parser, since it runs
+directly from `predev`/`prestart`). That matters because it force-kills
+whatever is listening on those ports before every `dev`/`start`, so an
+unaware second checkout would otherwise kill the first one's server. Both
+`.env` files are gitignored and checkout-local.
 
 ## Directory structure
 
 ```
-server/
-  src/
-    excel/          One module per workbook (+ workbookIO.ts, dateMath.ts,
-                     categoryColors.ts as shared infrastructure)
-    routes.ts        Express route → excel-module wiring, input coercion only
-    index.ts         App bootstrap, static-serving for the production build
-  test/              vitest suite, one file per excel module
 client/
   src/
-    api.ts           Every backend call, typed — the only fetch() boundary.
-                     CategoryOption now carries bg/fg from GET /categories
-                     directly — no separate client-side color map to keep
-                     in sync with the server's by hand (there used to be one).
-    App.tsx           Tab state + top-level layout
-    components/        One directory-flat set of .tsx + co-located .css
-    format.ts, id.ts, constants.ts (small shared utilities: rupee
-      formatting, client-generated row keys, EARLIEST_YEAR, etc.)
+    api.ts            Every backend call, typed, with the bearer token: the only fetch() boundary
+    App.tsx           Session gate, config load, tab state, top-level layout
+    auth/             supabase.ts, session.ts, SignIn.tsx, SignOutButton.tsx
+    components/       One flat set of .tsx + co-located .css
+    format.ts, id.ts, constants.ts   Small shared utilities
+server/
+  src/
+    app.ts, index.ts, routes.ts, auth.ts, modules.ts, errors.ts, dbErrors.ts
+    db/               client.ts, tx.ts
+    store/            One module per concern (SQL), plus validate.ts
+    domain/           Pure calculations
+  test/               vitest suites + dbHelpers.ts / ledgerSeed.ts
+netlify/
+  functions/api.ts    The API as one Netlify Function
+  tsconfig.json       Typecheck-only config for the function
+supabase/
+  config.toml         Local stack settings
+  migrations/         The schema, applied in order
+  seed.sql            Local only: default categories + the test owner
 e2e/
-  regression.ts      Full-stack Playwright script (see Testing above)
+  regression.ts, expensesOnly.ts, screenshots.ts
+  devServer.ts, auth.ts, localDb.ts   Shared helpers
 scripts/
-  kill-ports.js         Frees dev ports before/on demand — 4000/5173 by
-                         default, overridable per-checkout via server/.env's
-                         PORT and client/.env's VITE_DEV_PORT (see Deployment)
-  run-server.bat,
-  run-server-hidden.vbs  Scheduled Task launch chain for always-on use
-                         (see README's Remote access section) — both
-                         self-locate relative to their own file, no
-                         hardcoded path
+  kill-ports.js       Frees this checkout's dev ports (PORT / VITE_DEV_PORT)
+  legacy-excel/       The Excel edition's readers, kept for the planned importer (LLD §8)
+  run-server.bat, run-server-hidden.vbs
+                      Left over from the Excel edition's Windows Scheduled Task; not used here
 docs/
-  screenshots/       Images embedded in README.md
+  DEPLOY.md           Standing up a copy on Netlify + Supabase
+  architecture/       HLD.md, LLD.md
+  adr/                Decision records
+  screenshots/        Images embedded in README.md
+netlify.toml          Build, function and redirect settings
 ```

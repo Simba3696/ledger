@@ -1,7 +1,8 @@
 # Hosted edition: Netlify serves the client build and runs the whole API as
 # one function (ADR-0004, LLD §7). Environment variables (DATABASE_URL,
 # SUPABASE_URL, OWNER_EMAIL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY,
-# APP_TIMEZONE) are set in the Netlify site's settings, never here.
+# APP_TIMEZONE, ENABLED_MODULES) are set in the Netlify site's settings,
+# never here. docs/DEPLOY.md step 7 and LLD §9 describe each one.
 
 [build]
   # `npm ci` at the root installs every workspace (client and server) from

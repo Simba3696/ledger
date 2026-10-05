@@ -1,65 +1,66 @@
 # Ledger
 
-A local web app for logging personal expenses directly into the existing
-`Expenses (YYYY).xlsx` workbooks — one sheet per month, one workbook per year —
-that have been used to track spending since 2018. There is no database; the
-Excel files themselves are the source of truth, and the app reads and writes
-them in place.
+A personal-finance web app for one person: day-to-day expenses, monthly
+income and savings, debts, loans/EMIs, credit card bills and subscriptions,
+plus a Dashboard that combines them.
 
-For the technical architecture (module map, request lifecycle, design
-principles, API surface) see [ARCHITECTURE.md](ARCHITECTURE.md). This file
-covers what each part of the app does and why, domain-wise.
+This is the **hosted edition**. Each copy runs on its own
+[Netlify](https://www.netlify.com) site (the website and the API) and
+[Supabase](https://supabase.com) project (Postgres and sign-in), on their
+free tiers, with exactly one user: the owner. Every request needs the
+owner's sign-in. A copy can show every section or only some of them
+(`ENABLED_MODULES`), for example expenses only.
+
+- To stand up your own copy, follow **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+- For how it's built, see [ARCHITECTURE.md](ARCHITECTURE.md), and for the
+  design detail (schema, API contract, auth, configuration) the
+  [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and
+  [ADRs](docs/adr/README.md).
+- This file covers what each part of the app does and why, domain-wise, plus
+  local development and testing.
+
+Contents:
 
 - [Why this exists](#why-this-exists)
 - [See it in action](#see-it-in-action)
 - [How it works](#how-it-works)
 - [Project layout](#project-layout)
-- [Setup](#setup)
+- [Local development](#local-development)
 - [Configuring categories](#configuring-categories)
-- [Running](#running)
-- [Remote access (Tailscale)](#remote-access-tailscale) — Windows-only, optional
+- [Choosing sections (ENABLED_MODULES)](#choosing-sections-enabled_modules)
+- [Deploying](#deploying)
 - [Testing](#testing)
 - [Notes / gotchas](#notes--gotchas)
-- [History: retiring Expense Summary.xlsm](#history-retiring-expense-summaryxlsm)
 
 ## Why this exists
 
-I'd tracked every expense by hand in Excel since 2018 — one workbook per
-year, one sheet per month, each row's category marked by literally coloring
-the cell (yellow for food, blue for transport, and so on), plus a manual note
-for anything paid by credit card instead of cash. It worked, but typing a new
-row into Excel on my phone every time I bought something was clunky, and
-years of categorized history meant switching to Mint/YNAB/some other
-budgeting app wasn't really an option without either losing that history or
-spending a weekend re-entering eight years of data by hand.
+I'd tracked every expense by hand in Excel since 2018: one workbook per
+year, one sheet per month, each row's category marked by coloring the cell
+(yellow for food, blue for transport, and so on), plus a note for anything
+paid by credit card. Typing into Excel on a phone was clunky, so Ledger
+started as a small web app that read and wrote those same workbooks in
+place, reachable from a phone over a private network. The same idea then
+took over everything else a second, more fragile macro-enabled workbook
+used to track by hand (credit card bills, loans, subscriptions, debts,
+savings), computing automatically whatever the old sheet needed retyping (a
+loan's remaining balance, a subscription's next renewal, a month's savings
+target).
 
-So instead of replacing the spreadsheets, I built a small web app that reads
-and writes the *same* `.xlsx` files directly — no database, no import step,
-no migration. The Excel files stay the actual source of truth, still fully
-open-able and editable by hand at any time; the app is just a nicer front
-door to them, reachable from my phone. Once the core "add an expense" flow
-worked, the same idea extended naturally to everything else I used to track
-by hand in a second, more fragile macro-enabled workbook — credit card
-bills, loans/EMIs, subscriptions, debts, and monthly savings — each getting
-its own small owned Excel file and its own tab in the app, computed
-automatically wherever the old sheet required updating a number by hand
-(a loan's remaining balance, a subscription's next renewal date, whether a
-month's savings target was hit).
-
-If you've got years of financial history sitting in spreadsheets and want a
-better way to add to it *without* giving up ownership of the actual data,
-this is the shape that approach can take: treat the file the user already
-trusts as the real database, and build the smallest possible app around it.
-[ARCHITECTURE.md](ARCHITECTURE.md) covers how that's implemented in more
-technical detail, including the constraints that fell out of taking "the
-spreadsheet is the database, for real" seriously (no schema migrations, safe
-concurrent-with-Excel writes, no cached/stale derived numbers).
+That edition still exists, on the `personal` branch, with Excel as its
+source of truth. Its one hard limit is that a phone can only reach it while
+the home PC is online. This edition keeps the same app, the same
+calculation rules and the same API, and moves storage to Postgres on
+managed hosting, so it works from anywhere and anyone can run their own
+copy ([HLD §1–2](docs/architecture/HLD.md)). There's no Excel at runtime. A
+one-time importer for existing workbooks is planned
+([LLD §8](docs/architecture/LLD.md#8-import-script-scriptsimport-xlsxts))
+but isn't part of this edition yet: a new copy starts empty.
 
 ## See it in action
 
-*(Screenshots below use made-up sample data, not anyone's real finances.)*
+*(Screenshots use made-up sample data, not anyone's real finances.)*
 
-**Dashboard** — Net Worth and an Upcoming list combining every EMI due date,
+**Dashboard**: Net Worth and an Upcoming list combining every EMI due date,
 subscription renewal, and outstanding credit card bill in the next two
 weeks, above a yearly spending chart. Supports light and dark themes:
 
@@ -67,46 +68,45 @@ weeks, above a yearly spending chart. Supports light and dark themes:
 |---|---|
 | ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
 
-**Adding an expense** — pick a category by color (matching the same
-convention the underlying spreadsheets already used), mark it cash or card,
-and it's appended straight to the real `Expenses (YYYY).xlsx` file:
+**Adding an expense**: pick a category by color, mark it cash or card, and
+it's added to the end of that month's list:
 
 | | Light | Dark |
 |---|---|---|
 | Filling out the form | ![Add Expense form filled in, light theme](docs/screenshots/add-expense.png) | ![Add Expense form filled in, dark theme](docs/screenshots/add-expense-dark.png) |
 | Saved, showing in the month's list | ![New entry appears in the list, light theme](docs/screenshots/recent-entries.png) | ![New entry appears in the list, dark theme](docs/screenshots/recent-entries-dark.png) |
 
-**Finances** — Salary/Other Income, and a delta-based Current Savings
-editor (type a deposit or withdrawal, not the running total — see
+**Finances**: Salary/Other Income, and a delta-based Current Savings
+editor (type a deposit or withdrawal, not the running total; see
 [How it works](#how-it-works)):
 
 | Light | Dark |
 |---|---|
 | ![Finances tab, light theme](docs/screenshots/finances.png) | ![Finances tab, dark theme](docs/screenshots/finances-dark.png) |
 
-**Debts** — a sortable flat list of who owes whom, colored red/green by
+**Debts**: a sortable flat list of who owes whom, colored red/green by
 whether it's money you owe or money owed to you:
 
 | Light | Dark |
 |---|---|
 | ![Debts tab, light theme](docs/screenshots/debts.png) | ![Debts tab, dark theme](docs/screenshots/debts-dark.png) |
 
-**Credit Cards** — per-card monthly bills with a Settled checkbox, plus
+**Credit Cards**: per-card monthly bills with a Settled checkbox, plus
 month and year-to-date totals:
 
 | Light | Dark |
 |---|---|
 | ![Credit Cards tab, light theme](docs/screenshots/credit-cards.png) | ![Credit Cards tab, dark theme](docs/screenshots/credit-cards-dark.png) |
 
-**EMI** — active loans with an auto-decaying Remaining balance (no manual
+**EMI**: active loans with an auto-decaying Remaining balance (no manual
 monthly upkeep) and an estimated or bank-stated payoff date:
 
 | Light | Dark |
 |---|---|
 | ![EMI tab, light theme](docs/screenshots/emi.png) | ![EMI tab, dark theme](docs/screenshots/emi-dark.png) |
 
-**Subscriptions** — recurring services with a renewal date that
-auto-advances forward to the next real cycle, never silently going stale:
+**Subscriptions**: recurring services with a renewal date that
+auto-advances to the next real cycle, never silently going stale:
 
 | Light | Dark |
 |---|---|
@@ -114,452 +114,353 @@ auto-advances forward to the next real cycle, never silently going stale:
 
 ## How it works
 
-- Each month sheet has three columns: **Amount** (negative, ₹-formatted),
-  **Remarks**, and an optional **CC** marker (blank = cash, `"CC"` = paid by
-  credit card).
-- **Category isn't a column — it's the row's cell fill color.** The default
-  4 categories match the scheme already used in the sheets (Yellow = Food,
-  Blue = Transportation, Orange = Rent, Red = Other/non-recurring), but the
-  category set itself is **configurable**, not hardcoded — see
-  [Configuring categories](#configuring-categories) below. This is what
-  makes the app usable for a spreadsheet with a *similar*, not identical,
-  pre-existing color-coding scheme, rather than only this exact one.
-- There's no date column — rows are just chronological within a month sheet.
-  New entries append to the bottom of the target month's sheet.
-- The app only ever touches columns A–C. Anything else on a sheet (e.g. old
-  odometer/mileage tracking columns) is left completely alone.
-- Borders are preserved: the Amount/Remarks columns keep a thick outer box
-  whose bottom edge always tracks whichever row is currently last, and the CC
-  column keeps its own individually-boxed border on every row — but only on
-  rows that are actually card transactions; a cash row's CC cell is left
-  completely blank (no fill, no border), matching the sheets exactly.
-  New/edited/deleted/reordered rows are formatted to match automatically.
-- Amount is right-aligned and Remarks is left-aligned, both vertically
-  centered, matching every existing row (ExcelJS otherwise defaults to bottom
-  alignment for cells with no explicit alignment set).
-- Any month can be **locked** — a banner above the entry form shows whether
-  the month you're viewing is locked and lets you toggle it. Locking reuses
-  Excel's real sheet-protection mechanism (Review → Protect Sheet), so it's
-  the same protection whether it's flipped from the app or by hand in Excel,
-  and it's enforced server-side regardless of which one did it — a locked
-  month rejects a write with a 403, not just a disabled button in the UI.
-  This replaced an earlier rule that auto-locked everything but the current
-  calendar month, which meant an entry you forgot to add before the 1st
-  became uneditable through no fault of your own; now a month only locks
-  when you say so. Copying, editing, deleting, and reordering are unavailable
-  in the UI while a month is locked. Copy/Edit/Delete live under a "⋮" menu on
-  each entry. Deleting actually removes the row and shifts everything below it up,
-  rather than just blanking it, so row numbers stay meaningful. Reordering
-  (drag the ⠿ handle) similarly moves the row for real rather than just
-  changing how it displays — driven by Pointer Events rather than the HTML5
+- **Signing in.** The app opens on an email-and-password sign-in form.
+  There's no sign-up: each copy has one account, the owner's, created in the
+  Supabase dashboard, and the API refuses every other account. A session is
+  remembered per device until you tap the sign-out icon in the header
+  (signing out on one device leaves the others signed in). If the API
+  rejects a session (for example it expired), the app returns to the
+  sign-in form with a notice. A signed-in account that isn't the owner
+  sees "This account is not allowed on this deployment." with a Sign out
+  button instead of the app. Details: [LLD §6](docs/architecture/LLD.md#6-authentication).
+- **Expenses.** Each month is an ordered list of entries. An entry is an
+  **amount**, **remarks**, a **category**, and whether it was paid in
+  **cash or by card**. There's no date per entry: entries are just in
+  order within their month, and new ones are added at the end.
+- **Categories** are colors. The default 4 (Yellow = Food, Blue =
+  Transportation, Orange = Rent, Red = Other/non-recurring) come from the
+  color-coding the original spreadsheets used, but the set is configurable
+  per copy; see [Configuring categories](#configuring-categories).
+- Any month can be **locked**. A banner above the entry form shows whether
+  the month you're viewing is locked and lets you toggle it. The lock is
+  enforced by the server, not just the UI: a write to a locked month is
+  refused with a 403. A month only locks when you say so (an earlier rule
+  auto-locked everything but the current month, which made a forgotten
+  entry uneditable). Copying, editing, deleting and reordering are
+  unavailable in the UI while a month is locked. Copy/Edit/Delete live under
+  a "⋮" menu on each entry. Deleting removes the entry and closes the gap,
+  rather than blanking it. Reordering (drag the ⠿ handle) moves the entry
+  for real, and is driven by Pointer Events rather than the HTML5
   drag-and-drop API, since the latter never fires on touch (mobile Safari/
-  Chrome), which is what made the handle silently do nothing on a phone. The
-  "⋮" menu also has **Move up**/**Move down** entries doing the same
-  adjacent-position swap, for when a keyboard is in use or the handle is
-  otherwise inconvenient — the handle itself is `aria-hidden`, so this is the
-  only reorder path a screen reader can reach. Copy adds a brand new entry
-  with the same amount/remarks/category/card-status, appended at the end
-  like any other new
-  entry — never linked back to the original — so editing one afterward never
-  touches the other.
-- The app opens on the **Dashboard** tab by default. It shows a stacked bar
-  chart of category totals per month for a selected year, computed live from
-  the same ledger data (no separate storage) — a year selector independent of
-  the Expenses view's month/year. Clicking any month's bar (even an empty one)
-  jumps to Expenses with that month/year selected, so you can view an existing
-  month or drop straight into adding a new entry. Expenses also has its own
-  nav tab, right after Dashboard, so the chart click is a second way in
-  rather than the only one. The nav bar is ordered Dashboard, Expenses, Credit Cards, Debts, EMI (Equated Monthly
-  Installment — the standard Indian-banking term for a fixed loan
-  repayment), Subscriptions, Finances — after Expenses, matching the sheet
-  order in the old `Expense Summary.xlsm` (see
-  [History](#history-retiring-expense-summaryxlsm) below) rather than the
-  order each tab happened to be built in. Below a ~600px viewport (a phone),
-  "Dashboard", "Expenses", "Credit Cards" and "Subscriptions" — the longest
-  labels — shorten to "Home", "Spend", "CC Bills" and "Subs", and the nav's
-  own spacing tightens slightly, so all seven tabs still fit on one row
-  instead of the last ones wrapping to a second line. Verified by directly
-  measuring rendered button/gap widths at 420px, not just eyeballed. A
-  deployment can turn sections off with the server's `ENABLED_MODULES`
-  (see `server/.env.example` and ADR-0006); their tabs and Dashboard cards
-  then don't show.
-- The Dashboard also opens with an **overview widget** above the yearly
-  chart: a **Net Worth** figure (Current Savings − Total Debt − EMI
-  Remaining − this month's unpaid Credit Card bills, all pulled live from
-  their own tabs) and an **Upcoming (next 2 weeks)** list combining every
-  EMI due date, Subscription renewal, and outstanding Credit Card bill due
-  in that window, sorted soonest-first. It's the one place that reads across
-  every other tab — everything else stays a one-way read into that
-  aggregation; no tab writes through it, so each module's own write-path
-  isolation is untouched. Converting a purchase to EMI on one of the actual
-  credit cards bills it through that card's own monthly bill, not
-  separately — so an EMI whose Card/Bank name matches a card that also has
-  its own Credit Card Bill entry that month is left out of the Upcoming list
-  (it's already represented by that card's own line), while a standalone
-  loan not billed through any card still shows normally. This is worked out
-  dynamically against whichever names actually appear in Credit Card Bills,
-  not a hardcoded list, so a newly added card is picked up automatically.
-  Net Worth's EMI Remaining still counts every EMI's *full* balance
-  regardless, including card-linked ones — excluding them there would
-  understate real debt by everything beyond the current month's installment.
-  The **Credit Cards Owed (This Month)** figure specifically means this
+  Chrome). The "⋮" menu also has **Move up**/**Move down**, for a keyboard
+  or when the handle is inconvenient. The handle itself is `aria-hidden`, so
+  this is the only reorder path a screen reader can reach. Copy adds a
+  brand new entry with the same amount/remarks/category/card status,
+  appended at the end like any other, never linked back to the original.
+- Adding an entry to a year nobody has written to yet (next January, say)
+  starts that year automatically. Until then, browsing a month in that year
+  shows "No workbook found for year N" below the form (wording kept from the
+  Excel edition for API compatibility); the form still works. On a new
+  copy that's every year, until the first expense is added.
+- The app opens on the **Dashboard** tab. It shows a stacked bar chart of
+  category totals per month for a selected year, computed live from the
+  expenses (no separate storage), with a year selector independent of the
+  Expenses view's month/year. Clicking any month's bar (even an empty one)
+  jumps to Expenses with that month/year selected. Expenses also has its
+  own nav tab, right after Dashboard. The nav bar is ordered Dashboard,
+  Expenses, Credit Cards, Debts, EMI (Equated Monthly Installment, the
+  standard Indian-banking term for a fixed loan repayment), Subscriptions,
+  Finances. Below a ~600px viewport (a phone), "Dashboard", "Expenses",
+  "Credit Cards" and "Subscriptions" shorten to "Home", "Spend", "CC Bills"
+  and "Subs", and the nav's spacing tightens, so all seven tabs fit on one
+  row. A copy can turn sections off with `ENABLED_MODULES`; their tabs and
+  Dashboard cards then don't show (see
+  [Choosing sections](#choosing-sections-enabled_modules)).
+- The Dashboard also has an **overview widget** above the yearly chart: a
+  **Net Worth** figure (Current Savings − Total Debt − EMI Remaining − this
+  month's unpaid Credit Card bills, all pulled live from their own tabs) and
+  an **Upcoming (next 2 weeks)** list combining every EMI due date,
+  Subscription renewal, and outstanding Credit Card bill due in that window,
+  sorted soonest-first. It's the one place that reads across every other
+  tab, and nothing writes through it. Converting a purchase to EMI on a
+  credit card bills it through that card's own monthly bill, so an EMI
+  whose Card/Bank name matches a card that also has its own Credit Card
+  Bill entry that month is left out of Upcoming (that card's own line
+  already represents it), while a standalone loan not billed through any
+  card still shows. This is worked out against whichever names actually
+  appear in Credit Card Bills, not a hardcoded list, so a newly added card
+  is picked up automatically. Net Worth's EMI Remaining still counts every
+  EMI's *full* balance, including card-linked ones; excluding them there
+  would understate real debt by everything beyond the current month's
+  installment. The **Credit Cards Owed (This Month)** figure means this
   month's total bill across every card minus whatever's already been paid
-  toward it (floored at 0), for every card not marked **Settled** — it's a
-  single-cycle number, not a running credit card balance, since credit cards
-  don't carry a multi-month "remaining" the way EMIs do. A card checked off
-  as Settled contributes exactly 0 here and is dropped from Upcoming
-  entirely, regardless of its raw due/paid gap — added because payment apps
-  like CRED routinely round a bill down by a rupee or two, and a card the
-  user has actually paid off shouldn't still read as "owed" just because of
-  that leftover. An EMI's Upcoming due date is computed from its own stored
-  snapshot date, not just "today" — so clicking **Paid this month** (or
-  **Record payment**) correctly advances which cycle shows as upcoming
-  next, rather than continuing to show the one just paid. The header also
-  shows the total across every Upcoming item, so you know what's coming due
-  at a glance without adding it up yourself — and since it lives in the
-  header rather than the (foldable) list itself, it's still visible even
+  toward it (floored at 0), for every card not marked **Settled**. It's a
+  single-cycle number, not a running credit card balance. A card checked
+  off as Settled contributes exactly 0 here and is dropped from Upcoming
+  entirely, whatever its raw due/paid gap, because payment apps routinely
+  round a bill down by a rupee or two, and a card that's actually been paid
+  off shouldn't still read as "owed". An EMI's Upcoming due date is computed
+  from its own stored snapshot date, not just "today", so clicking **Paid
+  this month** (or **Record payment**) advances which cycle shows as
+  upcoming next. The header shows the total across every Upcoming item, and
+  since it lives in the header rather than the list, it's still visible
   when Upcoming is collapsed. On a phone-width screen the "(next 2 weeks)"
-  part of the heading drops to just "Upcoming", so it doesn't crowd the
-  total sharing the same row. Upcoming can get
-  long, so its header is a fold/collapse toggle — defaults open (it's the
-  actionable part of the dashboard), and remembers whichever state you last
-  left it in (`localStorage`, same pattern as the theme toggle) so it stays
-  collapsed across visits once you close it, e.g. to get to the yearly chart
-  below it faster. Styled as its own card (matching `.dashboard-total`/
-  `.chart-wrap` below it) with a title sized/weighted to match "Yearly
-  Overview"'s `<h2>` exactly, so the two section headers read as the same
-  level of the page; folds via an animated `grid-template-rows` 1fr↔0fr
-  transition rather than an instant show/hide, so collapsing it visibly
-  shrinks down to a single-line card instead of just disappearing. Each
-  Upcoming row is itself clickable — a shortcut to go pay/settle it rather
-  than hunting for it by hand: an EMI item jumps to the EMI tab, a
-  Subscription item jumps to Subscriptions, and a Credit Card item jumps to
-  Credit Cards *on the month that bill is actually due* (not whatever
-  month happens to be selected already). EMI balances normally auto-decay
-  on their own due day without any click needed, but this still matters for
-  an early/manual payment made outside that automatic schedule — the same
-  reason a standalone EMI item is worth clicking through to at all, even
-  though its own tab would eventually reflect the payment regardless.
-  Upcoming also carries a **salary reminder**, separate from the three due-
-  date-driven sources above: since salary is logged under the month it was
-  *earned* (see the Finances entry below), a new calendar month starting
-  means last month's entry should already exist — if it doesn't, a reminder
-  to log it appears (sorting first, ahead of everything else) for the first
-  two weeks of the new month, then goes quiet either way rather than nagging
-  for the rest of the month. Clicking it jumps to Finances with last month
-  selected. Below
-  that widget, an **Upcoming EMIs** chart plots every active loan's future
-  installments for the next year — installment count and total ₹ due per
-  calendar month — so the debt load's actual monthly taper is visible at a
-  glance rather than only each loan's own single payoff date (see
-  [EMI](#how-it-works) below for the loan-level foreclosure hints this
-  complements).
-- The **Finances** tab tracks Salary, Other Income, and a Current
-  Savings snapshot per month — entered through the app into a new
-  `Finances.xlsx` that it owns entirely (originally kept separate from
-  `Expense Summary.xlsm`, the old macro-enabled workbook this superseded —
-  see [History](#history-retiring-expense-summaryxlsm) below). From those
-  entries it computes:
-  - **Balance** — last month's total income (salary + other income) minus
+  part of the heading drops to just "Upcoming". Upcoming's header is a
+  fold/collapse toggle: open by default, and it remembers the state you
+  last left it in (`localStorage`, like the theme toggle). It folds via an
+  animated `grid-template-rows` 1fr↔0fr transition, so collapsing it visibly
+  shrinks to a single-line card. Each Upcoming row is clickable, as a
+  shortcut to go pay or settle it: an EMI item jumps to the EMI tab, a
+  Subscription item to Subscriptions, and a Credit Card item to Credit Cards
+  *on the month that bill is actually due*. Upcoming also carries a
+  **salary reminder**: since salary is logged under the month it was
+  *earned* (see Finances below), a new calendar month starting means last
+  month's entry should already exist. If it doesn't, a reminder to log it
+  appears (sorting first) for the first two weeks of the new month, then
+  goes quiet either way. Clicking it jumps to Finances with last month
+  selected. Below that widget, an **Upcoming EMIs** chart plots every active
+  loan's future installments for the next year (installment count and total
+  ₹ due per calendar month), so the debt load's monthly taper is visible at
+  a glance. When a section is off, its figures, Upcoming items and chart
+  don't appear, and Net Worth only shows when Finances, Debts, EMI and
+  Credit Cards are all on.
+- "Today" (for due dates, renewals, the salary reminder) is the calendar
+  day in the copy's `APP_TIMEZONE`, not the server's clock, which runs in
+  UTC ([ADR-0005](docs/adr/0005-explicit-app-timezone.md)).
+- The **Finances** tab tracks Salary, Other Income, and a Current Savings
+  snapshot per month. From those entries it computes:
+  - **Balance**: last month's total income (salary + other income) minus
     this month's expenses. A month with no income on record counts as zero,
     so it shows as a real deficit rather than "unknown".
-  - **Cumulative** — running sum of Balance since 2018.
-  - **Minimum Savings** — `ceil(15% of this month's own salary + other income)`.
-  - **Money Earned / Money Spent** — running totals of income / ledger
-    expenses since 2018.
-  - **Current Savings** — named scheme balances (PPF, NPS, APY, etc.),
-    summed automatically into a total. Entry is delta-based, not absolute:
-    each scheme shows its last known balance (carried forward from
-    whichever month it was last touched) and you pick **Deposit** or
-    **Withdrawal** and type the change — the app computes and stores the
-    new absolute balance for you. Sign is a toggle, not something you type,
-    since a phone's numeric keypad has no "-" key at all (see
-    [SignedAmountInput](#notes--gotchas) below). For a scheme with no prior
-    balance yet, the first amount you enter simply becomes its starting
-    balance (baseline zero). The underlying data is still a plain absolute
-    balance per scheme per month — only entry is delta-based — so a
-    scheme's real figure can always be corrected by entering whatever
-    deposit/withdrawal reconciles it to your actual passbook/statement,
-    rather than drifting permanently out of sync the way a pure
-    running-total ledger would. The set of schemes
-    isn't fixed — add or remove one freely as your actual savings mix
-    changes. Whichever month's breakdown was most recently entered carries
-    forward across later months until you update it again, rather than
-    resetting to blank.
+  - **Cumulative**: running sum of Balance since 2018.
+  - **Minimum Savings**: `ceil(15% of this month's own salary + other income)`.
+  - **Money Earned / Money Spent**: running totals of income / expenses
+    since 2018.
+  - **Current Savings**: named scheme balances (PPF, NPS, APY, etc.),
+    summed into a total. Entry is delta-based, not absolute: each scheme
+    shows its last known balance (carried forward from whichever month it
+    was last touched) and you pick **Deposit** or **Withdrawal** and type
+    the change; the app computes and stores the new absolute balance. Sign
+    is a toggle, not something you type, since a phone's numeric keypad has
+    no "-" key (see [SignedAmountInput](#notes--gotchas)). For a scheme with
+    no prior balance, the first amount you enter becomes its starting
+    balance. The stored data is still a plain absolute balance per scheme
+    per month, so a scheme's figure can always be corrected by entering
+    whatever deposit/withdrawal reconciles it to the real statement. The set
+    of schemes isn't fixed. Whichever month's breakdown was most recently
+    entered carries forward across later months until you update it again.
 
   The Save button stays disabled until something on the form actually
-  differs from what's on record, so there's no way to click it uselessly (or
-  worry whether a click actually did anything) when nothing's changed.
-
-  Historical Salary was backfilled once from `Expense Summary.xlsm`'s
-  Summary sheet (that sheet's "Last Month's Salary" row stores each value
-  one column *after* the month it was actually earned in, so the backfill
-  shifted everything back by one month — confirmed against the sheet's own
-  `Balance = LastMonthSalary − Expenses` formula and cross-checked exactly
-  against its frozen `Money Earned` total). Current Savings wasn't
-  backfilled the same way — the `.xlsm` only ever had one snapshot, entered
-  once as a present-day figure rather than tied to a specific month, so it
-  was entered fresh as of the actual month it was true.
-- The **Debts** tab is a flat list of who you owe and who owes you —
-  entered into its own app-owned `Debts.xlsx`, not month-indexed like
-  Finances since it's just current state, not a monthly history. Each
-  entry is a name and a single signed amount you update directly when it
-  changes (positive = you owe them, negative = they owe you — the same
-  convention `Expense Summary.xlsm`'s Debts sheet already used). The
-  displayed total is a plain sum of every entry — the old sheet's own total
-  used a formula that only covered its first four rows and silently missed
-  two real debts further down; the app's total doesn't have that gap.
-  Sortable by Name, Amount, or Type (groups owed-to-you vs you-owe apart) —
-  click a sort button again to flip ascending/descending. **You owe** and
-  **Net** (when positive, meaning you owe more overall) are colored red as a
-  liability; **Owed to you** (and Net when negative, meaning you're owed
-  more overall) is colored green — ordinary bad/good coloring, not "positive
-  number = green" regardless of what that number actually means. The Add
-  Debt button stays disabled until both Name and Amount are filled in.
-  Adding an entry whose name matches an existing one (case-insensitive) asks
-  whether to **consolidate** the new amount into that entry (a plain sum —
-  correct regardless of sign, e.g. a partial repayment nets down the debt)
-  or add it as a genuinely separate entry instead, rather than silently
-  creating a second row for what's almost always the same relationship.
-- The **Credit Cards** tab tracks each card/loan's bill as its own
-  named entry per month (due amount, paid amount, that card's own due date,
-  and a **Settled** checkbox) in its own app-owned `CreditCardBills.xlsx` —
-  the number of cards isn't fixed, so adding or paying off one is just
-  adding/removing an entry, never touching a formula. Cards can be dragged
-  into any order (a ⠿ handle, same Pointer-Events-driven mechanism as
-  reordering Expenses entries — see [How it works](#how-it-works) above) —
-  client-side only, since the saved array order is already what persists,
-  so reordering needs no backend change. From those entries it computes
-  Total Due, Total Paid, the Earliest Due Date across all cards that month
-  (so you know when to arrange funds), and Overpaid/Saved (Due − Paid,
-  summed only across cards marked **Settled**: negative means you paid more
-  than billed, positive means a payment app rounded a few rupees in your
-  favor) — colored red when Overpaid, green when Saved. Gating it on
-  Settled (rather than every card's raw gap regardless) is what keeps an
-  still-unpaid bill from reading as "Saved" just because nothing's been paid
-  toward it yet; Total Due/Total Paid are unaffected by Settled — they still
-  sum every card regardless. Settled also affects the Dashboard Overview
-  widget's Net Worth/Upcoming (see above). It
-  also shows yearly totals — Total Spent This Year, Total Paid This Year,
-  and Net Overpaid/Saved This Year (same red/green coloring) — summed across
-  all 12 months of the selected year. Historical Due/Paid amounts were backfilled
-  from `Expense Summary.xlsm`'s Credit Card Bills sheet, whose own
-  `=a+b+c+...` formulas turned out to be literally one term per card (in the
-  order the cards were acquired) — splitting those formulas back into named
-  per-card entries reproduced every year's own total exactly (2020 through
-  2025, ₹140,301.76 through ₹669,857.81). The old sheet only ever tracked one
-  shared "earliest due date" per month, not per-card, so historical per-card
-  due dates were backfilled with that same shared date as a floor value (no
-  individual card's real due date could have been earlier than it, only
-  later) — it's tracked per-card going forward from here. Same as Finances,
-  Save stays disabled until the form actually has an unsaved change.
+  differs from what's on record. Finances reads expense totals for its
+  Balance even when the Expenses section is turned off.
+- The **Debts** tab is a flat list of who you owe and who owes you. It's
+  current state, not a monthly history. Each entry is a name and a single
+  signed amount you update directly when it changes (positive = you owe
+  them, negative = they owe you). The displayed total is a plain sum of
+  every entry. Sortable by Name, Amount, or Type (groups owed-to-you vs
+  you-owe apart); click a sort button again to flip ascending/descending.
+  **You owe** and **Net** (when positive, meaning you owe more overall) are
+  red; **Owed to you** (and Net when negative) is green: bad/good coloring,
+  not "positive number = green". The Add Debt button stays disabled until
+  both Name and Amount are filled in. Adding an entry whose name matches an
+  existing one (case-insensitive) asks whether to **consolidate** the new
+  amount into that entry (a plain sum, correct regardless of sign, so a
+  partial repayment nets down the debt) or add it as a separate entry.
+- The **Credit Cards** tab tracks each card's bill as its own named entry
+  per month (due amount, paid amount, that card's due date, and a
+  **Settled** checkbox). The number of cards isn't fixed. Cards can be
+  dragged into any order (the same Pointer Events mechanism as reordering
+  expenses); the saved list's order is what persists. From those entries it
+  computes Total Due, Total Paid, the Earliest Due Date across all cards
+  that month (so you know when to arrange funds), and Overpaid/Saved (Due −
+  Paid, summed only across cards marked **Settled**: negative means you
+  paid more than billed, positive means a payment app rounded a few rupees
+  in your favor), red when Overpaid and green when Saved. Gating it on
+  Settled keeps a still-unpaid bill from reading as "Saved"; Total Due/Total
+  Paid still sum every card. Settled also affects the Dashboard's Net
+  Worth/Upcoming (see above). It also shows yearly totals (Total Spent This
+  Year, Total Paid This Year, Net Overpaid/Saved This Year) across all 12
+  months of the selected year. Save stays disabled until the form has an
+  unsaved change.
 - The **EMI** tab is a flat list of active loans/EMI plans (Card/Bank, EMI
-  Amount, Due Day, Total Amount, Remarks) in its own app-owned `EMI.xlsx`.
-  Unlike the old sheet — where Remaining/Total Amount were plain numbers you
-  had to re-type by hand — Remaining is **auto-computed**: you enter the real
-  current balance once (from your bank/card statement) and the app decreases
-  it by the EMI Amount every time the due day passes, entirely automatically.
-  The estimated payoff month is computed the same way (from Remaining ÷ EMI
-  Amount) rather than being a manually-typed "Until" date, which the real
-  sheet showed can silently drift out of sync with the actual balance (a
-  duplicate pair of rows differed only by a typo'd end year). Foreclosed or
-  fully-paid loans are removed via a dedicated **Foreclose EMI** action
-  (matching how the loan is actually paid off in practice: once it's fully
-  settled — whether by reaching ₹0 naturally or being paid off early — it
-  comes off the list entirely) — the plain Edit/Delete menu is still there
-  too, for correcting mistakes rather than closing out a loan. Backfilled
-  from `Expense Summary.xlsm`'s EMI sheet (37 entries,
-  cross-checked exactly against its own EMI Amount/Remaining/Total Amount
-  SUBTOTAL row) — roman-numeral card references (I-V) were resolved to real
-  names via the sheet's own Legend (Coral, Amazon Pay, OneCard, Manchester
-  United, Moneyback+); newer entries already used plain names (Jumbo Loan,
-  CRED, Kreditbee, ICICI). Current Balance auto-defaults to Total Amount when
-  adding a fresh loan (nothing's paid yet), so you only need to override it
-  when backfilling one that's already partway through. An optional Duration
-  (months) field — the number of months the bank told you at EMI-conversion
-  time — is stored as a real payoff target (`Until Target`, an exact date)
-  rather than being derived: a plain `remaining ÷ emiAmount` estimate can be
-  off by a month either way, since a real bank schedule's final installment
-  is often adjusted (larger *or* smaller) to land on the stated date exactly.
-  Once set, the target is sticky — it survives ordinary balance corrections
-  and payments, and only changes if you explicitly enter a fresh Duration on
-  a later edit. Each entry also has quick payment actions — **Paid this
-  month** (subtracts one EMI Amount) and **Record payment** (a custom
-  amount, for a partial or extra payment) — both of which anchor the new
-  balance snapshot to *this month's due date* rather than to whatever day
-  you happen to click, so paying a few days before the due date doesn't get
-  double-subtracted once that date actually passes, and paying the standard
-  amount *after* the due date has already passed is correctly a no-op (the
-  automatic decay already assumed it). Each row also shows **`Balance as of
-  <date>`** — the decay anchor everything since is auto-projected from,
-  not a confirmed payment — so it's obvious before reaching for "Paid this
-  month" whether that cycle is already covered by the anchor. Sortable by
-  Name, Due Day, EMI Amount, Remaining, or **% Paid** (same click-to-flip
-  pattern as Debts/Subscriptions). An **EMI-Free On** stat shows the latest
-  `estimatedPayoffDate`/Until Target across every active loan — the day the
-  *last* loan clears, not any individual loan's own payoff date — computed
-  via the same due-date logic as each loan's own estimate, correctly rolling
-  into the following month when a bank-stated target's day-of-month falls
-  before the loan's own due day within that month (confirmed against a real
-  loan: an Until Target of 2030-05-23 with a due day of 9 actually finishes
-  2030-06-09, not the 23rd).
-  - **Foreclosure decision support**: each row shows a percent-paid progress
-    bar (`(totalAmount − remaining) / totalAmount`) — sorting by **% Paid**
-    surfaces the best "quick win" foreclosure candidate better than sorting
-    by raw Remaining, since a loan that started small can have a low balance
-    without being anywhere near paid off. Optional **Interest Rate (% p.a.)**
-    and **Foreclosure Charge (%)** fields are editable per loan and shown
-    alongside its schedule (`0` is a real, distinct-from-blank value — an
-    interest-free EMI conversion, or a genuine 0%-foreclosure-fee loan).
-    Once an Interest Rate is on record, each row also shows a **Foreclosure
-    payoff** figure — the true cost to close that loan today (standard
-    reducing-balance amortization of the outstanding principal, plus any
-    Foreclosure Charge), shown only when it actually differs from Remaining:
-    `remaining` is total future payments if paid on schedule (interest
-    included), a genuinely larger number than the true payoff for any loan
-    with real interest, so showing an identical second figure for a rate-less
-    loan would just be noise.
-  - The Dashboard's **Upcoming EMIs** chart (below the Net Worth/Upcoming
-    widget) projects every active loan's future installments forward for the
-    next year, as a dual-axis bar (installment count) + line (total ₹ due)
-    chart per calendar month — a monthly view of how the debt load actually
-    tapers off, rather than each loan's own single payoff date in isolation.
+  Amount, Due Day, Total Amount, Remarks). Remaining is **auto-computed**:
+  you enter the real current balance once (from the bank/card statement)
+  and the app decreases it by the EMI Amount every time the due day passes.
+  The estimated payoff month is computed the same way (Remaining ÷ EMI
+  Amount) rather than typed in, so it can't drift out of sync with the
+  balance. Foreclosed or fully-paid loans are removed via a dedicated
+  **Foreclose EMI** action; the plain Edit/Delete menu is still there for
+  correcting mistakes. Current Balance defaults to Total Amount when adding
+  a fresh loan, so you only override it for one that's already partway
+  through. An optional Duration (months) field, the number of months the
+  bank stated at conversion time, is stored as a real payoff target
+  (`Until Target`, an exact date) rather than derived, since a bank's
+  final installment is often adjusted to land on the stated date. Once set,
+  the target survives ordinary balance corrections and payments, and only
+  changes if you enter a fresh Duration on a later edit. Each entry has
+  quick payment actions, **Paid this month** (subtracts one EMI Amount) and
+  **Record payment** (a custom amount, for a partial or extra payment).
+  Both anchor the new balance snapshot to *this month's due date* rather
+  than the day you click, so paying a few days early doesn't get
+  double-subtracted once the due date passes, and paying the standard
+  amount after the due date has passed is a no-op (the automatic decay
+  already assumed it). Each row also shows **`Balance as of <date>`**, the
+  anchor everything since is projected from. Sortable by Name, Due Day, EMI
+  Amount, Remaining, or **% Paid**. An **EMI-Free On** stat (also on the
+  Dashboard) shows the latest payoff date across every active loan: the day
+  the *last* loan clears. It uses the same due-date logic as each loan's own
+  estimate, rolling into the following month when a bank-stated target's
+  day-of-month falls before the loan's due day (an Until Target of
+  2030-05-23 with a due day of 9 actually finishes 2030-06-09).
+  - **Foreclosure decision support**: each row shows a percent-paid
+    progress bar (`(totalAmount − remaining) / totalAmount`); sorting by
+    **% Paid** surfaces the best "quick win" foreclosure candidate better
+    than raw Remaining. Optional **Interest Rate (% p.a.)** and
+    **Foreclosure Charge (%)** fields are editable per loan (`0` is a real
+    value, distinct from blank). With an Interest Rate on record, each row
+    also shows a **Foreclosure payoff**: the true cost to close the loan
+    today (standard reducing-balance amortization of the outstanding
+    principal, plus any Foreclosure Charge), shown only when it differs
+    from Remaining, which is total future payments including interest.
+  - The Dashboard's **Upcoming EMIs** chart projects every active loan's
+    installments for the next year as a dual-axis bar (installment count) +
+    line (total ₹ due) chart per calendar month.
 - The **Subscriptions** tab is a flat list (Service, Amount, Monthly/Yearly,
-  Card/Bank) in its own app-owned `Subscriptions.xlsx`, sortable by Next
-  Renewal (default, soonest first), Service, or Amount. The renewal date you
-  enter is never treated as stale — the app auto-advances it forward by
-  whole Monthly/Yearly cycles until it's on or after today, so a
-  long-untouched entry always shows its real next renewal rather than a date
-  that's quietly fallen into the past. Shows an approximate combined
-  Monthly Cost (Yearly subscriptions divided by 12). Backfilled from
-  `Expense Summary.xlsm`'s Subscriptions sheet (10 entries; one stray row
-  with a date instead of an amount was correctly excluded, same as the rest
-  of the app's number-or-skip parsing).
+  Card/Bank), sortable by Next Renewal (default, soonest first), Service, or
+  Amount. The renewal date you enter is never treated as stale: the app
+  advances it by whole Monthly/Yearly cycles until it's on or after today,
+  so a long-untouched entry always shows its real next renewal. Shows an
+  approximate combined Monthly Cost (Yearly subscriptions divided by 12).
+- Derived figures (EMI Remaining and payoff dates, next renewals, Finances'
+  computed rows, the whole Dashboard overview) are computed on every read
+  and never stored, so they can't go stale.
 - Every tab shows a spinner over a faded backdrop while its data loads,
-  rather than swapping content out for plain "Loading…" text — previous
-  content (e.g. last month's stats while this month's are being fetched)
-  stays visible-but-faded underneath instead of flashing to blank.
-- Light/dark theme: a sun/moon slider toggle in the header (top right). The
-  choice is saved to `localStorage` and wins over the OS preference once set;
+  keeping the previous content visible underneath instead of flashing to
+  blank.
+- Light/dark theme: a sun/moon slider in the header (top right). The choice
+  is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
-- The yearly template (`Expenses (202X).xlsx`) is not read or written by the
-  app — that stays manual. (`Expense Summary.xlsm`, the old macro-enabled
-  workbook, was never read or written by the app either, and has since been
-  retired entirely — see [History](#history-retiring-expense-summaryxlsm)
-  below.)
-- If a sheet is protected/locked — whether via the app's own lock toggle (see
-  above) or by hand in Excel (Review → Protect Sheet) — the app refuses to
-  write to it rather than silently editing through the lock.
-- The first time a given workbook (a year's `Expenses (YYYY).xlsx`,
-  `Finances.xlsx`, `Debts.xlsx`, `CreditCardBills.xlsx`, `EMI.xlsx`, or
-  `Subscriptions.xlsx`) is written to in a server run, a timestamped copy is
-  saved to a `.backups/` folder next to it. Only the 10 most recent backups
-  per file are kept — older ones are pruned automatically on the next write,
-  since the Scheduled Task restarting at every login otherwise means one
-  fresh backup per file per login, forever (observed: ~90 files in 11 days
-  on real usage before this cap existed).
+- **Your data** lives in the copy's own Supabase Postgres database. Every
+  table has row-level security on with no policies, so Supabase's public
+  data API can't read it; only the app's API, after checking the owner's
+  sign-in, can. Free Supabase projects have no restorable backups and pause
+  after about a week unused. See [DEPLOY.md](docs/DEPLOY.md#backups) for
+  taking your own backup and unpausing.
 
 ## Project layout
 
 ```
-server/   Express API (TypeScript). All Excel reading/writing lives in
-          server/src/excel/ — categoryColors.ts (maps a cell's fill color
-          to a category from the `categories` table — see Configuring
-          categories above),
-          workbookIO.ts (shared safe-write: backup + temp-file-then-rename,
-          used by every file below), dateMath.ts (shared month/day
-          arithmetic for EMI's decay and Subscriptions' renewal-advance),
-          ledger.ts (expense read/append logic against Expenses (YYYY).xlsx),
-          finances.ts (Salary/Balance/Savings against its own
-          Finances.xlsx), debts.ts (who-owes-whom against its own
-          Debts.xlsx), creditCardBills.ts (per-card bills against its own
-          CreditCardBills.xlsx), emi.ts (loan snapshots + auto-decay against
-          its own EMI.xlsx), subscriptions.ts (auto-advancing renewals
-          against its own Subscriptions.xlsx), and overview.ts (read-only
-          aggregation across all of the above for the Dashboard's Net Worth
-          + Upcoming widget — no workbook of its own, never writes).
-          server/test/ — vitest suite + the synthetic-fixture builder.
-client/   React + Vite frontend. Nav bar order: Dashboard, Expenses,
-          Credit Cards, Debts, EMI, Subscriptions, Finances — see
-          src/components/. Expenses (the Add Expense form + the selected
-          month's entry list) is also reached via a Dashboard chart click.
-e2e/      Full-stack Playwright regression script (see Testing below).
-scripts/  kill-ports.js — frees the dev ports before/on demand; run-server.bat
-          + run-server-hidden.vbs — the Scheduled Task launch chain (see
-          Remote access below).
-docs/     screenshots/ — images embedded in this README (See it in action).
-README.md, ARCHITECTURE.md — this file (domain/features) and the technical
-          reference (module map, request lifecycle, API surface), at the
-          repo root alongside these folders.
+client/     React 19 + Vite app. src/components/ (one .tsx + .css per piece),
+            src/auth/ (Supabase sign-in, session, sign-out), src/api.ts
+            (every API call, with the owner's token).
+server/     Express API (TypeScript).
+  src/      app.ts (createApp: logging, auth, section gate, routes, errors),
+            routes.ts, auth.ts, modules.ts, index.ts (local entry point),
+            db/ (Postgres client, transactions), store/ (SQL, one module per
+            concern), domain/ (pure calculations, no I/O).
+  test/     vitest suites, run against the local Supabase Postgres.
+netlify/    functions/api.ts: the whole API as one Netlify Function.
+supabase/   config.toml (local stack), migrations/ (the schema),
+            seed.sql (local only: default categories + a test owner).
+e2e/        Playwright scripts: regression, expenses-only pass, screenshots.
+scripts/    kill-ports.js (frees this checkout's dev ports);
+            legacy-excel/ (old Excel readers, kept for the planned importer).
+docs/       DEPLOY.md, architecture/ (HLD, LLD), adr/, screenshots/.
+netlify.toml
 ```
 
-## Setup
+[LLD §1](docs/architecture/LLD.md#1-repository-layout-target) lists every
+module.
 
-**Prerequisites**: [Node.js](https://nodejs.org) 22+ and git. Setup,
-Running, and Testing below all work the same on macOS/Linux/Windows — only
-the [Remote access](#remote-access-tailscale) section further down is
-Windows-specific, and it's entirely optional.
+## Local development
 
-1. **Get the code:**
+**Prerequisites:** [Node.js](https://nodejs.org) 22+, git, and
+[Docker](https://www.docker.com/products/docker-desktop/) (Docker Desktop
+on Windows/macOS) for the local Supabase stack. The Supabase CLI runs
+through `npx supabase`.
+
+1. **Get the code and install.** This is an npm-workspaces monorepo: one
+   install at the root covers `server/`, `client/` and the e2e scripts.
 
    ```
-   git clone https://github.com/Simba3696/ledger.git
+   git clone <repository URL>
    cd ledger
-   ```
-
-2. **Install dependencies.** This is an npm-workspaces monorepo — one
-   install at the root covers `server/`, `client/`, and the e2e script, no
-   need to run it separately in each folder:
-
-   ```
    npm install
    ```
 
-3. **Try it before pointing at real data.** With no further configuration,
-   the app reads/writes a `db/` folder at the repo root (created empty on
-   first use) — jump to [Running](#running) and add a few throwaway entries
-   to see how it behaves before trusting it with your real spreadsheets.
-
-4. **Point it at your real Excel files**, once you're ready, by creating
-   `server/.env` (copy from `server/.env.example`, which documents every
-   variable both `server/.env` and `client/.env` support):
+2. **Start the local Supabase stack** (Postgres on 54322, API on 54321,
+   Studio on 54323, Mailpit on 54324). The first run pulls Docker images.
 
    ```
-   LEDGER_DB_DIR=C:/path/to/your/Expenses/folder
+   npx supabase start
+   npx supabase db reset   # applies supabase/migrations + supabase/seed.sql
    ```
 
-   Forward slashes work in this path on every OS, including Windows —
-   simplest to just always use them here rather than worrying about
-   backslash-escaping. This is the same variable the deployment scripts in
-   [Remote access](#remote-access-tailscale) point at, and can equally be a
-   plain environment variable instead of a `.env` file if you'd rather set
-   it that way.
+   The seed creates the default categories and a local owner account,
+   `owner@example.test` with password `local-owner-password`. It's never
+   applied to a hosted project.
 
-   **This still isn't a fully generic Excel importer.** The app only works
-   against `Expenses (YYYY).xlsx` files that already follow the column
-   layout described in [How it works](#how-it-works) above — Amount in
-   column A, Remarks in B, an optional CC marker in C. The *category set*
-   itself is configurable (see [Configuring categories](#configuring-categories)
-   below), so a spreadsheet using a similar color-coding scheme with
-   different categories/colors can now point `LEDGER_DB_DIR` at it directly
-   — but the column positions themselves are still fixed. If your own
-   spreadsheet's columns are laid out differently, either reshape a copy to
-   match before pointing `LEDGER_DB_DIR` at it, or treat this project as a
-   reference for the same *approach* applied to your own layout instead —
-   see [Why this exists](#why-this-exists) and
-   [ARCHITECTURE.md](ARCHITECTURE.md) for what would need to change.
+3. **Create the `.env` files** from the examples, which document every
+   variable the code reads. Both are gitignored.
+
+   - `server/.env` from `server/.env.example`:
+
+     ```
+     DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
+     SUPABASE_URL=http://127.0.0.1:54321
+     OWNER_EMAIL=owner@example.test
+     ```
+
+   - `client/.env` from `client/.env.example`: `VITE_SUPABASE_URL` and
+     `VITE_SUPABASE_ANON_KEY`, both printed by `npx supabase status`
+     (the URL is `http://127.0.0.1:54321`).
+
+4. **Run it:**
+
+   ```
+   npm run dev
+   ```
+
+   This starts the API on `http://localhost:4000` and the client on
+   `http://localhost:5173` (or the ports in your `.env` files), both with
+   hot reload. Open the client and sign in as `owner@example.test` /
+   `local-owner-password`.
+
+   `npm start` instead builds everything once and serves the client and
+   API from a single process on the server's port, without hot reload.
+   `npm run stop` frees both ports.
+
+Studio (`http://127.0.0.1:54323`) shows the local tables. `npx supabase stop`
+stops the stack and keeps its data; `npx supabase db reset` wipes the local
+database back to the seed.
+
+Schema changes go through new migration files only
+(`npx supabase migration new <name>`, then `npx supabase db reset`). Never
+edit a migration that's already been applied anywhere.
+
+`AUTH_DISABLED=true` in `server/.env` skips the API's sign-in check for
+local experiments. It's refused in production and on Netlify, and
+`npm run test:e2e` refuses to run with it. Normal local development signs in
+for real against the local stack, as above.
+
+### Running a second checkout alongside an existing one
+
+Ports are overridable for this case: a separate clone, branch or `git
+worktree` running at the same time as another checkout. In the second
+checkout, set `PORT=4100` (or any free port) in `server/.env`, and in
+`client/.env` both `VITE_DEV_PORT=5273` and
+`VITE_API_PROXY_TARGET=http://localhost:4100` (the same port as `PORT`, so
+the client's `/api` calls reach *this* checkout's server; it defaults to
+`http://localhost:4000`).
+
+This matters because `npm run dev`, `npm start`, `npm run stop`,
+`npm run test:e2e` and `npm run screenshots` run `scripts/kill-ports.js`
+first, which force-kills whatever is listening on the configured ports.
+Without an override, starting a second checkout would kill the first
+one's server. `kill-ports.js` reads the same `PORT`/`VITE_DEV_PORT` values
+from `server/.env`/`client/.env`, so once both are set it only targets its
+own checkout's ports. (The Supabase stack's ports are shared by every
+checkout on the machine, and so is its database.)
 
 ## Configuring categories
 
-The default 4 categories (Food/Transportation/Rent/Other, matching the
-colors described in [How it works](#how-it-works)) are just that — a
-default, not a hardcoded limit. Categories live in the Postgres
-`categories` table (one row per category, shown in `position` order). When
-the table is empty, the server fills it with those 4 defaults on the first
-read, so a fresh database needs no setup step. Insert, delete, or update rows
-(for example in Supabase Studio or with `psql`) to add, remove, rename, or
-recolor categories for your own spreadsheet's scheme. Changes take effect on
-the next request, no restart needed.
+The default 4 categories (Food/Transportation/Rent/Other) are a default,
+not a fixed list. Categories live in the Postgres `categories` table, one
+row per category, shown in `position` order. When the table is empty, the
+server fills it with the 4 defaults on the first read, so a fresh copy
+needs no setup step. Insert, delete, or update rows (in Supabase Studio's
+**Table Editor**, or with `psql`) to add, remove, rename, or recolor
+categories. Changes take effect on the next request, no restart needed.
 
 Each row:
 
@@ -568,412 +469,123 @@ insert into categories (id, label, bg, fg, position)
 values ('food', 'Food', '#FFFF00', '#3d3d00', 0);
 ```
 
-- `id` — stable key stored in the app's own data (not in the `.xlsx` files
-  themselves, which only ever store the color) — avoid changing an existing
-  category's `id` once you've used it, or entries already categorized under
-  the old id will show as uncategorized.
-- `label` — display name shown in the picker, entry list, and dashboard
-  chart legend.
-- `bg` — the cell fill color, as plain CSS hex (`#RRGGBB`), not Excel's ARGB
-  format — the app converts internally wherever it writes to a workbook.
-- `fg` — text color shown on that background. **Optional** — if null,
-  the app computes a readable one from `bg` on every read (darkens the same
-  hue, or falls back to whichever of black/white contrasts better for an
-  already-dark/saturated background) — so a hand-written row only ever
-  needs `id`/`label`/`bg`/`position`.
-- `position` — display order (ascending) in the picker, entry list, and
+- `id`: the stable key each expense stores. Changing an existing
+  category's `id` updates the expenses that use it, but a category that's
+  in use can't be deleted.
+- `label`: display name in the picker, entry list, and dashboard chart
+  legend.
+- `bg`: the category's color, as CSS hex (`#RRGGBB`).
+- `fg`: text color shown on that background. **Optional**: if null, the
+  app computes a readable one from `bg` on every read (a darker shade of
+  the same hue, or whichever of black/white contrasts better for an
+  already-dark or saturated background), so a hand-written row only needs
+  `id`/`label`/`bg`/`position`.
+- `position`: display order (ascending) in the picker, entry list, and
   chart legend.
 
-Adding a category is additive and safe — existing entries in your `.xlsx`
-files keep whatever color they already have regardless of what's in the
-`categories` table at the moment; a color that doesn't match any configured
-category's `bg` just reads back as "Uncategorized" in the app (the
-underlying cell and its fill color are untouched either way).
+## Choosing sections (ENABLED_MODULES)
 
-## Running
+The server's `ENABLED_MODULES` setting picks which sections a copy shows: a
+comma-separated list of `expenses`, `finances`, `debts`, `emi`,
+`credit-cards` and `subscriptions` (case-insensitive). Unset or blank
+shows them all. The Dashboard is always on, and shows only the parts whose
+sections are on. A disabled section's tab is hidden and its API routes
+answer 404. An unknown name stops the server at startup, so a typo can't
+silently hide a section.
 
-```
-npm run dev
-```
+Every table exists in every copy, so turning a section on later is just a
+change to the setting and a redeploy, with no database step; the client
+asks the server which sections are on (`GET /api/config`) when it loads.
+Turning one off keeps its data. See
+[DEPLOY.md](docs/DEPLOY.md#turning-on-another-section-later),
+[ADR-0006](docs/adr/0006-enabled-modules-per-deployment.md) and
+[LLD §5.1](docs/architecture/LLD.md#51-enabled-modules).
 
-Starts the API on `http://localhost:4000` and the frontend on
-`http://localhost:5173`, both with hot-reload — this is the mode for actually
-working on the code.
+## Deploying
 
-For everyday use where you're not making changes, `npm start` instead:
-
-```
-npm start
-```
-
-Builds the client and server once, then serves the whole app — client
-included — from a single process on `http://localhost:4000`. No hot-reload
-or file-watching, so it starts faster and uses less memory than `npm run dev`.
-Re-run it after pulling in code changes to pick them up (it always rebuilds
-first).
-
-Either way, to stop everything:
-
-```
-npm run stop
-```
-
-### Running a second checkout alongside an existing one
-
-Ports are overridable, for exactly this case: a separate clone/branch/`git
-worktree` you want to run at the same time as another checkout without the
-two colliding — e.g. experimenting on a feature branch while a stable branch
-stays running as the "real" instance elsewhere. Create `server/.env` with
-`PORT=4100` (or any free port), and `client/.env` with matching
-`VITE_DEV_PORT=5273` and `VITE_API_PROXY_TARGET=http://localhost:4100` (must
-point at the same value as `PORT` above, so the frontend's `/api` calls
-reach *this* checkout's server, not the other one's). Both `.env` files are
-gitignored — local to one checkout, never shared or committed.
-
-This matters specifically because `predev`/`prestart` run
-`scripts/kill-ports.js` automatically, which force-kills whatever's
-currently listening on the dev ports before starting — without an override,
-starting a second checkout would kill the *first* checkout's server, not
-just fail to bind. `kill-ports.js` reads the same `PORT`/`VITE_DEV_PORT`
-values from `server/.env`/`client/.env`, so once both are set it only ever
-targets its own checkout's ports.
-
-## Remote access (Tailscale)
-
-Optional, and **Windows-only** (Scheduled Task + PowerShell firewall
-commands below are Windows-specific — the app itself isn't, but this
-particular always-on setup is). Skip this whole section if `npm run dev` /
-`npm start` on the one machine you use is enough.
-
-The goal: the server starts automatically at login with no visible window,
-and is reachable from your other personal devices (e.g. a phone) over
-[Tailscale](https://tailscale.com), a private mesh VPN — no public internet
-exposure, no separate login/auth needed in the app itself, since only
-devices already enrolled in your own Tailscale account can reach it.
-
-1. **Install and sign in to Tailscale** on this machine and on whichever
-   other device(s) you want to reach the app from (its own phone/desktop
-   apps): `winget install Tailscale.Tailscale`, then sign in with the same
-   account on every device you want on the same private network (a free
-   personal Tailscale account covers this). `tailscale status` lists every
-   device currently on your tailnet; `tailscale ip -4` prints this machine's
-   stable private IP — that's the address you'll reach the app at.
-
-2. **Open the port in Windows Firewall**, from an elevated PowerShell
-   (**Run as Administrator**):
-
-   ```powershell
-   New-NetFirewallRule -DisplayName "Ledger (Tailscale)" -Direction Inbound `
-     -Action Allow -Protocol TCP -LocalPort 4000 -Profile Private `
-     -RemoteAddress 100.64.0.0/10
-   ```
-
-   The `-RemoteAddress 100.64.0.0/10` scopes this to Tailscale's own address
-   range (every device's Tailscale IP falls in it) — without it, the rule
-   would accept a connection to port 4000 from *any* device on whatever
-   network this machine is currently on, which defeats the "no public
-   exposure" point of using Tailscale in the first place the moment this
-   laptop joins an untrusted network (a café/airport/hotel Wi-Fi) — the app
-   itself has no login, so that would mean full read/write access to your
-   real financial data from anyone else on that same network. `-Profile
-   Private` is a second, independent layer on top of that (Windows won't
-   even consider the rule on a network you haven't marked Private), not a
-   substitute for the `-RemoteAddress` restriction.
-
-   If the app still isn't reachable afterward, check for a *stale* rule
-   already blocking/shadowing it first — Windows keeps old firewall entries
-   from previous Node installs (e.g. via nvm/nvs) around indefinitely, and
-   one that doesn't match your current `node.exe` path won't actually cover
-   this app even if it looks similar at a glance.
-
-3. **Register the Scheduled Task**, so the server starts silently at every
-   logon instead of you having to run `npm start` by hand. The Scheduled
-   Task itself needs an absolute path to the `.vbs` file below — fill in
-   wherever you actually cloned the repo:
-
-   ```powershell
-   $action = New-ScheduledTaskAction -Execute "wscript.exe" `
-     -Argument '"C:\path\to\ledger\scripts\run-server-hidden.vbs"'
-   $trigger = New-ScheduledTaskTrigger -AtLogOn
-   Register-ScheduledTask -TaskName "Ledger" -Action $action -Trigger $trigger `
-     -Description "Starts the Ledger server at logon"
-   ```
-
-   `run-server-hidden.vbs` launches `run-server.bat` (in the same folder)
-   with its window hidden — the indirection through both files, rather than
-   pointing the Scheduled Task at `npm start` directly, is what gets rid of
-   the visible console window. Both scripts locate themselves relative to
-   their own file location (`%~dp0` / `WScript.ScriptFullName`), so — apart
-   from the one absolute path Task Scheduler itself requires above — nothing
-   inside either script needs editing regardless of where you cloned the repo.
-
-4. **Manage it later** via Task Scheduler's GUI, or from PowerShell:
-   `Get-ScheduledTask -TaskName Ledger`, `Start-ScheduledTask -TaskName
-   Ledger`, `Stop-ScheduledTask -TaskName Ledger`,
-   `Unregister-ScheduledTask -TaskName Ledger`.
-
-5. **Optional: a Start Menu/Desktop icon to open it**, since the server is
-   already running and there's nothing left to "start" — just a shortcut
-   that opens the app itself, in its own window rather than a regular
-   browser tab (Edge's `--app=` mode: no address bar/tabs, its own taskbar
-   icon). Give it a dedicated Edge profile too, so it can never end up
-   sharing a process with your regular browsing:
-
-   ```powershell
-   $profileDir = "$env:LOCALAPPDATA\LedgerAppProfile"
-   New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-
-   $edgePath = (Get-ItemPropertyValue `
-     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe" -Name "(default)")
-
-   $shell = New-Object -ComObject WScript.Shell
-   $lnk = $shell.CreateShortcut("$env:USERPROFILE\Desktop\Ledger.lnk")
-   $lnk.TargetPath = $edgePath
-   $lnk.Arguments = "--app=http://localhost:4000 --user-data-dir=`"$profileDir`""
-   $lnk.Save()
-   ```
-
-   Copy the same `.lnk` into `$env:APPDATA\Microsoft\Windows\Start Menu\Programs`
-   for a Start Menu entry too.
-
-Once steps 1–3 are done, the app is reachable at `http://<tailscale-ip>:4000`
-from any other device on the same tailnet, and `http://localhost:4000` on
-this machine — both survive a reboot without you doing anything. Steps 4–5
-are just for managing/opening it conveniently once it's already running.
+[docs/DEPLOY.md](docs/DEPLOY.md) walks through creating the Supabase
+project, applying the migrations, creating the owner account, creating
+the Netlify site, every environment variable, and troubleshooting.
+`netlify.toml` holds the build settings; [LLD §7](docs/architecture/LLD.md#7-netlify-packaging)
+explains the packaging.
 
 ## Testing
 
-Two suites, covering different layers:
+Everything runs against the **local** Supabase stack. The test helpers
+refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
 
-- **`npm test`** — vitest, ten files. `server/test/ledger.test.ts` covers
-  `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
-  synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
-  (never real data — nothing sensitive is committed), including a couple of
-  specific regression tests for the shared-style-object bug described above:
-  they seed two entries with *deliberately identical* style (same category,
-  both non-last rows) so ExcelJS's normal dedup gives them a shared style
-  object on read, then assert that editing/deleting one doesn't cascade into
-  the other, plus `isMonthLocked`/`setMonthLocked` — a never-locked month
-  defaults to unlocked, a sheet already protected by hand in Excel reports
-  locked without the app having touched it, a missing year reports unlocked
-  rather than erroring, and locking a month via the app rejects a subsequent
-  write with a 403 while unlocking it (including a sheet protected outside
-  the app) restores writes. `server/test/finances.test.ts` covers `getMonthIncome`/
-  `setMonthIncome`/`financeSummary`'s Balance/Cumulative/Minimum Savings/
-  Money Earned/Spent math, including carrying a Current Savings snapshot
-  forward across unset months, and `previousSavings` — the per-scheme
-  baseline the client computes deposit/withdrawal deltas against — carrying
-  forward correctly across untouched months and a year boundary, and being
-  empty only for the very first possible month.
-  `server/test/debts.test.ts` covers add/update/
-  delete and the sign convention. `server/test/creditCardBills.test.ts`
-  covers per-card entries summing correctly into totals, the earliest-due-
-  date computation, and Overpaid/Saved counting only settled cards' gaps
-  (an unsettled card's raw due/paid gap contributes nothing, a settled one's
-  does, and Total Due/Total Paid stay unaffected either way).
-  `server/test/dateMath.test.ts` covers
-  the shared month/day arithmetic (day-of-month clamping, year rollover, leap
-  years). `server/test/emi.test.ts` covers the Remaining snapshot-decay math
-  (including a due-day clamp and the paid-off floor at zero), the
-  estimated-payoff-month calculation and how a stored Duration overrides it,
-  that a Duration survives edits/payments that don't resupply it but gets
-  replaced by a fresh one that does, and `recordEmiPayment`'s due-date
-  anchoring — specifically that an early payment isn't later double-decayed
-  once the due date passes, that paying the standard amount after the due
-  date is a no-op, and that several unrecorded months get caught up
-  correctly in one payment. Also `dueDateOnOrAfter` correctly rolling a
-  bank-stated Duration target into the following month when its
-  day-of-month falls before the loan's own due day (the exact real-data case
-  that motivated the fix: Until Target 2030-05-23 with due day 9 resolves to
-  2030-06-09, not the 23rd), the EMI-Free On stat picking the *latest*
-  `estimatedPayoffDate` across every loan rather than just the most recently
-  added one, that optional `interestRate`/`foreclosureCharge` round-trip
-  correctly (including that `0` is preserved as a real value distinct from
-  omitted/`null`), the true foreclosure payoff (standard reducing-balance
-  amortization of the outstanding principal, plus any foreclosure charge —
-  verified against a hand-computed example, that it gracefully equals
-  `remaining` exactly when no interest rate is on record, and the
-  zero-division guards), and `emiMonthlyProjection` bucketing installment
-  count/total correctly by month — including a regression test for the
-  exact stale-`asOfDate` crash reproduced against real data (anchoring the
-  projection on `asOfDate` alone, rather than whichever is later of
-  `asOfDate` or today, could walk it into a due date before the
-  projection's first bucketed month). `server/test/subscriptions.test.ts`
-  covers the Expiry auto-advance for both Monthly and Yearly cycles.
-  `server/test/overview.test.ts` covers the Net Worth arithmetic (savings
-  minus debt minus EMI remaining minus this month's unpaid credit cards,
-  including that offsetting positive/negative debts net to exactly zero
-  rather than being dropped) and the Upcoming window — an EMI/Subscription/
-  Credit Card item due within 14 days is included, one already fully paid
-  is excluded, next month's credit card bills are picked up too when they
-  fall inside the window near month-end, a card-linked EMI is excluded (its
-  own matching Credit Card Bill entry already represents it) while a
-  standalone loan with no matching card still shows, that recording a
-  payment for the current cycle advances which cycle shows in Upcoming next
-  instead of continuing to show the one just paid, and that a card's
-  **Settled** checkbox (not a raw due/paid gap) is what zeroes out its
-  contribution to Net Worth and drops it from Upcoming — an unsettled card
-  counts its full gap even if tiny, and a settled card contributes exactly 0
-  even if it was overpaid on paper. It also covers the salary reminder — a
-  nudge to log last month's salary that appears only during the first two
-  weeks of a new month if last month's Finances entry has no salary on
-  record, sorting first regardless of other items' due dates, and gone
-  entirely once that salary is logged or once the two-week window passes.
-  `server/test/workbookIO.test.ts` covers the backup mechanism itself: only
-  one backup per file per process run (not one per save), pruning down to
-  the most recent 10 per file, and that pruning one file's backups never
-  touches another file's, plus `withFileLock` itself — calls for the same
-  key never overlap and run in submission order, a call that throws doesn't
-  jam the queue for whatever's queued behind it, and calls under different
-  keys never wait on each other. `ledger.test.ts` also has a dedicated
-  regression test firing 8 `appendEntry` calls at the same month
-  concurrently (`Promise.all`, no `await` between them) and asserting all 8
-  land on distinct rows with none lost — the exact bug class `withFileLock`
-  exists to close (see ARCHITECTURE's Safe writes). `server/test/categoryColors.test.ts` covers
-  the `categories` table's read-or-create behavior (an empty table is filled
-  with the 4 defaults on first read and never refilled once it has rows, a
-  saved custom config is returned afterward in `position` order, and the
-  schema accepts a null `fg` but rejects a malformed one),
-  `deriveForegroundColor`'s WCAG contrast math against a representative
-  range of backgrounds (verified independently, not just trusting the
-  implementation to grade its own homework) including the specific case
-  that motivated picking whichever of black/white contrasts better rather
-  than hardcoding white (pure red only reaches ~4:1 against white, short of
-  the 4.5:1 AA bar, but ~5.25:1 against black), that an explicit `fg` in
-  the row is preserved rather than overwritten by the derivation.
-  Fast (a few seconds), no browser or dev server needed — this is the one to
-  run after any change under `server/src/excel/`.
-- **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
-  the `@playwright/test` runner). Builds a scratch data directory seeded with
-  a full year (so switching months never legitimately 404s), starts the real
-  dev server against it, and drives an actual browser through the full app:
-  Dashboard-is-default, chart click-through navigation (main chart and the
-  per-category mini-charts, including their synced hover), a custom 5th
-  category seeded into the `categories` table rendering correctly end to end (chip
-  color, saved entry's color, its own dashboard mini-chart — proof
-  the table actually drives the app, not just that the shipped
-  defaults still work), month/year
-  selects, add (cash + card), edit, drag-reorder, Move up/Move down via the
-  overflow menu, delete, month locking (a never-locked month's unlocked
-  banner by default, locking disabling the Add Expense form and stripping
-  existing entries' drag handle/overflow menu, a locked month rejecting a
-  raw `fetch` write with 403 — not just a disabled UI control, and unlocking
-  restoring everything), Finances entry + persistence (including the
-  savings delta editor's live total), Debts add/edit/delete/sort (including
-  the duplicate-name consolidate-or-new prompt), EMI add/edit/delete/sort
-  (by Name, Due Day, EMI Amount, Remaining, and % Paid — ascending then
-  descending on each) (including the
-  Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
-  payoff estimate and surviving edits, the "Paid this month"/"Record
-  payment" quick actions, and the true foreclosure payoff line appearing
-  (and being less than Remaining) once an interest rate is on record and
-  disappearing once it's cleared), Subscriptions add/edit/delete/sort (by Next
-  Renewal, Service, and Amount) (including the stale-anchor auto-advance),
-  Credit Cards add/edit/persistence and drag-reorder (including that the
-  reordered order survives a reload), the Dashboard Overview widget (Net
-  Worth combining figures from Finances/Debts/EMI/Credit Cards, the
-  Upcoming list surfacing an EMI and a credit card bill both due the same
-  day, the Upcoming fold/collapse toggle defaulting open and persisting
-  its state across a reload, and — only when the suite happens to run
-  within the first two weeks of a month — the salary reminder naming last
-  month, jumping to Finances on click, and disappearing once that salary is
-  logged), the Upcoming EMIs chart (empty state with no
-  active EMIs, bars rendering once one exists, and its legend showing both
-  series), and theme toggle + persistence — failing loudly on both
-  failed assertions and any browser console error. It then runs a second,
-  shorter pass, `e2e/expensesOnly.ts`, with the server started under
-  `ENABLED_MODULES=expenses`: only the Dashboard and Expenses tabs, expense
+- **`npm test`**: the server's vitest suites in `server/test/`. They cover
+  the pure calculations (date math, EMI decay, payoff and foreclosure math,
+  subscription renewal advance, finance series, credit card totals,
+  category colors, "today" in `APP_TIMEZONE`), every store module against
+  real Postgres (including month locking, reordering, concurrent appends,
+  the categories read-or-create, and the Dashboard overview's Net Worth,
+  Upcoming and salary-reminder rules), the schema's constraints, input
+  validation, `ENABLED_MODULES` parsing and the overview per section
+  subset, and the API through `createApp` (auth: missing, malformed,
+  expired, wrongly signed and non-owner tokens; startup configuration
+  checks; error mapping; the request log; the Netlify handler).
+  [LLD §10](docs/architecture/LLD.md#10-testing) has the full list. It takes
+  a few seconds. It **truncates the local tables**, so run
+  `npx supabase db reset` afterwards if you want the seeded categories back
+  for `npm run dev`.
+- **`npm run test:e2e`**: two Playwright scripts (plain scripts, not the
+  `@playwright/test` runner). Each resets the local database, starts the
+  dev server on this checkout's ports, and signs in through the real
+  sign-in form as the seeded owner. `e2e/regression.ts` drives the whole
+  app: Dashboard and chart click-through, a custom category seeded into the
+  `categories` table rendering end to end, every tab's add/edit/delete/sort,
+  reordering, month locking (including a raw API write to a locked month
+  getting a 403), the Dashboard overview and Upcoming EMIs chart, theme
+  persistence, and the auth flows (a request without a token is a 401, a
+  wrong password, sign-out, the not-allowed screen, a mid-session 401
+  signing out with a notice). `e2e/expensesOnly.ts` then runs with
+  `ENABLED_MODULES=expenses`: only Dashboard and Expenses tabs, expense
   add/edit/delete, a Dashboard with no card from a disabled section, and a
-  disabled section's API answering 404. Seeds the *real current*
-  month/year (not a hardcoded one), since edit/delete/reorder are only
-  enabled in the UI for a month that isn't locked, and a freshly-seeded
-  month never is by default. Slower (~20–25s) and needs
-  its own dev ports free (overridable via `.env`, see "Running a second
-  checkout alongside an existing one" above) — this is the one to run after
-  any client-side change, or before considering a session's changes done.
+  disabled section's API answering 404. Both fail on any browser console
+  error. Run it after any client or server change.
+- **`npm run screenshots`**: `e2e/screenshots.ts` regenerates
+  `docs/screenshots/dashboard.png` and `dashboard-dark.png` from a fixed
+  fictional dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home Loan,
+  Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY), using the same
+  isolation as e2e and asserting every tab is empty before adding anything.
 
-- **`npm run screenshots`** — `e2e/screenshots.ts` (Playwright, plain
-  script). Regenerates `docs/screenshots/dashboard.png` and
-  `dashboard-dark.png` against a fixed fictional demo dataset (Alex/Sam,
-  Visa Rewards/Amex Gold, Car Loan/Home Loan, Netflix/Spotify/Amazon Prime,
-  Emergency Fund/PPF/NPS/APY — the same cast every other screenshot already
-  uses). Deliberately copies `e2e/regression.ts`'s exact isolation recipe
-  (`LEDGER_DB_DIR` passed as an env var to a `npm run dev` spawned on this
-  checkout's own ports, never a separate custom port) rather than a
-  from-scratch setup — see the comment at the top of the file for why: an
-  earlier attempt used a separate worktree with its own overridden ports so
-  it could run *alongside* the real server, which left the client's dev
-  proxy silently defaulting to the real one instead, and every "demo" entry
-  written by that run landed in real data. Also asserts every tab is empty
-  before adding anything, as a second independent guard. Stops the real
-  server as a side effect (same as `test:e2e`) — rebuild and restart it
-  afterward (see **Deployment** below).
+Typechecks:
 
-Both suites are self-contained: they create their own temp data directories
-and never touch the real `Expenses` folder.
+```
+(cd client && npx tsc -b)
+(cd server && npx tsc --noEmit)                          # server src + tests
+(cd server && npx tsc -p tsconfig.build.json --noEmit)   # what the server build compiles
+(cd server && npx tsc -p ../netlify/tsconfig.json)       # the Netlify function
+```
+
+Run the server checks from `server/` so they use the server's own
+TypeScript version.
 
 ## Notes / gotchas
 
-- The target `.xlsx` file must be closed in Excel while adding entries through
-  the app — Excel holds an exclusive lock, and a write while it's open will
-  fail with a clear error rather than corrupting the file.
-- Adding an entry for a year with no workbook yet (e.g. next January) creates
-  `Expenses (YYYY).xlsx` automatically — 12 blank month sheets, matching your
-  own `Expenses (202X).xlsx` template exactly (just an Amount/Remarks header;
-  no formulas or protection to copy). The new entry's own formatting (number
-  format, borders, alignment, category fill) comes from the same fallback
-  logic already used for the first entry on any sheet.
-- ExcelJS shares one JS style object across every cell that happens to have
-  the same style index (normal XLSX dedup — see `getStyleModel()` in its
-  source), and its `.fill`/`.border`/etc setters mutate that object in place.
-  Every cell this app writes to is detached (`ledger.ts`'s `detachStyle()`)
-  before any property is touched, specifically to prevent a write to one
-  entry from silently changing others that happened to share a style.
+- A phone's numeric/decimal keyboard has no "-" key, so
+  `<input type="number">` made a negative amount impossible to type on iOS.
+  Signed amounts (Debts, the savings delta) use a shared
+  `SignedAmountInput` component instead: an explicit two-button sign toggle
+  (You owe/Owed to you, Deposit/Withdrawal) plus a magnitude-only field.
 - On Windows, `npm run dev`'s process tree is several layers deep
   (`concurrently` → per-workspace `npm` shims → `tsx watch` / `vite`), and
-  Ctrl+C or closing the terminal window doesn't always propagate down through
-  every layer — an orphaned Node process can occasionally keep a port held
-  after you've "closed" the app. This is self-healing: `predev`/`prestart`
-  both run `scripts/kill-ports.js` automatically before starting, so the
-  *next* launch always clears anything left over. Run `npm run stop`
-  directly if you want to clean up without immediately restarting.
-- A phone's numeric/decimal on-screen keyboard has no "-" key at all —
-  `<input type="number">` for a signed amount (Debts, the savings delta
-  above) made entering a negative value flat-out impossible on iOS. Both
-  now use a shared `SignedAmountInput` component: an explicit two-button
-  sign toggle (You owe/Owed to you, Deposit/Withdrawal) plus a
-  magnitude-only field that never needs a minus sign, which also reads
-  more clearly than the old implicit "+/-" prefix convention did, even on
-  desktop.
-- Never hand-write a one-off script that drives the app's UI against real
-  data, even for something as low-stakes as regenerating a screenshot — use
-  (or extend) `npm run screenshots`/`e2e/screenshots.ts`. A 2026-09-19
-  incident did exactly this with a custom-port worktree meant to run
-  *alongside* the real server: the client dev proxy silently defaulted to
-  the real one anyway (see `client/vite.config.ts`'s `VITE_API_PROXY_TARGET`
-  fallback under **Deployment** below), and a second bug — filling a form by
-  row position, assuming the positions were blank — overwrote several real
-  Debts/EMI/Subscriptions/Credit Cards/Finances rows before anyone noticed.
-  Some of it (Credit Cards) was unrecoverable. `e2e/screenshots.ts` exists
-  specifically so this can't recur: same ports as the real server (so
-  `predev`'s `kill-ports.js` frees them first, same as `test:e2e`), never a
-  separate one, plus an explicit empty-tab assertion before writing
-  anything.
-
-## History: retiring Expense Summary.xlsm
-
-Every sheet that used to live only in `Expense Summary.xlsm` — Summary
-(Finances), Credit Card Bills, Debts, EMI, and Subscriptions — now has a
-fully read/write home in the app, each in its own app-owned workbook with a
-one-time historical backfill cross-validated against the `.xlsm`'s own
-totals (the app itself never read or wrote `.xlsm` directly — it's
-macro-enabled, so that was never worth doing even for a single field).
-
-With every sheet's data fully live in the app, `Expense Summary.xlsm` itself
-has been deleted — Debts/EMI/Subscriptions in particular would only ever go
-stale sitting in a frozen copy, since those change constantly and are now
-tracked for real here. What's kept instead is `Expense Summary (Up to Date
-2025).xlsx` (plain, non-macro), current through December 2025, with the
-Debts/EMI/Subscriptions sheets removed — a snapshot of the parts that
-genuinely are "done" (pre-app history), not a duplicate of what the app
-already tracks live.
+  Ctrl+C or closing the terminal doesn't always reach every layer, so an
+  orphaned Node process can keep a port held. This is self-healing: the
+  next `npm run dev`/`npm start` runs `scripts/kill-ports.js` first. Run
+  `npm run stop` to clean up without restarting.
+- Never hand-write a one-off script that drives the app's UI or API against
+  a real copy's data, even to regenerate a screenshot. Use (or extend)
+  `npm run screenshots` / `e2e/`, which only ever touch the local stack. On
+  the Excel edition, an ad hoc screenshot script once reached the real
+  server through the client's dev proxy (`VITE_API_PROXY_TARGET` defaulting
+  to `http://localhost:4000`) and overwrote real rows by filling forms by
+  position. The e2e scripts' local-host checks and empty-tab assertion
+  exist so that can't recur.
+- Some input the Excel edition accepted is now refused with a 400, because
+  the database enforces the same bounds the API checks (for example an
+  amount that rounds to 0.00, or one of 1e12 or more). See
+  [LLD §11](docs/architecture/LLD.md#11-error-handling-and-logging).
+- Row ids (the `row` field in the API) are database ids: stable, but not
+  positions. Deleting an entry doesn't change other entries' ids.
