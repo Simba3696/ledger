@@ -1,0 +1,44 @@
+---
+name: safe-dev-environment
+description: Rules and commands for running Ledger's dev server, tests, e2e, and screenshot scripts without touching the owner's live production app or real financial data. Use before starting any server, test run, or script in this repo.
+---
+
+# Safe dev environment
+
+The owner's live app runs from a **different checkout** (`D:\codebase\personal\ledger`, branch `personal`) as a Windows Scheduled Task on **port 4000**, reading real Excel files in OneDrive. Nothing done in this worktree may touch it.
+
+## Hard rules
+1. **Ports:** this worktree runs on **4100** (server) and **5273** (Vite), set in the gitignored `server/.env` and `client/.env`. `client/.env` must also set `VITE_API_PROXY_TARGET=http://localhost:4100`. If it doesn't, Vite's proxy silently defaults to :4000, the live app. That exact mistake once wrote demo data into real files.
+2. **`scripts/kill-ports.js`** runs before every `dev` and `start` and force-kills whatever is listening on the configured ports. With the `.env` files missing it would kill the live app. Check them first:
+   ```bash
+   cat server/.env client/.env
+   ```
+3. **Data:** never point `LEDGER_DB_DIR` or `DATABASE_URL` at real data or a hosted Supabase project. Allowed targets:
+   - a fresh temporary directory (Excel edition), or
+   - the local Supabase stack: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`
+4. **Never** run `Start-ScheduledTask`, `Stop-ScheduledTask`, or anything against port 4000 from this worktree.
+
+## Local Supabase stack
+```bash
+npx supabase start     # first run pulls Docker images; prints URLs and keys
+npx supabase status    # is it up? shows DB URL, API URL, anon key
+npx supabase db reset  # re-apply migrations + seed.sql (wipes local data only)
+npx supabase stop      # stop containers (data kept in the Docker volume)
+```
+Ports: API 54321, Postgres 54322, Studio 54323, Mailpit 54324. None collide with the live app.
+
+## Verification commands
+```bash
+(cd client && npx tsc -b)
+npx tsc -p server/tsconfig.build.json --noEmit
+npm test
+npm run test:e2e        # uses 4100/5273 from the .env files
+npm run screenshots     # same isolation recipe; never a custom port setup
+```
+
+## If something might have touched the live app
+Check that it still answers and still has its real data:
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:4000/api/categories
+```
+If it's down, tell the owner. Don't restart it from this worktree. Its rebuild-and-restart procedure belongs to the `personal` checkout.

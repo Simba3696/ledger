@@ -9,6 +9,11 @@ db/
 *.tmp-*
 .env
 .backups/
-.claude/
+# Shared project agents/skills are committed; only machine-local settings aren't.
+.claude/settings.local.json
+.claude/worktrees/
+# Supabase CLI local state (the project config and migrations are committed).
+supabase/.branches/
+supabase/.temp/
 Ledger.bat
 Ledger.ico
