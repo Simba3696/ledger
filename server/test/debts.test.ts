@@ -66,6 +66,13 @@ describe("debts", () => {
     await expect(debts.addDebt({ name: "Someone", amount: NaN })).rejects.toMatchObject({ status: 400 });
   });
 
+  it("rejects a name Postgres can't store (NUL) with a 400, not a database error", async () => {
+    await expect(debts.addDebt({ name: "Some\u0000one", amount: 100 })).rejects.toMatchObject({
+      status: 400,
+      message: "Name contains an invalid character",
+    });
+  });
+
   it("rejects an amount too large for the column with a 400, not a database error", async () => {
     await expect(debts.addDebt({ name: "Someone", amount: 1e12 })).rejects.toMatchObject({ status: 400 });
     await expect(debts.addDebt({ name: "Someone", amount: -1e15 })).rejects.toMatchObject({ status: 400 });

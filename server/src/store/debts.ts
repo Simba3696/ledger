@@ -1,5 +1,6 @@
 import { getSql } from "../db/client.js";
 import { LedgerError } from "../errors.js";
+import { assertMoney, assertText, isPossibleId } from "./validate.js";
 
 export interface DebtEntry {
   /** The debt's database id (opaque and stable; no longer a sheet row). */
@@ -34,25 +35,13 @@ function toEntry(r: DebtRow): DebtEntry {
 
 function validateEntry(name: string, amount: number) {
   if (!name) throw new LedgerError("Name is required", 400);
-  if (!Number.isFinite(amount)) throw new LedgerError("Amount must be a number", 400);
-  // debts.amount is numeric(14,2): at most 12 integer digits. Anything larger
-  // would fail inside Postgres as a "numeric field overflow" (a 500), so
-  // reject it here as a clear validation error instead. (Sub-cent fractions
-  // are rounded to 2 decimals by the column, per LLD §2: all money is numeric(14,2).)
-  // Checked on the rounded cents, since the column rounds first: e.g.
-  // 999999999999.995 is < 1e12 but rounds up to 1000000000000.00 and overflows.
-  if (Math.round(Math.abs(amount) * 100) >= 1e14) throw new LedgerError("Amount is too large", 400);
+  assertText(name, "Name");
+  // Signed (+ you owe, − owed to you), so any finite amount that fits the column.
+  assertMoney(amount, { positive: false });
 }
 
 function notFound(row: number): LedgerError {
   return new LedgerError(`No debt entry at row ${row}`, 404);
-}
-
-/** A `:row` that isn't a positive integer (e.g. Number("abc") = NaN) can't
- * be a real id; the Excel edition 404'd these too, so don't let them reach
- * Postgres as an invalid bigint (which would surface as a 500). */
-function isPossibleId(row: number): boolean {
-  return Number.isSafeInteger(row) && row > 0;
 }
 
 /** Insertion order, matching the Excel edition's sheet order. */

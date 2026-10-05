@@ -24,6 +24,12 @@ Port order (simplest first): debts → subscriptions → emi → creditCardBills
 - Same exported names, parameters and return types as the Excel module.
 - The `row` field and `:row` parameters carry the database `id`.
 - Not found → `LedgerError("No <thing> at row <id>", 404)`. Validation → 400 with the same messages as before, since tests may match on them.
+- Validate with the shared helpers in `server/src/store/validate.ts`. Don't hand-roll your own:
+  - `assertText(value, label)`: Postgres `text` rejects NUL.
+  - `assertMoney(amount, { positive })`: `numeric(14,2)` bounds, checked on the rounded cents.
+  - `isRealDate(value)`: `date` columns reject impossible days.
+  - `isPossibleId(row)`: a non-integer `:row` 404s before any query.
+  `server/src/dbErrors.ts` maps any database refusal that slips past to a 400/409 in `routes.ts`. That's a backstop, not a substitute for field-specific validation.
 - Multi-statement writes go in `withTransaction`. Order-sensitive lists use `position` and are renumbered contiguously inside the transaction.
 - Map snake_case columns to the existing camelCase fields in one place (a `toEntry(row)` function).
 

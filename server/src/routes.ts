@@ -1,4 +1,5 @@
 import { Router, type ErrorRequestHandler } from "express";
+import { mapDatabaseError } from "./dbErrors.js";
 import {
   appendEntry,
   deleteEntry,
@@ -415,7 +416,12 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     res.status(err.status).json({ error: err.message });
     return;
   }
+  const mapped = mapDatabaseError(err);
   console.error(err);
+  if (mapped) {
+    res.status(mapped.status).json({ error: mapped.message });
+    return;
+  }
   res.status(500).json({ error: "Internal server error" });
 };
 
