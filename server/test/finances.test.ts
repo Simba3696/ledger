@@ -1,34 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 // Finances now live in Postgres: dbHelpers must load before any store module.
 import { resetTables, closeSql } from "./dbHelpers.js";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-// financeSummary still reads monthly expense totals from the Excel ledger
-// (not ported yet), so LEDGER_DB_DIR must be set before ledger.ts's top-level
-// DB_DIR evaluates: the store module (which imports it) and fixtures.js are
-// imported dynamically after the env var is set rather than via a static
-// top-level import.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-finance-test-"));
-process.env.LEDGER_DB_DIR = scratchDir;
-
-const finances = await import("../src/store/finances.js");
-const { buildFixtureWorkbook } = await import("./fixtures.js");
+import * as finances from "../src/store/finances.js";
+import { seedYear } from "./ledgerSeed.js";
 
 // The cases below build on each other in order, the same way the Excel
 // edition's shared scratch Finances.xlsx did, so the tables are wiped once up
-// front rather than before every case.
-// categories too, so the first read re-creates DEFAULT_CATEGORIES (as a fresh
-// scratch folder's missing categories.json did) for the fixture workbooks.
-await resetTables("finance_months", "savings_balances", "categories");
-
-function workbookPath(year: number): string {
-  return path.join(scratchDir, `Expenses (${year}).xlsx`);
-}
+// front rather than before every case. financeSummary reads monthly expense
+// totals from the expenses table, cleared here too; categories as well, so
+// the first read re-creates DEFAULT_CATEGORIES (as a fresh scratch folder's
+// missing categories.json did) for the seeded expenses.
+await resetTables("finance_months", "savings_balances", "expenses", "month_locks", "categories");
 
 afterAll(async () => {
-  fs.rmSync(scratchDir, { recursive: true, force: true });
   await closeSql();
 });
 
@@ -164,19 +148,19 @@ describe("financeSummary", () => {
   const YEAR = 2093;
 
   beforeAll(async () => {
-    await buildFixtureWorkbook(workbookPath(YEAR), [
+    await seedYear(YEAR, [
       {
-        name: "January",
+        month: 1,
         entries: [
           { amount: 12000, remarks: "Rent", category: "rent" },
           { amount: 8000, remarks: "Groceries", category: "food" },
         ],
       },
       {
-        name: "February",
+        month: 2,
         entries: [{ amount: 25000, remarks: "Misc", category: "other" }],
       },
-      // No March sheet at all — exercises the "missing sheet degrades to zero" path.
+      // No March entries at all — exercises the "missing month degrades to zero" path.
     ]);
 
     await finances.setMonthIncome({

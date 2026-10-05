@@ -4,7 +4,6 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { router } from "./routes.js";
-import { DB_DIR } from "./excel/ledger.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = path.resolve(__dirname, "../../client/dist");
@@ -36,5 +35,4 @@ if (isBuiltRun && existsSync(CLIENT_DIST)) {
 const port = Number(process.env.PORT ?? 4000);
 app.listen(port, () => {
   console.log(`Ledger server listening on http://localhost:${port}`);
-  console.log(`Reading/writing Excel files in: ${DB_DIR}`);
 });

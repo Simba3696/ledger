@@ -65,7 +65,7 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
   async function handleDelete(row: number) {
     if (
       !(await confirmDialog({
-        message: "Delete this entry? This edits the Excel file directly and can't be undone from here.",
+        message: "Delete this entry? This can't be undone.",
         confirmLabel: "Delete",
         destructive: true,
       }))
@@ -101,11 +101,13 @@ export function RecentEntries({ entries, categories, loading, year, month, edita
 
   // Keyboard/menu fallback for reordering, since the drag handle is
   // aria-hidden and pointer-only — this is the only way to reorder without a
-  // mouse or a working touch drag. `entries` is oldest-first (matching sheet
-  // row order) but displayed reversed (newest first), so "up" in the visual
-  // list means swapping with the *next-higher* row number, and "down" means
-  // the *next-lower* one — same adjacent-swap moveEntry already does for drag.
-  const byRowAsc = [...entries].sort((a, b) => a.row - b.row);
+  // mouse or a working touch drag. `entries` comes back from the server
+  // oldest-first, in stored order, but is displayed reversed (newest first),
+  // so "up" in the visual list means swapping with the *next* entry in
+  // `entries`, and "down" means the *previous* one — same adjacent-swap
+  // moveEntry already does for drag. The array order is used as-is, never
+  // re-sorted by `row`: `row` is an opaque id, not a position.
+  const byRowAsc = entries;
   function neighborRow(row: number, direction: "up" | "down"): number | null {
     const idx = byRowAsc.findIndex((e) => e.row === row);
     if (idx === -1) return null;

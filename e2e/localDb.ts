@@ -56,3 +56,25 @@ export async function insertLocalCategory(
     await sql.end({ timeout: 5 });
   }
 }
+
+/** Inserts one month's expenses into the LOCAL database (same host guard as
+ * resetLocalDatabase), at positions 0..n-1 in the given order. A card entry
+ * gets the "CC" note the app itself writes. The categories must already
+ * exist (seed.sql / insertLocalCategory). */
+export async function insertLocalExpenses(
+  databaseUrl: string | undefined,
+  year: number,
+  month: number,
+  entries: { amount: number; remarks: string; category: string; isCard?: boolean }[],
+): Promise<void> {
+  const sql = connectLocal(databaseUrl);
+  try {
+    for (const [position, e] of entries.entries()) {
+      await sql`
+        insert into expenses (year, month, position, amount, remarks, category_id, card_note)
+        values (${year}, ${month}, ${position}, ${e.amount}, ${e.remarks}, ${e.category}, ${e.isCard ? "CC" : null})`;
+    }
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}

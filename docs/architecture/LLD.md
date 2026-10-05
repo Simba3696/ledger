@@ -72,6 +72,11 @@ create table month_locks (
   primary key (year, month)
 );                                                 -- row present = locked
 
+-- years ever written (replaces "the year's workbook file exists"); see 2.1
+create table ledger_years (
+  year int primary key check (year >= 2018)
+);
+
 -- finances (replaces Finances.xlsx)
 create table finance_months (
   year         int not null,
@@ -138,6 +143,7 @@ create table card_bills (
 alter table categories       enable row level security;
 alter table expenses         enable row level security;
 alter table month_locks      enable row level security;
+alter table ledger_years     enable row level security;
 alter table finance_months   enable row level security;
 alter table savings_balances enable row level security;
 alter table debts            enable row level security;
@@ -155,6 +161,7 @@ alter table card_bills       enable row level security;
 | Category = cell fill colour | `category_id` foreign key. Colours live only in `categories`. |
 | Column C "CC" note | `card_note` (`isCard = card_note is not null`) |
 | Sheet protection = month lock | a row in `month_locks` |
+| `Expenses (YYYY).xlsx` exists | the year has a `ledger_years` row, expenses or month locks. `appendEntry` is the only write that creates a year. Deleting a year's last entry doesn't un-create it, just as the emptied workbook stayed on disk, so its months still list as `[]` and can still be locked. A year nobody has written to 404s with `No workbook found for year N` on `listMonth`, `setMonthLocked` and the entry writes, checked before the month, and `isMonthLocked` is `false` for it. |
 | Savings JSON cell | `savings_balances` rows. No rows means not entered, so carry-forward still uses the last non-empty month. |
 | Credit Card Bills JSON cell per month | `card_bills` rows ordered by `position` |
 | `.backups/` folder of xlsx copies | Supabase backups, `pg_dump` and the planned Excel export |
@@ -293,7 +300,7 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 - **Input:** `--from <folder of .xlsx files>`, `--database-url <url>`, `--dry-run`.
 - **Reads** with the legacy readers copied to `scripts/legacy-excel/` before `server/src/excel/` is deleted, so the importer doesn't depend on server code that no longer exists.
 - **Writes** everything in one transaction. It refuses to run if any target table already has rows, unless `--force` is passed. That stops a second import from duplicating data.
-- **Order:** categories (from `categories.json`, or the defaults) → expenses (fill colour → category, keeping sheet order as `position`) → month locks (protected sheets) → finances and savings → debts → EMIs → subscriptions → card bills.
+- **Order:** categories (from `categories.json`, or the defaults) → `ledger_years` (one row per workbook, including one whose sheets are all empty) → expenses (fill colour → category, keeping sheet order as `position`) → month locks (protected sheets) → finances and savings → debts → EMIs → subscriptions → card bills.
 - **Report:** per-table row counts, plus every skipped row with its reason (for example an unrecognised fill colour, imported as `category_id = null`).
 
 ## 9. Configuration
@@ -316,12 +323,13 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
 | API | supertest on `createApp()` covering auth (no token, wrong owner, valid owner) and error mapping |
 | End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, with real sign-in as the seeded owner |
-| Import | A fixture `.xlsx` folder (built with the existing `server/test/fixtures.ts`) imported into an empty local database, then checked through the API |
+| Import | A fixture `.xlsx` folder (built with `scripts/legacy-excel/fixtures.ts`) imported into an empty local database, then checked through the API |
 
 The existing server test cases are the **parity contract**: each one is ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).
 
 ## 11. Error handling and logging
 
 - Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as today.
+- Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month.
 - Database constraint violations (`23514` check, `23503` foreign key, `23505` unique) are mapped to 400 or 409 with a readable message.
 - Function logs go to Netlify's function log: method, path, status and duration. Request bodies and financial values are never logged.

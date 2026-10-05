@@ -2,8 +2,8 @@ import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
 import { categoryArgb, colorToCategory } from "./categoryColors.js";
-import type { Category } from "../domain/categoryColors.js";
-import { loadCategoryConfig } from "../store/categories.js";
+import type { Category } from "./categoryColors.js";
+import { loadCategoryConfig } from "./categoryColors.js";
 import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
 export { DB_DIR, LedgerError };

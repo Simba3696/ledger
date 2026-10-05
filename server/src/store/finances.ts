@@ -3,7 +3,7 @@ import { getSql, type Sql } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
 import { LedgerError } from "../errors.js";
 import { assertMoney, assertText } from "./validate.js";
-import { yearExpenseTotals } from "../excel/ledger.js";
+import { yearExpenseTotals } from "./ledger.js";
 import {
   EARLIEST_YEAR,
   computeFinanceSummary,
@@ -201,8 +201,8 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
 
 /** The full chronological series from EARLIEST_YEAR through
  * (uptoYear, uptoMonth), returning only uptoYear's rows (see
- * computeFinanceSummary). Expense totals still come from the Excel ledger
- * until that module is ported. */
+ * computeFinanceSummary). Expense totals come from the ledger store's
+ * yearExpenseTotals, one year at a time. */
 export async function financeSummary(uptoYear: number, uptoMonth: number): Promise<MonthFinanceSummary[]> {
   validateYearMonth(uptoYear, uptoMonth);
 

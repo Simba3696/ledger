@@ -5,7 +5,7 @@ import { listSubscriptions } from "../store/subscriptions.js";
 import { getMonthBills, type CardBill } from "../store/creditCardBills.js";
 import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "../store/finances.js";
 import { parseDate, formatDate, startOfDay, makeDate } from "./dateMath.js";
-import { MONTH_NAMES } from "./ledger.js";
+import { MONTH_NAMES } from "../store/ledger.js";
 
 /** Pure read-time aggregation across every other module — no workbook of its
  * own, no writes. Keeping this separate from the individual modules preserves

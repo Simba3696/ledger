@@ -6,6 +6,7 @@ const TABLES = [
   "categories",
   "expenses",
   "month_locks",
+  "ledger_years",
   "finance_months",
   "savings_balances",
   "debts",

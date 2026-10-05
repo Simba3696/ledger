@@ -2,7 +2,6 @@ import { describe, it, expect, afterAll } from "vitest";
 // Categories now live in Postgres: dbHelpers must load before any store module.
 import { sql, resetTables, closeSql } from "./dbHelpers.js";
 import { loadCategoryConfig, deriveForegroundColor, DEFAULT_CATEGORIES } from "../src/store/categories.js";
-import { categoryArgb, colorToCategory } from "../src/excel/categoryColors.js";
 
 afterAll(async () => {
   // Leave an empty table so the next reader re-creates the defaults, the
@@ -124,23 +123,5 @@ describe("deriveForegroundColor", () => {
     const fg = deriveForegroundColor("#FFFF00");
     expect(fg).not.toBe("#ffffff");
     expect(fg).not.toBe("#000000");
-  });
-});
-
-describe("categoryArgb / colorToCategory", () => {
-  it("round-trips a category's bg through the Excel ARGB format and back", () => {
-    const category = { id: "food", label: "Food", bg: "#FFFF00", fg: "#3d3d00" };
-    const argb = categoryArgb(category);
-    expect(argb).toBe("FFFFFF00");
-    expect(colorToCategory(argb, [category])).toBe("food");
-  });
-
-  it("returns null for an argb that matches no configured category", () => {
-    expect(colorToCategory("FF123456", DEFAULT_CATEGORIES)).toBeNull();
-  });
-
-  it("returns null for a null/undefined argb", () => {
-    expect(colorToCategory(null, DEFAULT_CATEGORIES)).toBeNull();
-    expect(colorToCategory(undefined, DEFAULT_CATEGORIES)).toBeNull();
   });
 });

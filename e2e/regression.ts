@@ -14,7 +14,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { insertLocalCategory, resetLocalDatabase } from "./localDb.js";
+import { insertLocalCategory, insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -75,24 +75,12 @@ async function main() {
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-e2e-"));
   console.log("Scratch data dir:", scratchDir);
 
-  // Modules already ported to Postgres (categories included) read the LOCAL
-  // Supabase stack (via server/.env's DATABASE_URL), not scratchDir — reset it
-  // to empty + seed so every "starts empty" check below still holds. Local
-  // hosts only. Done first because buildFixtureWorkbook below reads the
-  // category list from it.
+  // Every store module reads the LOCAL Supabase stack (via server/.env's
+  // DATABASE_URL), not scratchDir — reset it to empty + seed so every
+  // "starts empty" check below still holds. Local hosts only. Done first
+  // because the expenses seeded below need the seeded categories.
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
-  // Set this script's own LEDGER_DB_DIR and import the Excel-backed modules
-  // dynamically *after*, so anything that resolves DB_DIR lands in the
-  // scratch dir the spawned server below also uses, not the real repo db/
-  // folder (a static top-level import would have resolved DB_DIR before
-  // scratchDir even existed). DATABASE_URL is set too (resetLocalDatabase
-  // above already refused any non-local host) so fixtures.js's
-  // loadCategoryConfig reads the same local database as the server.
-  process.env.LEDGER_DB_DIR = scratchDir;
-  process.env.DATABASE_URL = serverEnv.DATABASE_URL;
-  const { buildFixtureWorkbook } = await import("../server/test/fixtures.js");
-  const { closeSql } = await import("../server/src/db/client.js");
   const { DEFAULT_CATEGORIES } = await import("../server/src/domain/categoryColors.js");
   // Reused (not reimplemented) for the EMI Duration test below — computing
   // "10 months from today" independently here risks silently drifting from
@@ -124,29 +112,26 @@ async function main() {
   ];
   const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-  // Seed every month sheet (a couple of unrelated dummy entries each) so
-  // switching the month selector during the test never legitimately 404s.
-  // The *actual current* month/year gets the real seeded data used by the
-  // rest of the checks, since edit/delete/reorder are only enabled in the UI
-  // for the real current month — hardcoding a fixed month/year here would
-  // silently stop testing those features once time moves past it.
-  await buildFixtureWorkbook(
-    path.join(scratchDir, `Expenses (${year}).xlsx`),
-    ALL_MONTHS.map((name) => ({
-      name,
-      entries:
-        name === monthName
-          ? [
-              { amount: 100, remarks: "Seeded Food Entry", category: "food" as const },
-              { amount: 50, remarks: "Seeded Card Entry", category: "transportation" as const, isCard: true },
-            ]
-          : [{ amount: 10, remarks: "Filler", category: "other" as const }],
-    })),
-  );
-
-  // fixtures.js opened the server's shared postgres.js client to read the
-  // category list; close it so this script's own process can exit cleanly.
-  await closeSql();
+  // Seed every month of the year (an unrelated dummy entry each) so
+  // switching the month selector during the test never shows an empty or
+  // missing month by accident. The *actual current* month/year gets the real
+  // seeded data used by the rest of the checks, since edit/delete/reorder are
+  // only enabled in the UI for the real current month — hardcoding a fixed
+  // month/year here would silently stop testing those features once time
+  // moves past it.
+  for (const [i, name] of ALL_MONTHS.entries()) {
+    await insertLocalExpenses(
+      serverEnv.DATABASE_URL,
+      year,
+      i + 1,
+      name === monthName
+        ? [
+            { amount: 100, remarks: "Seeded Food Entry", category: "food" },
+            { amount: 50, remarks: "Seeded Card Entry", category: "transportation", isCard: true },
+          ]
+        : [{ amount: 10, remarks: "Filler", category: "other" }],
+    );
+  }
 
   console.log("Starting dev server against scratch data...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {

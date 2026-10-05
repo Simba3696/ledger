@@ -18,8 +18,8 @@ const subscriptions = await import("../src/store/subscriptions.js");
 const creditCardBills = await import("../src/store/creditCardBills.js");
 const finances = await import("../src/store/finances.js");
 
-// Start from empty debts/emis/subscriptions/card_bills/finance tables, as the fresh scratch workbook folder did.
-await resetTables("debts", "emis", "subscriptions", "card_bills", "finance_months", "savings_balances");
+// Start from empty debts/emis/subscriptions/card_bills/finance/expense tables, as the fresh scratch workbook folder did.
+await resetTables("debts", "emis", "subscriptions", "card_bills", "finance_months", "savings_balances", "expenses", "month_locks");
 
 afterAll(async () => {
   fs.rmSync(scratchDir, { recursive: true, force: true });
