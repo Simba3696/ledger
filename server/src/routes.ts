@@ -31,7 +31,7 @@ import {
   updateSubscription,
   type SubscriptionEditsInput,
 } from "./store/subscriptions.js";
-import { dashboardOverview } from "./excel/overview.js";
+import { dashboardOverview } from "./store/overview.js";
 
 export const router = Router();
 

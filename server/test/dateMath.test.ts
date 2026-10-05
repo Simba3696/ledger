@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addMonths, addYears, clampDay, formatDate, parseDate } from "../src/excel/dateMath.js";
+import { addMonths, addYears, clampDay, formatDate, parseDate } from "../src/domain/dateMath.js";
 
 describe("dateMath", () => {
   it("clamps a day-of-month to the real last day of shorter months", () => {

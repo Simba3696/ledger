@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { todayInAppZone } from "../src/domain/today.js";
-import { formatDate } from "../src/excel/dateMath.js";
+import { formatDate } from "../src/domain/dateMath.js";
 
 describe("todayInAppZone", () => {
   it("rolls over to the next day at local midnight in the app zone, while UTC is still on the previous day", () => {

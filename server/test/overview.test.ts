@@ -1,47 +1,42 @@
-import { describe, it, expect, afterAll } from "vitest";
-// Debts, EMIs, subscriptions, card bills and finances now live in Postgres: dbHelpers must load before any store module.
+import { describe, it, expect, afterAll, beforeAll } from "vitest";
+// dbHelpers must be imported before any store module (it sets DATABASE_URL
+// and refuses non-local hosts).
 import { resetTables, closeSql } from "./dbHelpers.js";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
+import * as overview from "../src/store/overview.js";
+import * as debts from "../src/store/debts.js";
+import * as emi from "../src/store/emi.js";
+import * as subscriptions from "../src/store/subscriptions.js";
+import * as creditCardBills from "../src/store/creditCardBills.js";
+import * as finances from "../src/store/finances.js";
 
-// Same pattern as every other module's test file: LEDGER_DB_DIR must be set
-// before any of these modules' top-level DB_DIR evaluates, so they're all
-// imported dynamically after the env var is set.
-const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-overview-test-"));
-process.env.LEDGER_DB_DIR = scratchDir;
+// The cases below share state in order (each cleans up after itself, and the
+// salary seeding below is done once), the same way the Excel edition's shared
+// scratch folder did, so the tables are wiped once up front rather than
+// before every case.
+beforeAll(async () => {
+  await resetTables("debts", "emis", "subscriptions", "card_bills", "finance_months", "savings_balances", "expenses", "month_locks");
 
-const overview = await import("../src/excel/overview.js");
-const debts = await import("../src/store/debts.js");
-const emi = await import("../src/store/emi.js");
-const subscriptions = await import("../src/store/subscriptions.js");
-const creditCardBills = await import("../src/store/creditCardBills.js");
-const finances = await import("../src/store/finances.js");
-
-// Start from empty debts/emis/subscriptions/card_bills/finance/expense tables, as the fresh scratch workbook folder did.
-await resetTables("debts", "emis", "subscriptions", "card_bills", "finance_months", "savings_balances", "expenses", "month_locks");
-
-afterAll(async () => {
-  fs.rmSync(scratchDir, { recursive: true, force: true });
-  await closeSql();
+  // Every other test below exercises a "today" date whose *previous* month
+  // would otherwise trip the salary reminder further down this file — nothing
+  // seeds that month's income, so getMonthIncome would report salary: null and
+  // the reminder would sneak into their exact-match `upcoming` assertions.
+  // Seeding a real salary for each of those months once here, up front, keeps
+  // every pre-existing assertion exact without re-litigating the reminder in
+  // each of them. The reminder's own describe block below deliberately uses
+  // months left unseeded here.
+  for (const { year, month } of [
+    { year: 2025, month: 12 }, // "last month" for the Jan 2026 tests
+    { year: 2026, month: 2 }, // "last month" for the Mar 2026 tests
+    { year: 2026, month: 6 }, // "last month" for the Jul 30 2026 tests
+    { year: 2026, month: 7 }, // "last month" for the Aug 26 2026 test
+  ]) {
+    await finances.setMonthIncome({ year, month, salary: 50000, otherIncome: null, savings: [] });
+  }
 });
 
-// Every other test below exercises a "today" date whose *previous* month
-// would otherwise trip the salary reminder further down this file — nothing
-// seeds that month's income, so getMonthIncome would report salary: null and
-// the reminder would sneak into their exact-match `upcoming` assertions.
-// Seeding a real salary for each of those months once here, up front, keeps
-// every pre-existing assertion exact without re-litigating the reminder in
-// each of them. The reminder's own describe block below deliberately uses
-// months left unseeded here.
-for (const { year, month } of [
-  { year: 2025, month: 12 }, // "last month" for the Jan 2026 tests
-  { year: 2026, month: 2 }, // "last month" for the Mar 2026 tests
-  { year: 2026, month: 6 }, // "last month" for the Jul 30 2026 tests
-  { year: 2026, month: 7 }, // "last month" for the Aug 26 2026 test
-]) {
-  await finances.setMonthIncome({ year, month, salary: 50000, otherIncome: null, savings: [] });
-}
+afterAll(async () => {
+  await closeSql();
+});
 
 describe("dashboardOverview", () => {
   it("returns zeroed net worth and no upcoming items when nothing is tracked yet", async () => {

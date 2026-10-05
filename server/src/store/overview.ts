@@ -1,18 +1,22 @@
-import { listDebts } from "../store/debts.js";
-import { listEmis } from "../store/emi.js";
+import { listDebts } from "./debts.js";
+import { listEmis } from "./emi.js";
 import { nextDueDateAfter } from "../domain/emiMath.js";
-import { listSubscriptions } from "../store/subscriptions.js";
-import { getMonthBills, type CardBill } from "../store/creditCardBills.js";
-import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "../store/finances.js";
-import { parseDate, formatDate, startOfDay, makeDate } from "./dateMath.js";
-import { MONTH_NAMES } from "../store/ledger.js";
+import { listSubscriptions } from "./subscriptions.js";
+import { getMonthBills, type CardBill } from "./creditCardBills.js";
+import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";
+import { parseDate, formatDate, startOfDay, makeDate } from "../domain/dateMath.js";
+import { todayInAppZone } from "../domain/today.js";
+import { MONTH_NAMES } from "./ledger.js";
 
-/** Pure read-time aggregation across every other module — no workbook of its
- * own, no writes. Keeping this separate from the individual modules preserves
- * the write-path isolation each of them was deliberately built with (a bug
- * here can never touch another concern's sheet), while still giving the
- * Dashboard one place to ask "what does my overall picture look like?"
- * rather than stitching five separate fetches together on the client. */
+/** Pure read-time aggregation across every other module — no table of its
+ * own, no SQL, no writes. It only calls the other store modules' read
+ * functions, so it needs no transaction: each of them reads its own
+ * concern's tables. Keeping this separate from the individual modules
+ * preserves the write-path isolation each of them was deliberately built
+ * with (a bug here can never touch another concern's rows), while still
+ * giving the Dashboard one place to ask "what does my overall picture look
+ * like?" rather than stitching five separate fetches together on the
+ * client. */
 
 const UPCOMING_WINDOW_DAYS = 14;
 
@@ -77,7 +81,7 @@ function previousMonthOf(year: number, month: number): { year: number; month: nu
   return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 }
 
-export async function dashboardOverview(today: Date = new Date()): Promise<DashboardOverview> {
+export async function dashboardOverview(today: Date = todayInAppZone()): Promise<DashboardOverview> {
   const day = startOfDay(today);
   const windowEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate() + UPCOMING_WINDOW_DAYS);
   const { year: nextYear, month: nextMonth } = nextMonthOf(day.getFullYear(), day.getMonth() + 1);

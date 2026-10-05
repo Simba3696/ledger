@@ -85,7 +85,7 @@ async function main() {
   // Reused (not reimplemented) for the EMI Duration test below — computing
   // "10 months from today" independently here risks silently drifting from
   // addMonths' actual clamp-at-month-end behavior on an edge-case day.
-  const { addMonths, startOfDay, formatDate } = await import("../server/src/excel/dateMath.js");
+  const { addMonths, startOfDay, formatDate } = await import("../server/src/domain/dateMath.js");
   const { dueDateOnOrAfter } = await import("../server/src/domain/emiMath.js");
 
   // Seed a custom 5th category alongside the defaults — proves the
