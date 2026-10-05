@@ -11,11 +11,10 @@ export const DB_DIR = process.env.LEDGER_DB_DIR
 
 const BACKUP_DIR = path.join(DB_DIR, ".backups");
 
-export class LedgerError extends Error {
-  constructor(message: string, public status: number) {
-    super(message);
-  }
-}
+// Lives in ../errors.ts now, so Postgres store modules can use it without
+// depending on this Excel-only file. Re-exported for modules not yet ported.
+import { LedgerError } from "../errors.js";
+export { LedgerError };
 
 const backedUpThisRun = new Set<string>();
 

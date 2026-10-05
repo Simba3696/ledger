@@ -14,6 +14,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { resetLocalDatabase } from "./localDb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -129,6 +130,11 @@ async function main() {
           : [{ amount: 10, remarks: "Filler", category: "other" as const }],
     })),
   );
+
+  // Modules already ported to Postgres read the LOCAL Supabase stack (via
+  // server/.env's DATABASE_URL), not scratchDir — reset it to empty + seed so
+  // every "starts empty" check below still holds. Local hosts only.
+  await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
   console.log("Starting dev server against scratch data...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {

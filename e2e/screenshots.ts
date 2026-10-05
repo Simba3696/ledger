@@ -35,6 +35,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { resetLocalDatabase } from "./localDb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -97,6 +98,10 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
 async function main() {
   const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-screenshots-"));
   console.log("Scratch data dir:", scratchDir);
+
+  // Postgres-backed modules read the LOCAL Supabase stack (server/.env's
+  // DATABASE_URL) — empty it first, same as the scratch dir is empty.
+  await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
   console.log("Starting dev server against scratch data...");
   const devProcess: ChildProcessWithoutNullStreams = spawn("npm", ["run", "dev"], {
