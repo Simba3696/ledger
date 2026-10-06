@@ -276,9 +276,10 @@ full coverage list, and README's **Testing** section the commands.
   in through the real form as the seeded owner (`e2e/auth.ts`, which refuses
   a non-local Supabase URL or `AUTH_DISABLED`), and drive the whole app;
   the second script runs with `ENABLED_MODULES=expenses`.
-- **`e2e/screenshots.ts`**: regenerates the Dashboard screenshots from a
-  fixed fictional dataset with the same isolation, asserting every tab is
-  empty before writing anything.
+- **`e2e/screenshots.ts`**: regenerates every image in `docs/screenshots/`
+  (Dashboard and each tab, light and dark) from a fixed fictional dataset
+  with the same isolation, asserting every tab is empty before writing
+  anything.
 
 ## Deployment
 
@@ -337,8 +338,6 @@ scripts/
   kill-ports.js       Frees this checkout's dev ports (PORT / VITE_DEV_PORT)
   import-xlsx.ts      One-time import of an Excel-edition data folder (LLD §8)
   legacy-excel/       The Excel edition's readers, plus importer.ts (the import itself)
-  run-server.bat, run-server-hidden.vbs
-                      Left over from the Excel edition's Windows Scheduled Task; not used here
 docs/
   DEPLOY.md           Standing up a copy on Netlify + Supabase
   architecture/       HLD.md, LLD.md

@@ -1,10 +1,10 @@
 # Ledger: engineering guide (`main` edition)
 
-Personal-finance web app: expenses, finances and savings, debts, EMIs, credit card bills, subscriptions, and a dashboard that combines them. React 19 + Vite client, Express + TypeScript server.
+Personal-finance web app: expenses, finances and savings, debts, EMIs, credit card bills, subscriptions, and a dashboard that combines them. React 19 + Vite client, Express + TypeScript server, Supabase Postgres and Auth, hosted on Netlify. One owner per deployment.
 
 ## Branches
-- **`main`**: the generic, public edition. It's migrating from local Excel storage to **Netlify + Supabase** on the `supabase-migration` branch. See the [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and [ADRs](docs/adr/).
-- **`personal`**: the owner's own edition (local Excel + Scheduled Task + Tailscale), in a separate checkout. Port changes **only by `git cherry-pick`**, never `git merge` across `personal`/`main`. After the migration, only `server/src/domain/*` and `client/*` changes port cleanly. Storage code doesn't.
+- **`main`**: the generic, public, hosted edition: **Netlify + Supabase**, no Excel at runtime. It is built on the `supabase-migration` branch (HLD §7) and reaches `main` when that branch is merged; until then `main` is still the Excel edition. See the [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and [ADRs](docs/adr/).
+- **`personal`**: the owner's own edition (local Excel + Scheduled Task + Tailscale), in a separate checkout. Port changes **only by `git cherry-pick`**, never `git merge` across `personal`/`main`. Only `server/src/domain/*` and `client/*` changes port cleanly. Storage code (`server/src/store/*` here, `server/src/excel/*` there) doesn't.
 
 ## Read before changing anything
 | Need | Read |
@@ -28,16 +28,21 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 | Agent | Use for |
 |---|---|
 | `software-architect` | Design questions, reviewing plans or diffs against the HLD/LLD, writing ADRs. Doesn't write app code. |
-| `supabase-module-porter` | Porting one storage module from Excel to Postgres with test parity. |
 | `qa-verifier` | Independently running tsc, server tests and e2e in isolation and reporting real results. Read-only. |
 
 ## Skills (`.claude/skills/`)
 | Skill | Use for |
 |---|---|
 | `safe-dev-environment` | Ports, data isolation, local Supabase commands |
-| `port-module-to-supabase` | Checklist for porting one module |
 | `supabase-migrations` | Schema change conventions and commands |
 | `write-adr` | Recording a decision in `docs/adr/` |
+
+## Store code conventions
+- One module per concern in `server/src/store/`, mapping snake_case columns to the API's camelCase fields in one place (e.g. a `toEntry(row)` function). The `row` field and `:row` parameters are database ids.
+- Validate with the shared helpers in `store/validate.ts` (`assertText`, `assertMoney`, `isRealDate`, `isPossibleId`) so the user gets a specific 400 before Postgres refuses. `dbErrors.ts` is only the backstop. Not found is a `LedgerError(..., 404)`.
+- Every multi-statement write runs in `withTransaction` (`db/tx.ts`). Ordered lists use a contiguous 0-based `position`, renumbered inside the transaction (LLD §4.3).
+- Store tests import `server/test/dbHelpers.ts` first (it refuses a non-local database) and empty the tables they touch with its `resetTables` before each test.
+- A new table: a new migration with RLS on and no policies (`supabase-migrations` skill), LLD §2, and, if it references an imported table, `IMPORT_TABLES` in `scripts/legacy-excel/importer.ts` (LLD §8).
 
 ## Environment
 - `server/.env` (gitignored): `PORT=4100`, `DATABASE_URL` (local stack, `127.0.0.1:54322`), `SUPABASE_URL=http://127.0.0.1:54321`, `OWNER_EMAIL=owner@example.test`, optionally `APP_TIMEZONE` and `ENABLED_MODULES`. `AUTH_DISABLED=true` exists for local experiments only; e2e refuses it.
@@ -51,7 +56,7 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 npm run dev            # server :4100 + client :5273 (from .env); kill-ports frees those ports first
 npm test               # server vitest suite against the local Postgres (truncates local tables)
 npm run test:e2e       # resets the local DB, then regression.ts + expensesOnly.ts on 4100/5273
-npm run screenshots    # regenerate docs/screenshots/dashboard{,-dark}.png (same isolation)
+npm run screenshots    # regenerate every docs/screenshots/*.png from fictional data (same isolation)
 npm run import-xlsx -- --from <folder> --dry-run   # one-time Excel import (LLD §8). Here: fixture folders and the local DB only, never a real data folder
 npx supabase start     # local Postgres :54322, API :54321, Studio :54323, Mailpit :54324
 npx supabase status    # local URLs and keys

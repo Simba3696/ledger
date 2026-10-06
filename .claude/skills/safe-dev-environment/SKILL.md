@@ -13,7 +13,7 @@ The owner's live app runs from a **different checkout** (`D:\codebase\personal\l
    ```bash
    cat server/.env client/.env
    ```
-3. **Data:** never point `DATABASE_URL` at real data or a hosted Supabase project. The only allowed target is the local stack: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. (`LEDGER_DB_DIR` is no longer read by the server.)
+3. **Data:** never point `DATABASE_URL` at real data or a hosted Supabase project. The only allowed target is the local stack: `postgresql://postgres:postgres@127.0.0.1:54322/postgres`. `npm run import-xlsx` here only ever reads fixture folders built with `scripts/legacy-excel/fixtures.ts` in a temp directory, never a real Excel data folder (such as the live app's `LEDGER_DB_DIR`).
    **Auth:** the server refuses to start unless `server/.env` sets either `AUTH_DISABLED=true` or both `SUPABASE_URL` and `OWNER_EMAIL` (LLD §6). Local dev and e2e use real auth against the local stack: `server/.env` has `SUPABASE_URL=http://127.0.0.1:54321` and `OWNER_EMAIL=owner@example.test`, and `client/.env` has `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (from `npx supabase status`). Sign in as `owner@example.test` / `local-owner-password` (created by `supabase/seed.sql`, local only). e2e refuses a non-local Supabase URL and `AUTH_DISABLED=true`.
 4. **Never** run `Start-ScheduledTask`, `Stop-ScheduledTask`, or anything against port 4000 from this worktree.
 
@@ -38,7 +38,7 @@ Run the server checks from `server/` so they use the server's own TypeScript (5.
 (cd server && npx tsc -p ../netlify/tsconfig.json)           # the Netlify function (netlify/functions/api.ts)
 npm test
 npm run test:e2e        # uses 4100/5273 from the .env files
-npm run screenshots     # same isolation recipe; never a custom port setup
+npm run screenshots     # every docs/screenshots/*.png; same isolation recipe, never a custom port setup
 ```
 
 ## If something might have touched the live app

@@ -1,34 +1,35 @@
 /**
- * Regenerates docs/screenshots/dashboard.png and dashboard-dark.png against
- * a fixed, fictional demo dataset (Alex/Sam, Visa Rewards/Amex Gold, Car
- * Loan/Home Loan, Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY —
- * the same cast every other screenshot in docs/screenshots already uses).
+ * Regenerates every image in docs/screenshots/ against a fixed, fictional
+ * demo dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home Loan,
+ * Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY, a month of
+ * everyday expenses):
+ *
+ * - dashboard.png / dashboard-dark.png at 1280x960;
+ * - one full-page shot per tab at 720px wide, light and dark: add-expense
+ *   (the form filled in), recent-entries (that entry saved), finances,
+ *   debts, credit-cards, emi, subscriptions.
  *
  * Isolation follows the exact same recipe as e2e/regression.ts: the server
  * reads only server/.env's DATABASE_URL, which e2e/localDb.ts's
  * resetLocalDatabase empties first and refuses unless it points at a local
- * host (127.0.0.1/localhost), and the dev server runs on this checkout's
- * configured ports. A previous attempt at this used a
- * separate git worktree with its own overridden PORT/VITE_DEV_PORT so it
- * could run *alongside* the real server, which seemed safer but was the
- * opposite: `client/vite.config.ts`'s dev proxy defaults to
- * `http://localhost:4000` unless `VITE_API_PROXY_TARGET` is also set, so the
- * client silently proxied straight through to the real production server —
- * every "demo" entry got written into real data instead. Reusing this
- * checkout's own ports means `predev`'s `kill-ports.js` frees them first
- * (stopping the real server, exactly like running `npm run test:e2e` does),
- * so there is only ever one server for the client to reach, and it's
- * guaranteed to be this local-database one. Restart the real server
- * (`npm run build` + `Start-ScheduledTask "Ledger"`, per the README's
- * Deployment step) once this script exits.
+ * host (127.0.0.1/localhost); sign-in goes to the local Supabase stack only
+ * (assertLocalAuth); and the dev server runs on this checkout's configured
+ * ports, freed first by `predev`'s kill-ports.js, so there is only ever one
+ * server for the client's dev proxy to reach. (On the Excel edition, an ad
+ * hoc screenshot run in a worktree with overridden ports but no
+ * `VITE_API_PROXY_TARGET` proxied straight through to the owner's real
+ * server and wrote demo rows into real data. Never hand-roll a screenshot
+ * script; extend this one.)
  *
- * Before writing anything, every tab is asserted empty first — the second
- * incident, layered on top of the proxy bug above, was filling a form by
- * row position (`.nth(0)`, `.nth(1)`) assuming those positions were blank,
- * when real pre-existing rows were sitting there instead. Against a freshly
- * reset local database this assertion always passes; if it ever doesn't, that's this
- * script telling you loudly to stop, not silently overwriting whatever it
- * finds.
+ * Every tab is asserted empty before anything is written into it — the
+ * second part of that incident was filling a form by row position
+ * (`.nth(0)`, `.nth(1)`) assuming those positions were blank, when real
+ * pre-existing rows were sitting there instead. The data seeded through the
+ * API (this month's expenses, last month's salary) is checked before the
+ * first write of any kind and written only after every tab has been checked
+ * through its form. Against a freshly reset local database these assertions
+ * always pass; if one ever doesn't, that's this script telling you loudly to
+ * stop, not silently overwriting whatever it finds.
  */
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
@@ -65,6 +66,43 @@ async function assertEmpty(page: import("playwright").Page, selector: string, la
   }
 }
 
+type Page = import("playwright").Page;
+
+/** Switches the app's theme with the header toggle, only if it isn't already
+ * `theme` (the choice persists in localStorage across tabs). */
+async function setTheme(page: Page, theme: "light" | "dark") {
+  if ((await page.evaluate(() => document.documentElement.dataset.theme)) !== theme) {
+    await page.click(".theme-toggle");
+    await page.waitForTimeout(300);
+  }
+}
+
+/** Opens a nav tab and waits for its data to finish loading. */
+async function openTab(page: Page, label: string, readySelector: string) {
+  await page.click(`.tabs button:has-text("${label}")`);
+  await page.waitForSelector(readySelector);
+  await page.waitForSelector(".loading-overlay", { state: "detached" });
+  await page.waitForTimeout(300);
+}
+
+// This month's demo expenses, added through the API (appendEntry only ever
+// appends, so it can't overwrite anything) after the month is checked empty.
+// Last month's income is seeded too: without it the Dashboard's Upcoming
+// opens with an "Overdue · Not logged yet" salary reminder, and Finances'
+// balance (last month's income minus this month's spending) goes negative.
+const DEMO_LAST_MONTH_INCOME = { salary: 65000, otherIncome: 5000, savings: [] };
+const DEMO_EXPENSES: { amount: number; remarks: string; category: string; isCard: boolean }[] = [
+  { amount: 450, remarks: "Zomato lunch", category: "food", isCard: false },
+  { amount: 680, remarks: "Swiggy dinner", category: "food", isCard: true },
+  { amount: 220, remarks: "Uber to office", category: "transportation", isCard: false },
+  { amount: 500, remarks: "Metro card recharge", category: "transportation", isCard: false },
+  { amount: 18000, remarks: "Monthly Rent", category: "rent", isCard: true },
+  { amount: 600, remarks: "Movie tickets", category: "other", isCard: false },
+  { amount: 1200, remarks: "Birthday gift", category: "other", isCard: true },
+];
+// The entry the add-expense / recent-entries shots add through the form.
+const NEW_EXPENSE = { amount: "250", remarks: "Coffee with a friend", category: "Food" };
+
 async function main() {
   // Same check as e2e/regression.ts: sign-in goes to the LOCAL stack only,
   // as the seeded owner (LLD §6, §10).
@@ -84,17 +122,55 @@ async function main() {
     // hide any of them.
     devProcess = await startDevServer({ ENABLED_MODULES: "" });
 
+    // "Now" as the server sees it (APP_TIMEZONE, default Asia/Kolkata), as in
+    // regression.ts, so the seeded month is the one the app treats as this
+    // month even on a machine in another timezone near a month boundary.
+    const { todayInAppZone } = await import("../server/src/domain/today.js");
+    const appTimezone = serverEnv.APP_TIMEZONE || "Asia/Kolkata";
+    const now = todayInAppZone(new Date(), appTimezone);
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prevMonth = month === 1 ? 12 : month - 1;
+
+    const token = await ownerAccessToken();
+    const api = (method: string, apiPath: string, body?: unknown) =>
+      fetch(`http://localhost:${SERVER_PORT}/api${apiPath}`, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+
     // Belt-and-braces: ask the running server itself, independent of
     // anything this script assumes about which database it's reading.
-    const health = await fetch(`http://localhost:${SERVER_PORT}/api/debts`, {
-      headers: { Authorization: `Bearer ${await ownerAccessToken()}` },
-    }).then((r) => r.json());
+    const health = await api("GET", "/debts").then((r) => r.json());
     if (Array.isArray(health) && health.length !== 0) {
       throw new Error(`Refusing to seed: /api/debts already has ${health.length} row(s) on a supposedly freshly reset local database.`);
     }
 
+    // --- API-seeded data: checked empty now, written after every tab's check ---
+    // A year nobody has written to answers 404 ("No workbook found"), which
+    // is the expected state here; any entries at all, or any other error,
+    // mean stop.
+    const monthRes = await api("GET", `/months/${year}/${month}`);
+    if (!monthRes.ok && monthRes.status !== 404) {
+      throw new Error(`Checking ${year}-${month}'s expenses failed with ${monthRes.status}: ${await monthRes.text()}`);
+    }
+    const existing = monthRes.ok ? ((await monthRes.json()) as unknown[]) : [];
+    if (existing.length !== 0) {
+      throw new Error(`Refusing to seed Expenses: ${year}-${month} already has ${existing.length} entr(ies).`);
+    }
+    const prevRes = await api("GET", `/finance/${prevYear}/${prevMonth}`);
+    if (!prevRes.ok) throw new Error(`Checking ${prevYear}-${prevMonth}'s income failed with ${prevRes.status}: ${await prevRes.text()}`);
+    const prevIncome = (await prevRes.json()) as { salary: number | null; otherIncome: number | null; savings: unknown[] };
+    if (prevIncome.salary !== null || prevIncome.otherIncome !== null || prevIncome.savings.length !== 0) {
+      throw new Error(`Refusing to seed Finances: ${prevYear}-${prevMonth} already has income or savings.`);
+    }
+
+    // The browser's clock is pinned to APP_TIMEZONE too: the client picks the
+    // month the Expenses and Finances tabs open on from its own `new Date()`.
     const browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1280, height: 960 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 960 }, timezoneId: appTimezone });
     await signInAsOwner(page);
 
     // --- Debts ---
@@ -205,6 +281,14 @@ async function main() {
     await page.click('.income-form button:has-text("Save")');
     await page.waitForTimeout(500);
 
+    // --- API seeding (every tab has been checked empty by now) ---
+    for (const e of DEMO_EXPENSES) {
+      const res = await api("POST", "/entries", { year, month, ...e });
+      if (res.status !== 201) throw new Error(`Seeding "${e.remarks}" failed with ${res.status}: ${await res.text()}`);
+    }
+    const incomeRes = await api("PUT", `/finance/${prevYear}/${prevMonth}`, DEMO_LAST_MONTH_INCOME);
+    if (!incomeRes.ok) throw new Error(`Seeding ${prevYear}-${prevMonth}'s income failed with ${incomeRes.status}: ${await incomeRes.text()}`);
+
     // --- Dashboard screenshots (light, then dark) ---
     await page.click('.tabs button:has-text("Dashboard")');
     await page.waitForSelector(".emi-projection-chart-wrap .recharts-rectangle");
@@ -213,20 +297,56 @@ async function main() {
     fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "dashboard.png") });
 
-    await page.click(".theme-toggle");
-    await page.waitForTimeout(300);
+    await setTheme(page, "dark");
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "dashboard-dark.png") });
 
+    // --- Per-tab screenshots: 720px wide (full labels, above the 600px
+    // phone breakpoint), full page, light then dark ---
+    await page.setViewportSize({ width: 720, height: 900 });
+    const shot = (name: string, theme: "light" | "dark") =>
+      page.screenshot({ path: path.join(SCREENSHOTS_DIR, `${name}${theme === "dark" ? "-dark" : ""}.png`), fullPage: true });
+
+    for (const theme of ["light", "dark"] as const) {
+      await setTheme(page, theme);
+
+      // Add Expense: the form filled in, then the saved entry in the list.
+      // The Dashboard hop remounts Expenses, so the dark pass reloads the
+      // month after the light pass's entry was removed below.
+      await openTab(page, "Dashboard", ".chart-wrap svg");
+      await openTab(page, "Expenses", ".add-expense-form");
+      await page.fill('.add-expense-form input[type="number"]', NEW_EXPENSE.amount);
+      await page.fill('.add-expense-form input[type="text"]', NEW_EXPENSE.remarks);
+      await page.click(`button.category-chip:has-text("${NEW_EXPENSE.category}")`);
+      await shot("add-expense", theme);
+      await page.click('button.submit-btn:has-text("Add Expense")');
+      await page.waitForSelector(`.entry-row:has-text("${NEW_EXPENSE.remarks}")`);
+      await page.waitForTimeout(300);
+      await shot("recent-entries", theme);
+
+      // Remove it again, so the next pass starts from the same month.
+      const entries = (await api("GET", `/months/${year}/${month}`).then((r) => r.json())) as { row: number; remarks: string }[];
+      const added = entries.find((e) => e.remarks === NEW_EXPENSE.remarks);
+      if (!added) throw new Error(`"${NEW_EXPENSE.remarks}" not found after adding it`);
+      const del = await api("DELETE", `/entries/${year}/${month}/${added.row}`);
+      if (!del.ok) throw new Error(`Removing "${NEW_EXPENSE.remarks}" failed with ${del.status}`);
+
+      await openTab(page, "Credit Cards", ".cards-add");
+      await shot("credit-cards", theme);
+      await openTab(page, "Debts", ".debt-row");
+      await shot("debts", theme);
+      await openTab(page, "EMI", ".emi-row");
+      await shot("emi", theme);
+      await openTab(page, "Subscriptions", ".subscription-row");
+      await shot("subscriptions", theme);
+      await openTab(page, "Finances", ".savings-row");
+      await shot("finances", theme);
+    }
+
     await browser.close();
-    console.log(`\nWrote dashboard.png and dashboard-dark.png to ${SCREENSHOTS_DIR}`);
+    console.log(`\nWrote every screenshot to ${SCREENSHOTS_DIR}`);
   } finally {
     stopDevServer(devProcess);
   }
-
-  console.log(
-    "\nReal server is now stopped (kill-ports cleared its port same as it would for `npm run dev`) — " +
-      'rebuild and restart it: `npm run build`, then `Start-ScheduledTask "Ledger"`.',
-  );
 }
 
 main().catch((err) => {

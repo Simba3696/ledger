@@ -1,12 +1,12 @@
 # High-Level Design: Ledger, hosted edition
 
-**Status:** Approved, implementation in progress on the `supabase-migration` branch
-**Scope:** the `main` branch only. The `personal` branch stays the local Excel + Tailscale edition.
+**Status:** Approved and implemented on the `supabase-migration` branch (phases 1-4 of §7 done; phase 5's merge into `main` pending)
+**Scope:** the `main` branch, the hosted edition. The `personal` branch stays the local Excel + Tailscale edition.
 **Companion docs:** [LLD.md](LLD.md) for low-level design, [../adr/](../adr/) for decision records.
 
 ## 1. Context
 
-Ledger started as a local web app that reads and writes a set of Excel workbooks in place: one workbook per year for expenses, plus one each for Debts, EMI, Credit Card Bills, Subscriptions and Finances. It runs on one Windows PC as a Scheduled Task and is reached from a phone over Tailscale.
+Ledger started as a local web app that reads and writes a set of Excel workbooks in place: one workbook per year for expenses, plus one each for Debts, EMI, Credit Card Bills, Subscriptions and Finances. That edition (the `personal` branch) runs on one Windows PC as a Scheduled Task and is reached from a phone over Tailscale.
 
 That design has one hard availability limit. The phone can only reach the PC while both have internet access. A multi-day home internet outage made the app unreachable even though the PC was on and the server was healthy.
 
@@ -49,7 +49,7 @@ flowchart LR
 
 | Component | Responsibility | Technology |
 |---|---|---|
-| Client | All UI, the same React app as today, plus a sign-in screen | React 19 + Vite, served from Netlify's CDN |
+| Client | All UI, the same React app as the Excel edition, plus a sign-in screen and a Sign out button | React 19 + Vite, served from Netlify's CDN |
 | API function | Every `/api/*` route, input validation, all calculations (EMI balances and due dates, dashboard overview, finance summaries) | Express wrapped with `serverless-http`, deployed as a single Netlify Function |
 | Auth | Owner sign-in and session tokens | Supabase Auth, with public sign-ups disabled |
 | Database | Durable storage for every module | Supabase Postgres |
@@ -99,19 +99,19 @@ Every write is one SQL transaction. That replaces the Excel edition's per-file l
 
 ## 7. Migration strategy
 
-The migration is incremental and every step stays testable. Each phase is committed only once its suites pass.
+The migration was incremental and every step stayed testable: each phase was committed only once its suites passed. Phases 1-4 are done; phase 5 is done apart from the merge into `main`.
 
 1. **Foundation:** schema migrations, local Supabase stack, database client and test harness.
-2. **Port modules one by one:** debts, subscriptions, EMI, credit card bills, finances, categories, expenses, overview. Each module's storage moves from Excel to SQL while its tests stay green.
-3. **Hosting and auth:** Netlify Function wrapper, JWT middleware, client sign-in screen, `netlify.toml`.
-4. **Import:** `scripts/import-xlsx.ts` brings Excel history into a Supabase project.
-5. **Wrap-up:** e2e and screenshot scripts against the local stack, then README and ARCHITECTURE rewritten for the hosted edition, then merge into `main`.
+2. **Port modules one by one:** debts, subscriptions, EMI, credit card bills, finances, categories, expenses, overview. Each module's storage moved from Excel to SQL while its tests stayed green, and `server/src/excel/` was deleted.
+3. **Hosting and auth:** Netlify Function wrapper, JWT middleware, client sign-in screen, `netlify.toml`, `ENABLED_MODULES` and [DEPLOY.md](../DEPLOY.md).
+4. **Import:** `scripts/import-xlsx.ts` brings Excel history into a Supabase project ([LLD §8](LLD.md#8-import-script-scriptsimport-xlsxts)).
+5. **Wrap-up:** e2e and screenshot scripts against the local stack, the screenshots regenerated, the docs rewritten for the hosted edition, then the branch merged into `main` (pending).
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Behavior drift between editions during the port | Keep the existing server tests as the parity contract. Port storage only. Calculation code moves unchanged where possible. |
+| Behavior drift between editions during the port | The existing server tests were the parity contract: storage was ported, calculation code moved unchanged into `server/src/domain/`. |
 | Timezone off-by-one in due dates | `APP_TIMEZONE` plus tests that pin "today" near midnight. |
 | `date` and `numeric` driver conversions (JS `Date` shifting a calendar date, numbers coming back as strings) | Custom type parsers in the database client ([LLD §4.2](LLD.md#42-driver-configuration)). |
 | Connection limits in serverless | Supabase's transaction pooler on port 6543, `prepare: false`, one small client per function instance. |

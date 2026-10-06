@@ -260,8 +260,9 @@ Don't set these on Netlify:
 2. **Branch to deploy:** the branch that contains `netlify.toml` and
    `supabase/migrations/` (the hosted edition): `main` once the
    `supabase-migration` branch has been merged into it, and
-   `supabase-migration` until then. An older `main` is the Excel edition,
-   with no `netlify.toml` and no function, so it would not deploy.
+   `supabase-migration` until then. An older `main`, or `personal`, is the
+   Excel edition, with no `netlify.toml` and no function, so it would not
+   deploy.
 3. Leave the build settings as Netlify fills them in (apart from the base
    and package directory above, which must be empty). They come from the
    repository's `netlify.toml`: build command `npm ci && npm run build -w client`,

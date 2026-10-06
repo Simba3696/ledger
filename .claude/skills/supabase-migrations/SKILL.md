@@ -28,10 +28,12 @@ npm test                            # store tests run against the reset schema
 npx supabase link --project-ref <ref>
 npx supabase db push                # applies pending migrations
 ```
-Never run `db push` or `link` from an automated agent session. Deploying is an owner decision.
+Never run `db push` or `link` from an automated agent session. Deploying is an owner decision ([docs/DEPLOY.md](../../../docs/DEPLOY.md), "Updating to a newer version").
 
 ## Review checklist
 - [ ] RLS enabled on every new table
 - [ ] Constraints match the API's validation
 - [ ] Indexes on every column used in a `where` (most are `(year, month)`)
+- [ ] A new table that references an imported one is added to `IMPORT_TABLES` in `scripts/legacy-excel/importer.ts`, or the importer's `--force` fails (LLD §8)
+- [ ] LLD §2 updated with the net schema
 - [ ] `db reset` + `npm test` pass from a clean stack

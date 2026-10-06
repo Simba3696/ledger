@@ -11,7 +11,9 @@ free tiers, with exactly one user: the owner. Every request needs the
 owner's sign-in. A copy can show every section or only some of them
 (`ENABLED_MODULES`), for example expenses only.
 
-- To stand up your own copy, follow **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+- **Self-hosting:** to stand up your own copy, follow
+  **[docs/DEPLOY.md](docs/DEPLOY.md)**. It assumes no prior Netlify or
+  Supabase experience.
 - For how it's built, see [ARCHITECTURE.md](ARCHITECTURE.md), and for the
   design detail (schema, API contract, auth, configuration) the
   [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and
@@ -58,7 +60,8 @@ new copy starts empty; existing workbooks can be brought over once with
 
 ## See it in action
 
-*(Screenshots use made-up sample data, not anyone's real finances.)*
+*(Screenshots use made-up sample data, not anyone's real finances. They're
+regenerated with `npm run screenshots`; see [Testing](#testing).)*
 
 **Dashboard**: Net Worth and an Upcoming list combining every EMI due date,
 subscription renewal, and outstanding credit card bill in the next two
@@ -69,7 +72,7 @@ weeks, above a yearly spending chart. Supports light and dark themes:
 | ![Dashboard, light theme](docs/screenshots/dashboard.png) | ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) |
 
 **Adding an expense**: pick a category by color, mark it cash or card, and
-it's added to the end of that month's list:
+it's added to that month's list (newest shown first):
 
 | | Light | Dark |
 |---|---|---|
@@ -360,7 +363,7 @@ docs/       DEPLOY.md, architecture/ (HLD, LLD), adr/, screenshots/.
 netlify.toml
 ```
 
-[LLD §1](docs/architecture/LLD.md#1-repository-layout-target) lists every
+[LLD §1](docs/architecture/LLD.md#1-repository-layout) lists every
 module.
 
 ## Local development
@@ -550,11 +553,15 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   add/edit/delete, a Dashboard with no card from a disabled section, and a
   disabled section's API answering 404. Both fail on any browser console
   error. Run it after any client or server change.
-- **`npm run screenshots`**: `e2e/screenshots.ts` regenerates
-  `docs/screenshots/dashboard.png` and `dashboard-dark.png` from a fixed
-  fictional dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home Loan,
-  Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY), using the same
-  isolation as e2e and asserting every tab is empty before adding anything.
+- **`npm run screenshots`**: `e2e/screenshots.ts` regenerates every image
+  in `docs/screenshots/` (the Dashboard at 1280×960, and each tab as a
+  full-page shot 720px wide, all in light and dark) from a fixed fictional
+  dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home Loan,
+  Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY, a month of
+  everyday expenses), using the same isolation as e2e and asserting every
+  tab is empty before adding anything. Dates are relative to the day it
+  runs, so the Upcoming list is always populated. Run it after a visible UI
+  change.
 
 Typechecks:
 

@@ -2,10 +2,10 @@
 
 **Companion to:** [HLD.md](HLD.md). Decisions referenced as ADR-NNNN live in [../adr/](../adr/).
 
-## 1. Repository layout (target)
+## 1. Repository layout
 
 ```
-client/                      React app (unchanged except auth + api.ts headers)
+client/                      React app (the Excel edition's, plus auth and api.ts's bearer header)
   src/auth/                  Supabase client, <SignIn/>, session hook
 server/
   src/
@@ -22,7 +22,7 @@ server/
       categories.ts  ledger.ts  finances.ts  debts.ts  emi.ts
       subscriptions.ts  creditCardBills.ts  overview.ts
       validate.ts            shared input checks (assertText, assertMoney, isRealDate, isPossibleId)
-    domain/                  pure calculations, no I/O (moved verbatim from excel/*)
+    domain/                  pure calculations, no I/O (moved verbatim from the Excel edition's excel/*)
       dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
       today.ts               "today" in APP_TIMEZONE
     errors.ts                LedgerError
@@ -43,7 +43,7 @@ scripts/
 netlify.toml
 ```
 
-The rule for the port: **store modules keep their current exported names and return shapes**, so `routes.ts`, `overview.ts` and the client don't change. Code that only computes is moved into `domain/` untouched.
+The rule the port followed, and new store code keeps: **store modules kept the Excel modules' exported names and return shapes**, so `routes.ts`, `overview.ts` and the client didn't change. Code that only computes moved into `domain/` untouched.
 
 ## 2. Data model
 
@@ -186,7 +186,7 @@ alter default privileges in schema public revoke all on tables from anon, authen
 
 ## 3. Domain layer (unchanged behaviour)
 
-These pure functions move from `excel/*` to `domain/*` with no logic changes:
+These pure functions moved from the Excel edition's `excel/*` to `domain/*` with no logic changes:
 
 - `dateMath.ts`: `daysInMonth`, `clampDay`, `makeDate`, `addMonths`, `addYears`, `formatDate`, `parseDate`, `startOfDay`
 - `emiMath.ts`: `withComputed`, `countDueDatesPassed`, `nextDueDateAfter`, `dueDateOnOrAfter`, `nthFutureDueDate`, `computeOutstandingPrincipal`, `computeForeclosurePayoff`, plus the projection simulation behind `emiMonthlyProjection`, `resolveUntilTarget`, `settleEmiPayment` (the recordEmiPayment rule), `projectEmiMonthly`, `round2`
@@ -252,7 +252,7 @@ Reads that span years use one grouped query, not one per year: `financeSummary` 
 
 ### 4.4 Month lock enforcement
 
-Every expense write checks `month_locks` inside the same transaction and throws `LedgerError(…, 403)` if the month is locked. That's identical to today's `assertWritable` contract, including the existing e2e check that a direct API write to a locked month gets a 403.
+Every expense write checks `month_locks` inside the same transaction and throws `LedgerError(…, 403)` if the month is locked. That's identical to the Excel edition's `assertWritable` contract, including the existing e2e check that a direct API write to a locked month gets a 403.
 
 ## 5. API contract
 
@@ -399,8 +399,8 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | `APP_TIMEZONE` | server, function | IANA zone for "today" (default `Asia/Kolkata`) |
 | `AUTH_DISABLED` | local only | `true` skips JWT checks; refused under `NODE_ENV=production`, `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT`. `npm run dev` and e2e don't use it (they sign in as the seeded owner), and e2e refuses to run with it set |
 | `ENABLED_MODULES` | server, function | Comma-separated sections to serve: `expenses`, `finances`, `debts`, `emi`, `credit-cards`, `subscriptions`. Unset or blank = all. Unknown names fail at startup (§5.1, [ADR-0006](../adr/0006-enabled-modules-per-deployment.md)) |
-| `PORT` | local only | Dev server port (`main` worktree: 4100) |
-| `VITE_DEV_PORT` | local only | Vite dev server port (default 5173; `main` worktree: 5273). `scripts/kill-ports.js` reads it too |
+| `PORT` | local only | Dev server port (default 4000; a second checkout running alongside another sets its own, e.g. 4100) |
+| `VITE_DEV_PORT` | local only | Vite dev server port (default 5173; e.g. 5273 in a second checkout). `scripts/kill-ports.js` reads it too |
 | `VITE_API_PROXY_TARGET` | local only | Where the Vite dev server proxies `/api` (default `http://localhost:4000`); must match `PORT` |
 
 ## 10. Testing
@@ -411,15 +411,15 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
 | Modules | `server/test/modules.test.ts` (parsing `ENABLED_MODULES`) and `server/test/overviewModules.test.ts` (`dashboardOverview` per module subset, with spies proving a disabled module's store is never called) |
 | API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers enabled modules (every route mapped to a module or always on, `/api/config`, a 404 on every route of each disabled module, an expenses-only overview, unknown names failing at startup), auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |
-| End to end | `e2e/regression.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on 4100/5273, with real auth: each script signs in through `<SignIn/>` as the seeded owner (§6) and makes its own direct API calls with the owner's token from the local Auth API (`e2e/auth.ts`). Before starting, `assertLocalAuth` refuses a `SUPABASE_URL` (`server/.env`) or `VITE_SUPABASE_URL` (`client/.env`) whose host isn't `127.0.0.1`/`localhost` (the same guard as `localDb.ts`'s for the database), a missing `OWNER_EMAIL` or anon key, and `AUTH_DISABLED=true`. `startDevServer` passes the `.env` files' auth settings to the spawned server explicitly, so values left in the calling shell can't override them. `regression.ts` also checks that a request without a token is a 401, a wrong password's error, sign-out (which survives a reload and keeps the theme), the not-allowed screen for a 403 (simulated on `/api/config` with `page.route`, since the local stack has only the owner and sign-ups are off) and its Sign out, and a mid-session 401 (a tampered token) signing out with a notice. `npm run test:e2e` then runs `e2e/expensesOnly.ts`, which starts the server with `ENABLED_MODULES=expenses` in its environment (never by editing `.env`) and checks the 401 without a token, the wrong-password error and sign-in, the two-tab nav, expense add/edit/delete, a Dashboard with no disabled-module cards or console errors, a disabled route's 404, and sign-out. All three scripts share `e2e/devServer.ts` and `e2e/auth.ts` |
+| End to end | `e2e/regression.ts`, `e2e/expensesOnly.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on this checkout's `PORT`/`VITE_DEV_PORT`, with real auth: each script signs in through `<SignIn/>` as the seeded owner (§6) and makes its own direct API calls with the owner's token from the local Auth API (`e2e/auth.ts`). Before starting, `assertLocalAuth` refuses a `SUPABASE_URL` (`server/.env`) or `VITE_SUPABASE_URL` (`client/.env`) whose host isn't `127.0.0.1`/`localhost` (the same guard as `localDb.ts`'s for the database), a missing `OWNER_EMAIL` or anon key, and `AUTH_DISABLED=true`. `startDevServer` passes the `.env` files' auth settings to the spawned server explicitly, so values left in the calling shell can't override them. `regression.ts` also checks that a request without a token is a 401, a wrong password's error, sign-out (which survives a reload and keeps the theme), the not-allowed screen for a 403 (simulated on `/api/config` with `page.route`, since the local stack has only the owner and sign-ups are off) and its Sign out, and a mid-session 401 (a tampered token) signing out with a notice. `npm run test:e2e` then runs `e2e/expensesOnly.ts`, which starts the server with `ENABLED_MODULES=expenses` in its environment (never by editing `.env`) and checks the 401 without a token, the wrong-password error and sign-in, the two-tab nav, expense add/edit/delete, a Dashboard with no disabled-module cards or console errors, a disabled route's 404, and sign-out. `npm run screenshots` (`e2e/screenshots.ts`) seeds a fictional dataset, checking each tab is empty before writing into it (through its form) and checking this month's expenses and last month's income through the API before the first write, then seeding those two through the API after every tab's check. "This month" is taken in `APP_TIMEZONE`, and the browser runs in that zone too. It writes every image in `docs/screenshots/`: the Dashboard at 1280×960 and each tab full-page at 720px wide, light and dark. All three scripts share `e2e/devServer.ts` and `e2e/auth.ts` |
 | Docs | `server/test/envDocs.test.ts`: every variable the server, function, client and `scripts/kill-ports.js` read is documented in `server/.env.example` or `client/.env.example`, every `# NAME=` example there is still read, and every variable a deployment sets appears in §9 and `docs/DEPLOY.md` |
 | Import | `server/test/importXlsx.test.ts`: fixture folders built in a temp directory with `scripts/legacy-excel/fixtures.ts` (fictional data) and imported into the local database. A clean folder is read back through the store modules (`loadCategoryConfig`, `listMonth`, `yearSummary`, `isMonthLocked`, `getMonthIncome`, `financeSummary`, `listDebts`, `listEmis` and `listSubscriptions` with their computed fields, `getMonthBills`, `yearBillsSummary`) and compared with the legacy readers on the same folder, `row` aside. A messy folder checks each skip, difference and ignored-row report, including a skipped first Finances row for a month that a later row must not replace, and a 1.005 reported and stored as 1.01. Also: an all-empty workbook still creates its year; a non-empty database is refused (dry run too) and left unchanged; `--force` replaces rather than duplicates; a dry run writes nothing; the default categories are replaced but custom ones refuse; the source folder is never modified; file names match ignoring case; an Excel `~$` owner file refuses the import; and the CLI refuses a remote host without `--yes`, never prints the password, rejects bad usage, resolves a relative `--from` against `INIT_CWD` and prints a dry run's report |
 
-The existing server test cases are the **parity contract**: each one is ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).
+The Excel edition's server test cases were the **parity contract** for the port: each one was ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).
 
 ## 11. Error handling and logging
 
-- Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as today.
+- Validation errors become a `LedgerError` with status 400, missing rows 404, locked months 403. These are the same codes as the Excel edition's.
 - Input is checked against the column bounds with the shared helpers in `server/src/store/validate.ts`, so some input the Excel edition accepted is now a 400 with a new message. This is deliberate, not a regression. For expenses: an amount that rounds to 0.00 (such as `0.001`) is `Amount must be a positive number`, an amount of 1e12 or more is `Amount is too large`, remarks containing a NUL character are rejected, and `appendEntry` to a year before 2018 is `Invalid year: N`, checked before the month. The 403 for a locked month now reads `<Month> <year> is locked. Unlock it first from the app if you really need to add an entry there.` (the Excel edition also suggested unlocking "in Excel directly", which this edition has no way to do).
 - Any database refusal that slips past `validate.ts` is mapped by `server/src/dbErrors.ts` (`mapDatabaseError`, applied in `app.ts`'s error handler) to a generic client error: 22021/22P05 invalid character, 22003 out of range, 22007/22008 invalid date, 22P02 invalid input, 23502 not-null, 23514 check and 23503 foreign key → 400, and 23505 unique → 409 (a deferred `expenses_position_unique` violation surfaces at COMMIT and maps the same way). For these mapped errors only the SQLSTATE and constraint name are logged, because Postgres's message and detail echo the offending input (`invalid input syntax for type numeric: "..."`, `Key (...)=(...)`). Neither is ever returned. Unmapped errors become a generic 500. A Postgres one is logged as its SQLSTATE, routine and constraint/table/column names, plus its message only for classes that never quote a row (08 connection, 28 authentication, 3D, 42 missing table or column, 53/54, 57/58, XX, e.g. the pooler's "Tenant or user not found"); its `detail` and `where`, which echo row values, never are. Any other error is logged with its stack.
 - `app.ts` logs one line per request, `<METHOD> <path> <status> <ms>ms` (to Netlify's function log in production, the console locally). The path excludes the query string. Request bodies and headers (so tokens) are never logged, and neither is the input echoed by a mapped database error (above). The message of a non-database 500 is the one place a value could still appear.
