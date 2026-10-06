@@ -1,12 +1,14 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 import { yearExpenseTotals } from "./ledger.js";
 
 export const EARLIEST_YEAR = 2018;
 
-const FINANCES_PATH = path.join(DB_DIR, "Finances.xlsx");
+function financesPath(): string {
+  return path.join(getDbDir(), "Finances.xlsx");
+}
 const SHEET_NAME = "Income";
 const HEADERS = ["Year", "Month", "Salary", "Other Income", "Current Savings Breakdown"];
 
@@ -72,8 +74,8 @@ function validateSavings(savings: SavingsEntry[]) {
 
 async function loadOrCreateFinancesWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  if (fs.existsSync(FINANCES_PATH)) {
-    await workbook.xlsx.readFile(FINANCES_PATH);
+  if (fs.existsSync(financesPath())) {
+    await workbook.xlsx.readFile(financesPath());
   } else {
     workbook.addWorksheet(SHEET_NAME).addRow(HEADERS);
   }
@@ -155,6 +157,52 @@ export async function getMonthIncome(year: number, month: number): Promise<Month
   };
 }
 
+export interface IncomeRow {
+  row: number;
+  year: number;
+  month: number;
+  salary: number | null;
+  otherIncome: number | null;
+  savings: SavingsEntry[];
+  /** Raw cells, so the importer can report a value the parsers above dropped
+   * (text where a number belongs, a savings entry that isn't name/amount). */
+  rawSalary: ExcelJS.CellValue;
+  rawOtherIncome: ExcelJS.CellValue;
+  rawSavings: ExcelJS.CellValue;
+}
+
+/** Every data row of the Income sheet in sheet order, parsed with the same
+ * helpers as getMonthIncome, for the importer. Rows whose Year or Month
+ * isn't a number (which every reader above skips) come back in `ignored`.
+ * Read-only; `null` when the folder has no Finances.xlsx. */
+export async function listIncomeRows(): Promise<{ rows: IncomeRow[]; ignored: number[] } | null> {
+  if (!fs.existsSync(financesPath())) return null;
+  const sheet = getFinancesSheet(await loadOrCreateFinancesWorkbook());
+  const rows: IncomeRow[] = [];
+  const ignored: number[] = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const y = row.getCell(1).value;
+    const m = row.getCell(2).value;
+    if (typeof y !== "number" || typeof m !== "number") {
+      ignored.push(rowNumber);
+      return;
+    }
+    rows.push({
+      row: rowNumber,
+      year: y,
+      month: m,
+      salary: numberOrNull(row.getCell(3).value),
+      otherIncome: numberOrNull(row.getCell(4).value),
+      savings: parseSavingsCell(row.getCell(5).value),
+      rawSalary: row.getCell(3).value,
+      rawOtherIncome: row.getCell(4).value,
+      rawSavings: row.getCell(5).value,
+    });
+  });
+  return { rows, ignored };
+}
+
 export interface SetMonthIncomeInput {
   year: number;
   month: number;
@@ -170,7 +218,7 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
   validateAmount(otherIncome, "Other income");
   validateSavings(savings);
 
-  return withFileLock(FINANCES_PATH, async () => {
+  return withFileLock(financesPath(), async () => {
     const workbook = await loadOrCreateFinancesWorkbook();
     const sheet = getFinancesSheet(workbook);
     let row = findIncomeRow(sheet, year, month);
@@ -186,7 +234,7 @@ export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthI
     row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
     row.commit();
 
-    await saveWorkbook(workbook, FINANCES_PATH);
+    await saveWorkbook(workbook, financesPath());
 
     return { year, month, salary, otherIncome, savings, previousSavings };
   });

@@ -1,12 +1,10 @@
 node_modules/
 dist/
-# The whole scratch db/ folder (see README's Setup step 3) — not just its
-# .backups/ subfolder — since it's real (if throwaway) financial data the
-# moment anything's added through the app. A `git worktree`/second clone has
-# no server/.env (gitignored, checkout-local) and falls back to this folder,
-# so this also guards against accidentally committing real data that way.
-# Anchored to the repo root (where workbookIO's default DB_DIR resolves) —
-# an unanchored `db/` also matched source folders like server/src/db/.
+# The Excel edition's default data folder. Nothing here reads it any more,
+# but an Excel-edition data folder copied into the repo to import
+# (npm run import-xlsx) is real financial data, so it stays ignored.
+# Anchored to the repo root — an unanchored `db/` also matched source
+# folders like server/src/db/.
 /db/
 *.tmp-*
 .env

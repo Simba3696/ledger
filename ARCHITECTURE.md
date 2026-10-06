@@ -335,7 +335,8 @@ e2e/
   devServer.ts, auth.ts, localDb.ts   Shared helpers
 scripts/
   kill-ports.js       Frees this checkout's dev ports (PORT / VITE_DEV_PORT)
-  legacy-excel/       The Excel edition's readers, kept for the planned importer (LLD §8)
+  import-xlsx.ts      One-time import of an Excel-edition data folder (LLD §8)
+  legacy-excel/       The Excel edition's readers, plus importer.ts (the import itself)
   run-server.bat, run-server-hidden.vbs
                       Left over from the Excel edition's Windows Scheduled Task; not used here
 docs/

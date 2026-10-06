@@ -52,9 +52,9 @@ the home PC is online. This edition keeps the same app, the same
 calculation rules and the same API, and moves storage to Postgres on
 managed hosting, so it works from anywhere and anyone can run their own
 copy ([HLD §1–2](docs/architecture/HLD.md)). There's no Excel at runtime. A
-one-time importer for existing workbooks is planned
-([LLD §8](docs/architecture/LLD.md#8-import-script-scriptsimport-xlsxts))
-but isn't part of this edition yet: a new copy starts empty.
+new copy starts empty; existing workbooks can be brought over once with
+`npm run import-xlsx` (see
+[Moving from the Excel edition](docs/DEPLOY.md#moving-from-the-excel-edition)).
 
 ## See it in action
 
@@ -354,7 +354,8 @@ supabase/   config.toml (local stack), migrations/ (the schema),
             seed.sql (local only: default categories + a test owner).
 e2e/        Playwright scripts: regression, expenses-only pass, screenshots.
 scripts/    kill-ports.js (frees this checkout's dev ports);
-            legacy-excel/ (old Excel readers, kept for the planned importer).
+            import-xlsx.ts (one-time Excel import) and legacy-excel/
+            (the old Excel readers it uses).
 docs/       DEPLOY.md, architecture/ (HLD, LLD), adr/, screenshots/.
 netlify.toml
 ```
@@ -507,7 +508,9 @@ Turning one off keeps its data. See
 project, applying the migrations, creating the owner account, creating
 the Netlify site, every environment variable, and troubleshooting.
 `netlify.toml` holds the build settings; [LLD §7](docs/architecture/LLD.md#7-netlify-packaging)
-explains the packaging.
+explains the packaging. Coming from the Excel edition with data to keep?
+[Moving from the Excel edition](docs/DEPLOY.md#moving-from-the-excel-edition)
+covers the one-time import. A new copy with no Excel history doesn't need it.
 
 ## Testing
 
@@ -524,7 +527,10 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   validation, `ENABLED_MODULES` parsing and the overview per section
   subset, and the API through `createApp` (auth: missing, malformed,
   expired, wrongly signed and non-owner tokens; startup configuration
-  checks; error mapping; the request log; the Netlify handler).
+  checks; error mapping; the request log; the Netlify handler), and the
+  Excel importer (fixture workbooks built in a temp folder, imported, then
+  read back through the store modules and compared with the legacy Excel
+  readers on the same folder).
   [LLD §10](docs/architecture/LLD.md#10-testing) has the full list. It takes
   a few seconds. It **truncates the local tables**, so run
   `npx supabase db reset` afterwards if you want the seeded categories back
@@ -557,6 +563,7 @@ Typechecks:
 (cd server && npx tsc --noEmit)                          # server src + tests
 (cd server && npx tsc -p tsconfig.build.json --noEmit)   # what the server build compiles
 (cd server && npx tsc -p ../netlify/tsconfig.json)       # the Netlify function
+(cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy readers
 ```
 
 Run the server checks from `server/` so they use the server's own

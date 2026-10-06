@@ -1,11 +1,13 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
 export const EARLIEST_YEAR = 2018;
 
-const BILLS_PATH = path.join(DB_DIR, "CreditCardBills.xlsx");
+function billsPath(): string {
+  return path.join(getDbDir(), "CreditCardBills.xlsx");
+}
 const SHEET_NAME = "Bills";
 const HEADERS = ["Year", "Month", "Cards"];
 
@@ -80,8 +82,8 @@ function parseCardsCell(value: ExcelJS.CellValue): CardBill[] {
 
 async function loadOrCreateWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  if (fs.existsSync(BILLS_PATH)) {
-    await workbook.xlsx.readFile(BILLS_PATH);
+  if (fs.existsSync(billsPath())) {
+    await workbook.xlsx.readFile(billsPath());
   } else {
     workbook.addWorksheet(SHEET_NAME).addRow(HEADERS);
   }
@@ -117,6 +119,37 @@ export async function getMonthBills(year: number, month: number): Promise<MonthB
   return { year, month, cards: row ? parseCardsCell(row.getCell(3).value) : [] };
 }
 
+export interface BillsRow {
+  row: number;
+  year: number;
+  month: number;
+  cards: CardBill[];
+  /** The raw Cards cell, so the importer can report entries parseCardsCell dropped. */
+  rawCards: ExcelJS.CellValue;
+}
+
+/** Every data row of the Bills sheet in sheet order, parsed with the same
+ * parseCardsCell as getMonthBills, for the importer. Rows whose Year or
+ * Month isn't a number come back in `ignored`. Read-only; `null` when the
+ * folder has no CreditCardBills.xlsx. */
+export async function listBillsRows(): Promise<{ rows: BillsRow[]; ignored: number[] } | null> {
+  if (!fs.existsSync(billsPath())) return null;
+  const sheet = getBillsSheet(await loadOrCreateWorkbook());
+  const rows: BillsRow[] = [];
+  const ignored: number[] = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const y = row.getCell(1).value;
+    const m = row.getCell(2).value;
+    if (typeof y !== "number" || typeof m !== "number") {
+      ignored.push(rowNumber);
+      return;
+    }
+    rows.push({ row: rowNumber, year: y, month: m, cards: parseCardsCell(row.getCell(3).value), rawCards: row.getCell(3).value });
+  });
+  return { rows, ignored };
+}
+
 export interface SetMonthBillsInput {
   year: number;
   month: number;
@@ -128,7 +161,7 @@ export async function setMonthBills(input: SetMonthBillsInput): Promise<MonthBil
   validateYearMonth(year, month);
   validateCards(cards);
 
-  return withFileLock(BILLS_PATH, async () => {
+  return withFileLock(billsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getBillsSheet(workbook);
     let row = findMonthRow(sheet, year, month);
@@ -140,7 +173,7 @@ export async function setMonthBills(input: SetMonthBillsInput): Promise<MonthBil
     row.getCell(3).value = cards.length > 0 ? JSON.stringify(cards) : null;
     row.commit();
 
-    await saveWorkbook(workbook, BILLS_PATH);
+    await saveWorkbook(workbook, billsPath());
     return { year, month, cards };
   });
 }

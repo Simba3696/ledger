@@ -2,11 +2,11 @@ import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
 import { categoryArgb, colorToCategory } from "./categoryColors.js";
-import type { Category } from "./categoryColors.js";
+import type { Category, CategoryConfig } from "./categoryColors.js";
 import { loadCategoryConfig } from "./categoryColors.js";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
-export { DB_DIR, LedgerError };
+export { LedgerError };
 
 export const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -17,7 +17,7 @@ const FALLBACK_AMOUNT_NUMFMT =
   '_ [$₹-4009]\\ * #,##0.00_ ;_ [$₹-4009]\\ * \\-#,##0.00_ ;_ [$₹-4009]\\ * "-"??_ ;_ @_ ';
 
 function workbookPath(year: number): string {
-  return path.join(DB_DIR, `Expenses (${year}).xlsx`);
+  return path.join(getDbDir(), `Expenses (${year}).xlsx`);
 }
 
 function monthName(month: number): string {
@@ -252,12 +252,16 @@ export interface LedgerEntry {
   category: Category | null;
 }
 
-export async function listMonth(year: number, month: number): Promise<LedgerEntry[]> {
-  const workbook = await loadWorkbook(year);
-  const sheet = getSheet(workbook, year, month);
-  const categories = await loadCategoryConfig();
+/** An entry as listMonth reads it, plus the raw Amount-cell fill colour the
+ * category came from (the importer reports one that matches no category). */
+export interface LedgerEntryWithFill extends LedgerEntry {
+  fillArgb: string | null;
+}
 
-  const entries: LedgerEntry[] = [];
+/** listMonth's row parsing, shared with readYearForImport so the importer
+ * sees exactly the entries the Excel edition showed. */
+function readEntries(sheet: ExcelJS.Worksheet, categories: CategoryConfig[]): LedgerEntryWithFill[] {
+  const entries: LedgerEntryWithFill[] = [];
   sheet.eachRow((row, rowNumber) => {
     const amountValue = row.getCell(1).value;
     if (typeof amountValue !== "number") return; // header / spacer / non-transaction row
@@ -278,10 +282,78 @@ export async function listMonth(year: number, month: number): Promise<LedgerEntr
       isCard: ccText.length > 0,
       cardNote: ccText.length > 0 ? ccText : null,
       category: colorToCategory(argb, categories),
+      fillArgb: argb ?? null,
     });
   });
-
   return entries;
+}
+
+export async function listMonth(year: number, month: number): Promise<LedgerEntry[]> {
+  const workbook = await loadWorkbook(year);
+  const sheet = getSheet(workbook, year, month);
+  const categories = await loadCategoryConfig();
+  return readEntries(sheet, categories).map(({ fillArgb: _fillArgb, ...entry }) => entry);
+}
+
+export interface ImportMonth {
+  month: number;
+  sheetName: string;
+  /** Protected sheet = the month is locked (see assertWritable). */
+  locked: boolean;
+  entries: LedgerEntryWithFill[];
+  /** Rows below the header with something in columns A-C that listMonth
+   * skips (no numeric Amount, e.g. a formula or text), so the Excel edition
+   * never showed them either. */
+  ignoredRows: Array<{ row: number; reason: string }>;
+}
+
+export interface ImportYear {
+  year: number;
+  /** One per month sheet present, in calendar order. */
+  months: ImportMonth[];
+  /** Sheets that aren't a month name, which the Excel edition never read. */
+  otherSheets: string[];
+}
+
+/** Everything the importer needs from one year's workbook, read once rather
+ * than once per month: each month sheet's entries (parsed exactly as
+ * listMonth does), its lock state (as isMonthLocked) and the rows the Excel
+ * edition ignored. Read-only. */
+export async function readYearForImport(year: number, categories: CategoryConfig[]): Promise<ImportYear> {
+  const workbook = await loadWorkbook(year);
+  const months: ImportMonth[] = [];
+  for (let month = 1; month <= 12; month++) {
+    const sheet = workbook.getWorksheet(MONTH_NAMES[month - 1]);
+    if (!sheet) continue;
+    const entries = readEntries(sheet, categories);
+    const ignoredRows: ImportMonth["ignoredRows"] = [];
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const amount = row.getCell(1).value;
+      if (typeof amount === "number") return;
+      const used = [1, 2, 3].some((c) => {
+        const v = row.getCell(c).value;
+        return v !== null && v !== undefined && !(typeof v === "string" && !v.trim());
+      });
+      if (!used) return;
+      const reason =
+        amount === null || amount === undefined
+          ? "no Amount"
+          : typeof amount === "object" && "formula" in amount
+            ? "the Amount is a formula"
+            : "the Amount isn't a number";
+      ignoredRows.push({ row: rowNumber, reason });
+    });
+    months.push({
+      month,
+      sheetName: sheet.name,
+      locked: !!(sheet as unknown as { sheetProtection?: unknown }).sheetProtection,
+      entries,
+      ignoredRows,
+    });
+  }
+  const otherSheets = workbook.worksheets.map((s) => s.name).filter((name) => !MONTH_NAMES.includes(name));
+  return { year, months, otherSheets };
 }
 
 export interface MonthSummary {

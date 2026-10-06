@@ -34,7 +34,7 @@ Run the server checks from `server/` so they use the server's own TypeScript (5.
 (cd client && npx tsc -b)
 (cd server && npx tsc --noEmit)                              # src + test
 (cd server && npx tsc -p tsconfig.build.json --noEmit)       # what `npm run build -w server` compiles
-(cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer's legacy Excel readers
+(cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer and its legacy Excel readers
 (cd server && npx tsc -p ../netlify/tsconfig.json)           # the Netlify function (netlify/functions/api.ts)
 npm test
 npm run test:e2e        # uses 4100/5273 from the .env files

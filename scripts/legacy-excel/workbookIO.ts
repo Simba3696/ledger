@@ -1,15 +1,21 @@
 import path from "node:path";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
 import ExcelJS from "exceljs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// The Excel edition read LEDGER_DB_DIR once at startup. The importer instead
+// points these readers at whichever folder it was given (--from), and its
+// tests at several fixture folders in one process, so the folder is set
+// explicitly rather than fixed at module load. Unset, every reader throws.
+let dbDir: string | null = null;
 
-export const DB_DIR = process.env.LEDGER_DB_DIR
-  ? path.resolve(process.env.LEDGER_DB_DIR)
-  : path.resolve(__dirname, "../../db");
+export function setDbDir(dir: string): void {
+  dbDir = path.resolve(dir);
+}
 
-const BACKUP_DIR = path.join(DB_DIR, ".backups");
+export function getDbDir(): string {
+  if (!dbDir) throw new Error("legacy-excel: call setDbDir(<folder>) before reading");
+  return dbDir;
+}
 
 // Legacy copy for the Phase 4 importer (LLD §8). LedgerError is defined
 // here rather than imported from server/src/errors.ts so this folder has no
@@ -21,6 +27,26 @@ export class LedgerError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Row numbers below the header of `sheetName` in `fileName` (inside the
+ * folder) that have anything in them, for the importer to spot rows a
+ * reader skipped. `null` when the file doesn't exist; throws when the sheet
+ * is missing, as each reader does. Read-only. */
+export async function usedDataRows(fileName: string, sheetName: string): Promise<number[] | null> {
+  const filePath = path.join(getDbDir(), fileName);
+  if (!fs.existsSync(filePath)) return null;
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const sheet = workbook.getWorksheet(sheetName);
+  if (!sheet) throw new LedgerError(`${fileName} is missing its "${sheetName}" sheet`, 500);
+  const rows: number[] = [];
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const values = Array.isArray(row.values) ? row.values : Object.values(row.values);
+    if (values.some((v) => v !== null && v !== undefined && !(typeof v === "string" && !v.trim()))) rows.push(rowNumber);
+  });
+  return rows;
 }
 
 const backedUpThisRun = new Set<string>();
@@ -78,23 +104,24 @@ function pruneOldBackups(filePath: string) {
   const base = path.basename(filePath, ".xlsx");
   let entries: string[];
   try {
-    entries = fs.readdirSync(BACKUP_DIR);
+    entries = fs.readdirSync(path.join(getDbDir(), ".backups"));
   } catch {
     return;
   }
   const matches = entries.filter((name) => name.startsWith(`${base}.`) && name.endsWith(".xlsx")).sort();
   const excess = matches.length - MAX_BACKUPS_PER_FILE;
   for (let i = 0; i < excess; i++) {
-    fs.rmSync(path.join(BACKUP_DIR, matches[i]), { force: true });
+    fs.rmSync(path.join(getDbDir(), ".backups", matches[i]), { force: true });
   }
 }
 
 function backupOnce(filePath: string) {
   if (!fs.existsSync(filePath)) return; // brand-new workbook — nothing to back up yet
   if (backedUpThisRun.has(filePath)) return;
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const backupDir = path.join(getDbDir(), ".backups");
+  fs.mkdirSync(backupDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const dest = path.join(BACKUP_DIR, `${path.basename(filePath, ".xlsx")}.${stamp}.xlsx`);
+  const dest = path.join(backupDir, `${path.basename(filePath, ".xlsx")}.${stamp}.xlsx`);
   fs.copyFileSync(filePath, dest);
   backedUpThisRun.add(filePath);
   pruneOldBackups(filePath);

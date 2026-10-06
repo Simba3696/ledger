@@ -1,7 +1,7 @@
 {
-  // Typecheck-only config so the importer's legacy Excel readers keep
-  // compiling while nothing else imports them (LLD §8). Run with the server's
-  // TypeScript: `cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json`.
+  // Typecheck-only config for the importer (scripts/import-xlsx.ts, LLD §8)
+  // and the legacy Excel readers it uses. Run with the server's TypeScript:
+  // `cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json`.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -14,5 +14,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "../import-xlsx.ts"]
 }

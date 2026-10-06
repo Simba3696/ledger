@@ -1,10 +1,12 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 import { addMonths, makeDate, parseDate, formatDate, startOfDay } from "./dateMath.js";
 
-const EMI_PATH = path.join(DB_DIR, "EMI.xlsx");
+function emiPath(): string {
+  return path.join(getDbDir(), "EMI.xlsx");
+}
 const SHEET_NAME = "EMI";
 const HEADERS = [
   "Card/Bank",
@@ -266,8 +268,8 @@ function resolveNumber(value: ExcelJS.CellValue): number | null {
 
 async function loadOrCreateWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  if (fs.existsSync(EMI_PATH)) {
-    await workbook.xlsx.readFile(EMI_PATH);
+  if (fs.existsSync(emiPath())) {
+    await workbook.xlsx.readFile(emiPath());
   } else {
     workbook.addWorksheet(SHEET_NAME).addRow(HEADERS);
   }
@@ -470,7 +472,7 @@ export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Pr
   const interestRate = input.interestRate ?? null;
   const foreclosureCharge = input.foreclosureCharge ?? null;
 
-  return withFileLock(EMI_PATH, async () => {
+  return withFileLock(emiPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getEmiSheet(workbook);
     const rowNumber = sheet.rowCount + 1;
@@ -489,7 +491,7 @@ export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Pr
     row.getCell(10).value = foreclosureCharge;
     row.commit();
 
-    await saveWorkbook(workbook, EMI_PATH);
+    await saveWorkbook(workbook, emiPath());
     const entry: EmiEntry = {
       row: rowNumber,
       cardOrBank,
@@ -550,7 +552,7 @@ async function updateEmiUnlocked(
   row.getCell(10).value = foreclosureCharge;
   row.commit();
 
-  await saveWorkbook(workbook, EMI_PATH);
+  await saveWorkbook(workbook, emiPath());
   const entry: EmiEntry = {
     row: rowNumber,
     cardOrBank,
@@ -572,7 +574,7 @@ export async function updateEmi(
   input: EmiEditsInput,
   today: Date = new Date(),
 ): Promise<EmiEntryComputed> {
-  return withFileLock(EMI_PATH, () => updateEmiUnlocked(rowNumber, input, today));
+  return withFileLock(emiPath(), () => updateEmiUnlocked(rowNumber, input, today));
 }
 
 /** Records a payment toward an EMI, without risking the double-decay that a
@@ -621,7 +623,7 @@ export async function recordEmiPayment(
   // for why two overlapping payments could otherwise both read the same
   // pre-payment balance and the second write would silently discard the
   // first payment.
-  return withFileLock(EMI_PATH, async () => {
+  return withFileLock(emiPath(), async () => {
     const entries = await listEmis(today);
     const entry = entries.find((e) => e.row === rowNumber);
     if (!entry) throw new LedgerError(`No EMI entry at row ${rowNumber}`, 404);
@@ -654,12 +656,12 @@ export async function recordEmiPayment(
 
 /** Removes an EMI entry entirely — e.g. after foreclosing a loan early. */
 export async function deleteEmi(rowNumber: number): Promise<void> {
-  await withFileLock(EMI_PATH, async () => {
+  await withFileLock(emiPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getEmiSheet(workbook);
     assertRealEmiRow(sheet, rowNumber);
 
     sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, EMI_PATH);
+    await saveWorkbook(workbook, emiPath());
   });
 }

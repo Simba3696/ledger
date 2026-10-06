@@ -52,6 +52,7 @@ npm run dev            # server :4100 + client :5273 (from .env); kill-ports fre
 npm test               # server vitest suite against the local Postgres (truncates local tables)
 npm run test:e2e       # resets the local DB, then regression.ts + expensesOnly.ts on 4100/5273
 npm run screenshots    # regenerate docs/screenshots/dashboard{,-dark}.png (same isolation)
+npm run import-xlsx -- --from <folder> --dry-run   # one-time Excel import (LLD §8). Here: fixture folders and the local DB only, never a real data folder
 npx supabase start     # local Postgres :54322, API :54321, Studio :54323, Mailpit :54324
 npx supabase status    # local URLs and keys
 npx supabase db reset  # re-apply migrations + seed to the LOCAL stack
@@ -60,4 +61,5 @@ npx supabase migration new <name>                       # new schema change (nev
 (cd server && npx tsc --noEmit)                         # server src + test
 (cd server && npx tsc -p tsconfig.build.json --noEmit)  # what the server build compiles
 (cd server && npx tsc -p ../netlify/tsconfig.json)      # the Netlify function
+(cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy Excel readers
 ```

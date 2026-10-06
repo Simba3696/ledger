@@ -5,8 +5,10 @@ This guide stands up one private copy of Ledger on the free tiers of
 [Supabase](https://supabase.com) (database and sign-in). It assumes no
 prior experience with either. Plan on about an hour the first time.
 
-Each copy has **one user**, its owner, and starts with **no data**: there is
-no import step. The example throughout is an expenses-only copy for a
+Each copy has **one user**, its owner, and starts with **no data**. (Moving
+over from the Excel edition with history to keep? See
+[Moving from the Excel edition](#moving-from-the-excel-edition) once the
+site is set up.) The example throughout is an expenses-only copy for a
 family member, but every step is the same for a full copy. Only
 `ENABLED_MODULES` changes ([step 7](#7-set-the-environment-variables)).
 
@@ -23,6 +25,7 @@ settings the code reads are in [LLD §9](architecture/LLD.md#9-configuration).
 - [7. Set the environment variables](#7-set-the-environment-variables)
 - [8. Create the Netlify site and deploy](#8-create-the-netlify-site-and-deploy)
 - [9. First sign-in](#9-first-sign-in)
+- [Moving from the Excel edition](#moving-from-the-excel-edition)
 - [Turning on another section later](#turning-on-another-section-later)
 - [Updating to a newer version](#updating-to-a-newer-version)
 - [Free-tier pausing](#free-tier-pausing)
@@ -303,6 +306,74 @@ first load. To rename, recolor, add or remove them, edit the `categories`
 table in Supabase's **Table Editor**. See
 [Configuring categories](../README.md#configuring-categories) for what each
 column means.
+
+## Moving from the Excel edition
+
+Only for someone who already used the Excel edition (the `personal` branch)
+and wants that history in the new copy. A brand-new copy with no Excel data,
+such as a fresh expenses-only site, doesn't need this: it starts empty and
+that's fine.
+
+`npm run import-xlsx` copies one Excel-edition data folder (the
+`Expenses (YYYY).xlsx` workbooks, `Finances.xlsx`, `Debts.xlsx`, `EMI.xlsx`,
+`Subscriptions.xlsx`, `CreditCardBills.xlsx` and `categories.json`) into the
+new database, once. It reads the folder and never changes it. It writes
+everything in one transaction, so if anything goes wrong nothing is saved.
+Every section's data is imported, whatever `ENABLED_MODULES` shows.
+
+1. **Do it before the owner starts using the new copy.** The import refuses
+   a database that already has data (the four default categories a new copy
+   creates on its first load don't count, and are replaced). Steps 1 to 6
+   must be done, so the tables exist and you have `DATABASE_URL`. Don't open
+   the site while the import runs: a page loaded during it can add the
+   default categories back on top of the imported ones once it finishes.
+   Leaving the site undeployed until the import is done is simplest.
+2. **Back up the folder.** Copy the whole data folder somewhere safe first.
+   The import doesn't write to it, but this is the one copy of your history.
+3. **Close Excel** and stop the Excel edition's server, so nothing changes
+   the workbooks while they're read. The import refuses to start while Excel
+   has one of them open (it sees Excel's `~$` lock file in the folder; if
+   Excel isn't running, that file is left over from a crash: delete it).
+4. **Install the dependencies** in your clone (once): `npm ci`.
+5. **Dry run.** With the `DATABASE_URL` from step 6 (the value you put in
+   Netlify in step 7), in quotes. Give the folder's full path, as below (a
+   relative one is taken from the directory you run the command in):
+
+   ```
+   npm run import-xlsx -- --from "C:\path\to\Expenses folder" --database-url "postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres" --dry-run
+   ```
+
+   It prints the folder and the database it will write to (never the
+   password), then a report: how many rows each table would get, and every
+   row it would skip or import differently, with the file, sheet and row.
+   A dry run writes everything inside a transaction and then rolls it back,
+   so nothing is saved.
+6. **Read the report.** Rows are never quietly changed. A row the database
+   can't hold (a blank remark, an amount of 0, an impossible date such as
+   30 February) is listed under "Skipped". An expense whose fill colour
+   matches no category is imported without a category and listed under
+   "Imported with a difference". To keep a skipped row, fix it in the
+   workbook (in a copy of the folder, if you prefer) and dry-run again.
+7. **Import for real**: the same command without `--dry-run` and with
+   `--yes`, which confirms you mean to write to a database that isn't on
+   your computer:
+
+   ```
+   npm run import-xlsx -- --from "C:\path\to\Expenses folder" --database-url "<the same URL>" --yes
+   ```
+
+8. **Check** the site: sign in and look through each section.
+
+If the import stops with "The database already has data", the owner has
+already added something. `--force` deletes **every row** in the app's tables
+before importing (in the same transaction, so a failed import leaves the
+old data in place). Use it only when that data is meant to go, for example
+to re-import after fixing a skipped row. `npm run import-xlsx -- --help`
+lists every option.
+
+The command line holds the database password, so your shell may keep it in
+its history. Clear it afterwards if others use the computer, or reset the
+database password (step 1) and update `DATABASE_URL` in Netlify.
 
 ## Turning on another section later
 

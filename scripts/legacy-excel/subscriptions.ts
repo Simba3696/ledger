@@ -1,10 +1,12 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 import { addMonths, addYears, formatDate, parseDate, startOfDay } from "./dateMath.js";
 
-const SUBSCRIPTIONS_PATH = path.join(DB_DIR, "Subscriptions.xlsx");
+function subscriptionsPath(): string {
+  return path.join(getDbDir(), "Subscriptions.xlsx");
+}
 const SHEET_NAME = "Subscriptions";
 const HEADERS = ["Service", "Amount", "Duration", "Expiry", "Card/Bank"];
 
@@ -62,8 +64,8 @@ function resolveNumber(value: ExcelJS.CellValue): number | null {
 
 async function loadOrCreateWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  if (fs.existsSync(SUBSCRIPTIONS_PATH)) {
-    await workbook.xlsx.readFile(SUBSCRIPTIONS_PATH);
+  if (fs.existsSync(subscriptionsPath())) {
+    await workbook.xlsx.readFile(subscriptionsPath());
   } else {
     workbook.addWorksheet(SHEET_NAME).addRow(HEADERS);
   }
@@ -129,7 +131,7 @@ export async function addSubscription(
   const service = input.service.trim();
   validateEntry(service, input.amount, input.duration, input.expiryAnchor);
 
-  return withFileLock(SUBSCRIPTIONS_PATH, async () => {
+  return withFileLock(subscriptionsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getSubscriptionsSheet(workbook);
     const rowNumber = sheet.rowCount + 1;
@@ -141,7 +143,7 @@ export async function addSubscription(
     row.getCell(5).value = input.cardOrBank.trim();
     row.commit();
 
-    await saveWorkbook(workbook, SUBSCRIPTIONS_PATH);
+    await saveWorkbook(workbook, subscriptionsPath());
     const entry: SubscriptionEntry = {
       row: rowNumber,
       service,
@@ -162,7 +164,7 @@ export async function updateSubscription(
   const service = input.service.trim();
   validateEntry(service, input.amount, input.duration, input.expiryAnchor);
 
-  return withFileLock(SUBSCRIPTIONS_PATH, async () => {
+  return withFileLock(subscriptionsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getSubscriptionsSheet(workbook);
     assertRealSubscriptionRow(sheet, rowNumber);
@@ -175,7 +177,7 @@ export async function updateSubscription(
     row.getCell(5).value = input.cardOrBank.trim();
     row.commit();
 
-    await saveWorkbook(workbook, SUBSCRIPTIONS_PATH);
+    await saveWorkbook(workbook, subscriptionsPath());
     const entry: SubscriptionEntry = {
       row: rowNumber,
       service,
@@ -189,12 +191,12 @@ export async function updateSubscription(
 }
 
 export async function deleteSubscription(rowNumber: number): Promise<void> {
-  await withFileLock(SUBSCRIPTIONS_PATH, async () => {
+  await withFileLock(subscriptionsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getSubscriptionsSheet(workbook);
     assertRealSubscriptionRow(sheet, rowNumber);
 
     sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, SUBSCRIPTIONS_PATH);
+    await saveWorkbook(workbook, subscriptionsPath());
   });
 }

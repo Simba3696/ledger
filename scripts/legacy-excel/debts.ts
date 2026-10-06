@@ -1,9 +1,11 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
-const DEBTS_PATH = path.join(DB_DIR, "Debts.xlsx");
+function debtsPath(): string {
+  return path.join(getDbDir(), "Debts.xlsx");
+}
 const SHEET_NAME = "Debts";
 const HEADERS = ["Name", "Amount"];
 
@@ -31,8 +33,8 @@ function validateEntry(name: string, amount: number) {
 
 async function loadOrCreateWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  if (fs.existsSync(DEBTS_PATH)) {
-    await workbook.xlsx.readFile(DEBTS_PATH);
+  if (fs.existsSync(debtsPath())) {
+    await workbook.xlsx.readFile(debtsPath());
   } else {
     workbook.addWorksheet(SHEET_NAME).addRow(HEADERS);
   }
@@ -78,7 +80,7 @@ export async function addDebt(input: AddDebtInput): Promise<DebtEntry> {
   const name = input.name.trim();
   validateEntry(name, input.amount);
 
-  return withFileLock(DEBTS_PATH, async () => {
+  return withFileLock(debtsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getDebtsSheet(workbook);
     const rowNumber = sheet.rowCount + 1;
@@ -87,7 +89,7 @@ export async function addDebt(input: AddDebtInput): Promise<DebtEntry> {
     row.getCell(2).value = input.amount;
     row.commit();
 
-    await saveWorkbook(workbook, DEBTS_PATH);
+    await saveWorkbook(workbook, debtsPath());
     return { row: rowNumber, name, amount: input.amount };
   });
 }
@@ -102,7 +104,7 @@ export async function updateDebt(input: UpdateDebtInput): Promise<DebtEntry> {
   const name = input.name.trim();
   validateEntry(name, input.amount);
 
-  return withFileLock(DEBTS_PATH, async () => {
+  return withFileLock(debtsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getDebtsSheet(workbook);
     assertRealDebtRow(sheet, input.row);
@@ -112,18 +114,18 @@ export async function updateDebt(input: UpdateDebtInput): Promise<DebtEntry> {
     row.getCell(2).value = input.amount;
     row.commit();
 
-    await saveWorkbook(workbook, DEBTS_PATH);
+    await saveWorkbook(workbook, debtsPath());
     return { row: input.row, name, amount: input.amount };
   });
 }
 
 export async function deleteDebt(rowNumber: number): Promise<void> {
-  await withFileLock(DEBTS_PATH, async () => {
+  await withFileLock(debtsPath(), async () => {
     const workbook = await loadOrCreateWorkbook();
     const sheet = getDebtsSheet(workbook);
     assertRealDebtRow(sheet, rowNumber);
 
     sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, DEBTS_PATH);
+    await saveWorkbook(workbook, debtsPath());
   });
 }
