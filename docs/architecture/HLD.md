@@ -1,6 +1,6 @@
 # High-Level Design: Ledger, hosted edition
 
-**Status:** Approved and implemented on the `supabase-migration` branch (phases 1-4 of §7 done; phase 5's merge into `main` pending)
+**Status:** Approved and implemented. Built on the `supabase-migration` branch (§7) and merged into `main`.
 **Scope:** the `main` branch, the hosted edition. The `personal` branch stays the local Excel + Tailscale edition.
 **Companion docs:** [LLD.md](LLD.md) for low-level design, [../adr/](../adr/) for decision records.
 
@@ -99,13 +99,13 @@ Every write is one SQL transaction. That replaces the Excel edition's per-file l
 
 ## 7. Migration strategy
 
-The migration was incremental and every step stayed testable: each phase was committed only once its suites passed. Phases 1-4 are done; phase 5 is done apart from the merge into `main`.
+The migration was incremental and every step stayed testable: each phase was committed only once its suites passed. All five phases are done.
 
 1. **Foundation:** schema migrations, local Supabase stack, database client and test harness.
 2. **Port modules one by one:** debts, subscriptions, EMI, credit card bills, finances, categories, expenses, overview. Each module's storage moved from Excel to SQL while its tests stayed green, and `server/src/excel/` was deleted.
 3. **Hosting and auth:** Netlify Function wrapper, JWT middleware, client sign-in screen, `netlify.toml`, `ENABLED_MODULES` and [DEPLOY.md](../DEPLOY.md).
 4. **Import:** `scripts/import-xlsx.ts` brings Excel history into a Supabase project ([LLD §8](LLD.md#8-import-script-scriptsimport-xlsxts)).
-5. **Wrap-up:** e2e and screenshot scripts against the local stack, the screenshots regenerated, the docs rewritten for the hosted edition, then the branch merged into `main` (pending).
+5. **Wrap-up:** e2e and screenshot scripts against the local stack, the screenshots regenerated, the docs rewritten for the hosted edition, then the branch merged into `main`.
 
 ## 8. Risks
 

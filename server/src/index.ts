@@ -20,9 +20,7 @@ const app = createApp();
 // client/dist commonly *does* already exist on disk from an earlier `npm
 // run build` in the same checkout. Without this check, a dev session on
 // :4000 would silently serve that stale build next to Vite's live one on
-// :5173, with no indication anything was out of date — confusing against
-// real data specifically because the Remote-access setup below trains you
-// to think of :4000 as "the app".
+// :5173, with no indication anything was out of date.
 const isBuiltRun = path.basename(__dirname) === "dist";
 if (isBuiltRun && existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));

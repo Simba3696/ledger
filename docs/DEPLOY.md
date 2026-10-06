@@ -47,7 +47,9 @@ settings the code reads are in [LLD §9](architecture/LLD.md#9-configuration).
   ```
 
   The Supabase commands below run through `npx supabase`. The first time,
-  `npx` asks to download the Supabase CLI: answer yes. Docker is **not**
+  `npx` asks to download the Supabase CLI: answer yes. This guide was
+  tested with CLI 2.119.0; if a newer one misbehaves, run that version with
+  `npx supabase@2.119.0 ...`. Docker is **not**
   needed for anything in this guide except the optional `db dump` backup.
 - The **email address** the owner will sign in with, and a password for
   them.
@@ -258,9 +260,8 @@ Don't set these on Netlify:
    **repository root**, and leave both directories **empty**: only then does
    the root `netlify.toml` (website, API function and redirects) apply.
 2. **Branch to deploy:** the branch that contains `netlify.toml` and
-   `supabase/migrations/` (the hosted edition): `main` once the
-   `supabase-migration` branch has been merged into it, and
-   `supabase-migration` until then. An older `main`, or `personal`, is the
+   `supabase/migrations/` (the hosted edition), which is `main`. A `main`
+   from before the hosted edition was merged in, or `personal`, is the
    Excel edition, with no `netlify.toml` and no function, so it would not
    deploy.
 3. Leave the build settings as Netlify fills them in (apart from the base

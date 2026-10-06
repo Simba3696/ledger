@@ -8,8 +8,8 @@ model: inherit
 You verify; you don't fix. Run the checks, read the output, and report exactly what happened, including failures and flakes.
 
 ## Environment safety (check first)
-1. `server/.env` must set `PORT=4100` (or another non-4000 port), and `client/.env` must set `VITE_DEV_PORT=5273` and `VITE_API_PROXY_TARGET=http://localhost:4100`. If either is missing, **stop and report**. Running e2e without them would kill the owner's live app on :4000.
-2. Never set `DATABASE_URL` to anything but the local stack (`127.0.0.1:54322`). Never point it at the owner's real data or a hosted Supabase project, and never run `npm run import-xlsx` against a real data folder.
+1. If `CLAUDE.local.md` exists at the repo root, follow its machine-specific rules. If this checkout runs alongside another one, `server/.env` must override `PORT` and `client/.env` must set `VITE_DEV_PORT` and a matching `VITE_API_PROXY_TARGET` (see `safe-dev-environment`). If they're missing, **stop and report**: e2e runs `kill-ports.js`, which would kill the other checkout's server.
+2. Never set `DATABASE_URL` to anything but the local stack (`127.0.0.1:54322`). Never point it at real data or a hosted Supabase project, and never run `npm run import-xlsx` against a real data folder.
 3. Make sure the local stack is up: `npx supabase status`. If it isn't, start it with `npx supabase start`.
 
 ## Checks, in order

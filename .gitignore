@@ -14,6 +14,8 @@ dist/
 .claude/*
 !.claude/agents/
 !.claude/skills/
+# Machine-specific notes for Claude Code (other checkouts, local paths).
+CLAUDE.local.md
 # Supabase CLI local state (the project config and migrations are committed).
 supabase/.branches/
 supabase/.temp/

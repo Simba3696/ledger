@@ -368,10 +368,15 @@ module.
 
 ## Local development
 
-**Prerequisites:** [Node.js](https://nodejs.org) 22+, git, and
-[Docker](https://www.docker.com/products/docker-desktop/) (Docker Desktop
-on Windows/macOS) for the local Supabase stack. The Supabase CLI runs
-through `npx supabase`.
+**Prerequisites:** Windows, [Node.js](https://nodejs.org) 22+, git, and
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) for the
+local Supabase stack. Windows because `scripts/kill-ports.js` (run by
+`npm run dev`, `start`, `stop`, `test:e2e` and `screenshots`) and the e2e
+teardown find and stop processes with Windows' `netstat` and `taskkill`; on
+macOS or Linux they silently stop nothing. (Deploying with
+[docs/DEPLOY.md](docs/DEPLOY.md) works from any OS.) The Supabase CLI runs
+through `npx supabase`; this repo is tested with CLI 2.119.0
+(`npx supabase@2.119.0 ...` pins it if a newer one misbehaves).
 
 1. **Get the code and install.** This is an npm-workspaces monorepo: one
    install at the root covers `server/`, `client/` and the e2e scripts.
@@ -379,8 +384,14 @@ through `npx supabase`.
    ```
    git clone <repository URL>
    cd ledger
-   npm install
+   npm ci
+   npx playwright install chromium
    ```
+
+   `npm ci` installs exactly what `package-lock.json` pins, as the Netlify
+   build does. `npx playwright install chromium` is a one-time download of
+   the browser that `npm run test:e2e` and `npm run screenshots` drive;
+   `npm ci` doesn't fetch it.
 
 2. **Start the local Supabase stack** (Postgres on 54322, API on 54321,
    Studio on 54323, Mailpit on 54324). The first run pulls Docker images.
@@ -539,7 +550,9 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   `npx supabase db reset` afterwards if you want the seeded categories back
   for `npm run dev`.
 - **`npm run test:e2e`**: two Playwright scripts (plain scripts, not the
-  `@playwright/test` runner). Each resets the local database, starts the
+  `@playwright/test` runner; they need the one-time
+  `npx playwright install chromium` from
+  [Local development](#local-development)). Each resets the local database, starts the
   dev server on this checkout's ports, and signs in through the real
   sign-in form as the seeded owner. `e2e/regression.ts` drives the whole
   app: Dashboard and chart click-through, a custom category seeded into the
