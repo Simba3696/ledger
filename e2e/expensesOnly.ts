@@ -1,8 +1,10 @@
 /**
  * Second e2e pass (run by `npm run test:e2e` after regression.ts): the same
  * app started with ENABLED_MODULES=expenses, the shape of a first,
- * expenses-only deployment (ADR-0006). Checks the nav shows only Dashboard
- * and Expenses, expenses can be added, edited and deleted, the Dashboard
+ * expenses-only deployment (ADR-0006), on a database with no expenses at
+ * all, as a brand-new deployment has. Checks the nav shows only Dashboard
+ * and Expenses, the Expenses tab opens on an empty month with no error
+ * before the first expense, expenses can be added, edited and deleted, the Dashboard
  * renders its expense charts with no card for a disabled module and no
  * console error (so the client never calls a disabled route), and a
  * disabled module's API answers 404. Signs in through the UI as the
@@ -16,7 +18,7 @@
  */
 import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chromium } from "playwright";
-import { insertLocalExpenses, resetLocalDatabase } from "./localDb.js";
+import { resetLocalDatabase } from "./localDb.js";
 import { ROOT, SERVER_PORT, serverEnv, startDevServer, stopDevServer } from "./devServer.js";
 import { assertLocalAuth, checkSignInFlow, ownerAccessToken } from "./auth.js";
 
@@ -30,15 +32,11 @@ async function main() {
   const ownerEmail = assertLocalAuth();
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
-  // "Now" as the server sees it (APP_TIMEZONE), so the seeded month is the
-  // one the Expenses tab opens on.
+  // "Now" as the server sees it (APP_TIMEZONE), the year the API checks ask
+  // about. Nothing is seeded: the first expense goes in through the UI, as
+  // on a brand-new deployment.
   const { todayInAppZone } = await import("../server/src/domain/today.js");
-  const now = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined);
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  await insertLocalExpenses(serverEnv.DATABASE_URL, year, month, [
-    { amount: 120, remarks: "Seeded Groceries", category: "food" },
-  ]);
+  const year = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined).getFullYear();
 
   console.log("Starting dev server with ENABLED_MODULES=expenses...");
   const consoleErrors: string[] = [];
@@ -104,8 +102,33 @@ async function main() {
         (await page.locator(".emi-projection").count()) === 0,
     );
     check("Dashboard: no Net Worth figure anywhere", (await page.getByText("Net Worth").count()) === 0);
+    check("Dashboard: no error on a deployment with no expenses yet", (await page.locator(".error").count()) === 0);
+
+    // --- Expenses: a fresh deployment, before the first expense ---
+    await page.click('.tabs button:has-text("Expenses")');
+    await page.waitForSelector(".add-expense-form");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check("Expenses tab selected", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
     check(
-      "Dashboard: the yearly expense charts render, including the seeded month",
+      "Expenses: a fresh deployment shows an empty month and no error text",
+      (await page.locator(".entry-row").count()) === 0 && (await page.locator(".error").count()) === 0,
+    );
+
+    await page.fill('.add-expense-form input[type="number"]', "120");
+    await page.fill('.add-expense-form input[type="text"]', "First Groceries");
+    await page.click('.add-expense-form button.category-chip:has-text("Food")');
+    await page.click('button.submit-btn:has-text("Add Expense")');
+    await page.waitForSelector('.entry-row:has-text("First Groceries")');
+    check(
+      "Expenses: the first expense is listed, still with no error",
+      (await page.locator(".entry-row").count()) === 1 && (await page.locator(".error").count()) === 0,
+    );
+
+    await page.click(".brand");
+    await page.waitForSelector(".chart-wrap svg");
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check(
+      "Dashboard: the yearly expense charts render, including the first expense",
       (await page.locator(".dashboard-total strong").innerText()).includes("120") &&
         (await page.locator(".category-chart").count()) > 0,
     );
@@ -114,8 +137,7 @@ async function main() {
     await page.click('.tabs button:has-text("Expenses")');
     await page.waitForSelector(".add-expense-form");
     await page.waitForSelector(".loading-overlay", { state: "detached" });
-    check("Expenses tab selected", (await page.locator(".tabs button.selected").innerText()) === "Expenses");
-    check("Expenses: seeded entry listed", (await page.locator(".entry-row").count()) === 1);
+    await page.waitForSelector('.entry-row:has-text("First Groceries")');
 
     await page.fill('.add-expense-form input[type="number"]', "250");
     await page.fill('.add-expense-form input[type="text"]', "E2E Lunch");

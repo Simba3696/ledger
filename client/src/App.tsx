@@ -108,9 +108,9 @@ function Ledger({ session }: { session: Session }) {
       const data = await getMonth(year, month);
       setEntries(data);
     } catch (err) {
-      // Clear stale entries too — otherwise switching to a month/year that
-      // fails to load (e.g. a not-yet-created year) leaves the previous
-      // month's entries on screen underneath the error message.
+      // Clear stale entries too — otherwise switching to a month that fails
+      // to load (e.g. the network dropped) leaves the previous month's
+      // entries on screen underneath the error message.
       setEntries([]);
       setLoadError((err as Error).message);
     } finally {
@@ -123,10 +123,10 @@ function Ledger({ session }: { session: Session }) {
       const { locked } = await getMonthLock(year, month);
       setLocked(locked);
     } catch {
-      // A missing year/workbook (e.g. browsing to a future month before
-      // adding anything) has nothing to lock — default to unlocked rather
-      // than surfacing this as an error; getMonth's own fetch already
-      // reports the real "nothing here yet" state via loadError.
+      // Default to unlocked rather than surfacing a second error: getMonth's
+      // own fetch for the same month already reports any failure via
+      // loadError. (A month nobody has written to isn't a failure; it lists
+      // as empty and reports unlocked.)
       setLocked(false);
     }
   }, [year, month]);

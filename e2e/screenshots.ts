@@ -149,14 +149,13 @@ async function main() {
     }
 
     // --- API-seeded data: checked empty now, written after every tab's check ---
-    // A year nobody has written to answers 404 ("No workbook found"), which
-    // is the expected state here; any entries at all, or any other error,
-    // mean stop.
+    // A freshly reset database lists the month as empty; any entries at all,
+    // or any error, mean stop.
     const monthRes = await api("GET", `/months/${year}/${month}`);
-    if (!monthRes.ok && monthRes.status !== 404) {
+    if (!monthRes.ok) {
       throw new Error(`Checking ${year}-${month}'s expenses failed with ${monthRes.status}: ${await monthRes.text()}`);
     }
-    const existing = monthRes.ok ? ((await monthRes.json()) as unknown[]) : [];
+    const existing = (await monthRes.json()) as unknown[];
     if (existing.length !== 0) {
       throw new Error(`Refusing to seed Expenses: ${year}-${month} already has ${existing.length} entr(ies).`);
     }

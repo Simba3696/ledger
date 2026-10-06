@@ -1,4 +1,4 @@
-import { getSql, type Sql, type Tx } from "../db/client.js";
+import { getSql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
 import { LedgerError } from "../errors.js";
 import type { Category } from "../domain/categoryColors.js";
@@ -106,38 +106,16 @@ function isStorableYear(year: number): boolean {
   return Number.isInteger(year) && year >= EARLIEST_YEAR && year <= LATEST_YEAR;
 }
 
-function validateWriteYear(year: number) {
+/** Every expense read and write takes a year the `year` column can hold.
+ * There is no per-year "exists" state: a year nobody has written to is just
+ * a year with no rows, so its months list as empty and can be locked like
+ * any other. */
+function validateYear(year: number) {
   if (!isStorableYear(year)) throw new LedgerError(`Invalid year: ${year}`, 400);
-}
-
-function noYear(year: number): LedgerError {
-  return new LedgerError(`No workbook found for year ${year}`, 404);
-}
-
-/** The Excel edition's loadWorkbook check, which ran before anything looked
- * at the month: a year nobody has written to is a 404. */
-async function assertYearExists(q: Sql | Tx, year: number) {
-  if (!(await yearExists(q, year))) throw noYear(year);
 }
 
 function noEntry(row: number, year: number, month: number): LedgerError {
   return new LedgerError(`No entry found at row ${row} in ${monthName(month)} ${year}`, 404);
-}
-
-/** The Excel edition's "does this year's workbook exist": whether the year
- * has ever been written to. appendEntry is the one write that "creates" a
- * year (recording it in `ledger_years`); a year with expenses or month locks
- * exists too. A year nobody has written to yet 404s on listMonth,
- * setMonthLocked and the entry writes exactly as a missing workbook did, and
- * deleting a year's last entry doesn't un-create it, as the emptied workbook
- * file stayed behind. */
-async function yearExists(q: Sql | Tx, year: number): Promise<boolean> {
-  if (!isStorableYear(year)) return false;
-  const [{ found }] = await q<{ found: boolean }[]>`
-    select exists (select 1 from ledger_years where year = ${year})
-        or exists (select 1 from expenses where year = ${year})
-        or exists (select 1 from month_locks where year = ${year}) as found`;
-  return found;
 }
 
 /** Serialises every write to one month (LLD §4.3/§4.4): appends computing the
@@ -181,24 +159,23 @@ async function validateEntryFields(amount: number, remarks: string, category: Ca
   if (!categoryConfig) throw new LedgerError(`Unknown category: ${category}`, 400);
 }
 
-/** Whether a month is locked (a `month_locks` row). A month in a year with
- * nobody has written to is never locked, whatever the month; there's
- * nothing to lock. */
+/** Whether a month is locked (a `month_locks` row). A month nobody has
+ * locked, including every month of a year nobody has written to, isn't. */
 export async function isMonthLocked(year: number, month: number): Promise<boolean> {
-  const sql = getSql();
-  if (!(await yearExists(sql, year))) return false;
+  validateYear(year);
   monthName(month);
+  const sql = getSql();
   const [locked] = await sql`select 1 from month_locks where year = ${year} and month = ${month}`;
   return !!locked;
 }
 
 /** Locks or unlocks a month. Nothing auto-locks; locking a month you're done
- * with is a deliberate, undoable choice. Like the Excel edition, a year
- * nobody has written to 404s (there's no "workbook" to lock). */
+ * with is a deliberate, undoable choice. Any month can be locked, including
+ * an empty one in a year nobody has written to yet. */
 export async function setMonthLocked(year: number, month: number, locked: boolean): Promise<void> {
+  validateYear(year);
+  monthName(month);
   await withTransaction(async (tx) => {
-    await assertYearExists(tx, year);
-    monthName(month);
     await lockMonthForWrite(tx, year, month);
     if (locked) {
       await tx`insert into month_locks (year, month) values (${year}, ${month}) on conflict do nothing`;
@@ -208,11 +185,12 @@ export async function setMonthLocked(year: number, month: number, locked: boolea
   });
 }
 
-/** A month's entries in display order (`position`). */
+/** A month's entries in display order (`position`); [] for a month with
+ * none, whether or not anything was ever written to its year. */
 export async function listMonth(year: number, month: number): Promise<LedgerEntry[]> {
-  const sql = getSql();
-  await assertYearExists(sql, year);
+  validateYear(year);
   monthName(month);
+  const sql = getSql();
   const rows = await sql<ExpenseRow[]>`
     select id, position, amount, remarks, category_id, card_note
     from expenses where year = ${year} and month = ${month}
@@ -294,19 +272,16 @@ export async function expenseTotalsForYears(fromYear: number, toYear: number): P
 
 /** Adds an entry at the end of the month (LLD §4.3). The per-month advisory
  * lock serialises concurrent appends, so each computes its own next
- * position and none is lost. Adding to a year nobody has written to yet
- * "creates" it (a `ledger_years` row), as the Excel edition created its
- * workbook. */
+ * position and none is lost. */
 export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry> {
   const { year, month, amount, remarks, category, isCard } = input;
   await validateEntryFields(amount, remarks, category);
-  validateWriteYear(year);
+  validateYear(year);
   monthName(month);
 
   return withTransaction(async (tx) => {
     await lockMonthForWrite(tx, year, month);
     await assertWritable(tx, year, month);
-    await tx`insert into ledger_years (year) values (${year}) on conflict do nothing`;
     const [{ next }] = await tx<{ next: number }[]>`
       select coalesce(max(position) + 1, 0) as next
       from expenses where year = ${year} and month = ${month}`;
@@ -322,10 +297,10 @@ export async function appendEntry(input: AppendEntryInput): Promise<LedgerEntry>
 export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry> {
   const { year, month, row, amount, remarks, category, isCard } = input;
   await validateEntryFields(amount, remarks, category);
+  validateYear(year);
+  monthName(month);
 
   return withTransaction(async (tx) => {
-    await assertYearExists(tx, year);
-    monthName(month);
     await lockMonthForWrite(tx, year, month);
     await assertWritable(tx, year, month);
     await findEntry(tx, year, month, row);
@@ -341,9 +316,9 @@ export async function updateEntry(input: UpdateEntryInput): Promise<LedgerEntry>
 /** Removes an entry and closes the gap: every later entry moves up one. */
 export async function deleteEntry(input: DeleteEntryInput): Promise<void> {
   const { year, month, row } = input;
+  validateYear(year);
+  monthName(month);
   await withTransaction(async (tx) => {
-    await assertYearExists(tx, year);
-    monthName(month);
     await lockMonthForWrite(tx, year, month);
     await assertWritable(tx, year, month);
     const entry = await findEntry(tx, year, month, row);
@@ -362,9 +337,9 @@ export async function deleteEntry(input: DeleteEntryInput): Promise<void> {
  * mid-statement, which the deferred unique constraint allows. */
 export async function moveEntry(input: MoveEntryInput): Promise<void> {
   const { year, month, fromRow, toRow } = input;
+  validateYear(year);
+  monthName(month);
   await withTransaction(async (tx) => {
-    await assertYearExists(tx, year);
-    monthName(month);
     await lockMonthForWrite(tx, year, month);
     await assertWritable(tx, year, month);
     const from = await findEntry(tx, year, month, fromRow);

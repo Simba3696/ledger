@@ -524,8 +524,7 @@ async function main() {
     // That 403 is expected (it's the whole point of the check above) — the
     // browser logs the failed fetch as a console error regardless, so filter
     // this one known-expected occurrence out rather than let it fail the "no
-    // console errors" check at the end (same reasoning as the next-year 404
-    // filtered below).
+    // console errors" check at the end.
     const expected403 = consoleErrors.findIndex((e) => e.includes("403"));
     if (expected403 !== -1) consoleErrors.splice(expected403, 1);
 
@@ -550,21 +549,19 @@ async function main() {
     await page.waitForTimeout(400);
     check("All test entries deleted, back to seeded count", (await page.locator(".entry-row").count()) === beforeCount);
 
-    // --- Auto-create next year on first entry ---
-    // Only the current year was seeded, so next year genuinely has no
-    // ledger_years row yet — this exercises appendEntry's auto-create path (and
-    // confirms YearSelect actually offers a year beyond the current one).
+    // --- First entry in a year nobody has written to ---
+    // Only the current year was seeded, so next year has no rows at all. It
+    // must load like any empty month (no error, no failed request) and take
+    // a first entry with no setup step. Also confirms YearSelect offers a
+    // year beyond the current one.
     const nextYear = String(year + 1);
     await page.selectOption(".month-picker select >> nth=1", nextYear);
     await page.waitForTimeout(300);
-    check("Selecting next year shows no entries yet (no file, no crash)", (await page.locator(".entry-row").count()) === 0);
-    // That 404 is expected (confirming the year doesn't exist yet before we
-    // auto-create it below) — the browser logs it as a console error
-    // regardless of the app handling it gracefully, so filter this one
-    // known-expected occurrence out rather than let it fail the "no console
-    // errors" check at the end.
-    const expected404 = consoleErrors.findIndex((e) => e.includes("404"));
-    if (expected404 !== -1) consoleErrors.splice(expected404, 1);
+    await page.waitForSelector(".loading-overlay", { state: "detached" });
+    check(
+      "Selecting next year shows an empty month with no error",
+      (await page.locator(".entry-row").count()) === 0 && (await page.locator(".error").count()) === 0,
+    );
 
     await page.fill('input[type="number"]', "999");
     await page.fill('input[type="text"]', "First entry of a new year");
@@ -572,7 +569,7 @@ async function main() {
     await page.click('button.submit-btn:has-text("Add Expense")');
     await page.waitForSelector("text=First entry of a new year");
     check(
-      "Adding an entry to an unset year auto-creates its workbook",
+      "Adding the first entry to a year nobody has written to lists it",
       (await page.locator(".entry-row").count()) === 1,
     );
 

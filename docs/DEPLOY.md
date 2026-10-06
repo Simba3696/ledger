@@ -295,10 +295,9 @@ Every later push to the deploy branch redeploys automatically.
 3. An expenses-only copy shows two tabs, **Dashboard** and **Expenses**. The
    Dashboard has the yearly spending chart and no Net Worth or Upcoming
    cards, since those come from sections that are off.
-4. Open **Expenses**. On a brand-new copy it shows "No workbook found for
-   year N" under the form. That's expected (the wording dates from the
-   Excel edition) and goes away once the year has its first expense. Add a
-   test expense, check it appears on the Dashboard chart, then delete it.
+4. Open **Expenses**. On a brand-new copy the month is empty, with no
+   message under the form. Add a test expense, check it appears on the
+   Dashboard chart, then delete it.
 5. On a phone, the browser's **Add to Home Screen** gives it an app icon.
    The session is remembered on each device until you tap the sign-out
    button in the header.
@@ -428,8 +427,8 @@ your own copy now and then. Either:
 
 - **Table Editor CSV export (no tools needed):** open each table in the
   **Table Editor** and use its export option to download it as CSV. For an
-  expenses-only copy, `expenses`, `month_locks`, `ledger_years` and
-  `categories` hold everything.
+  expenses-only copy, `expenses`, `month_locks` and `categories`
+  hold everything.
 - **A full SQL dump** from your linked clone. This uses Docker, so start
   Docker Desktop first:
 

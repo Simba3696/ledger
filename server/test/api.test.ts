@@ -263,9 +263,18 @@ describe("error mapping", () => {
   }
 
   it("turns a LedgerError into { error } with its status", async () => {
+    const res = await authed("/api/months/2017/1");
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "Invalid year: 2017" });
+  });
+
+  it("lists a month of a year nobody has written to as an empty list, not an error", async () => {
     const res = await authed("/api/months/2018/1");
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({ error: "No workbook found for year 2018" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    const lock = await authed("/api/months/2018/1/lock");
+    expect(lock.status).toBe(200);
+    expect(lock.body).toEqual({ locked: false });
   });
 
   it("turns an unknown error into a generic 500 without leaking its message", async () => {
@@ -427,8 +436,11 @@ describe("enabled modules (ENABLED_MODULES)", () => {
     vi.stubEnv("ENABLED_MODULES", "expenses");
     expect((await call("get", "/categories")).status).toBe(200);
     expect((await call("get", "/summary/2026")).status).toBe(200);
-    // A LedgerError 404 from the store, not the module gate.
-    expect((await call("get", "/months/2018/1")).body).toEqual({ error: "No workbook found for year 2018" });
+    // Reaches the store past the module gate: a year nobody has written to
+    // lists as empty.
+    const month = await call("get", "/months/2018/1");
+    expect(month.status).toBe(200);
+    expect(month.body).toEqual([]);
   });
 
   it("serves an expenses-only overview without reading any other module", async () => {

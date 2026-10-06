@@ -268,7 +268,7 @@ describe("import of a clean folder matches what the Excel edition showed", () =>
     expect(await ledger.isMonthLocked(2024, 2)).toBe(true);
   });
 
-  it("a workbook whose sheets are all empty still creates its year", async () => {
+  it("a workbook whose sheets are all empty still records its year and lists as empty", async () => {
     const years = await sql<{ year: number }[]>`select year from ledger_years order by year`;
     expect(years.map((y) => y.year)).toEqual([2024, 2025]);
     for (let month = 1; month <= 12; month++) {

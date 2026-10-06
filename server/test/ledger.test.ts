@@ -43,18 +43,23 @@ describe("listMonth", () => {
     expect(entries[1]).toMatchObject({ amount: 50, remarks: "Bus fare", category: "transportation", isCard: true });
   });
 
-  it("throws a 404 LedgerError for a year with no workbook", async () => {
-    await expect(ledger.listMonth(2999, 1)).rejects.toMatchObject({ status: 404 });
+  it("lists a month of a year with no entries as empty", async () => {
+    expect(await ledger.listMonth(2999, 1)).toEqual([]);
+  });
+
+  it("rejects a year or month outside the column's range with a 400", async () => {
+    await expect(ledger.listMonth(2017, 1)).rejects.toMatchObject({ status: 400, message: "Invalid year: 2017" });
+    await expect(ledger.listMonth(Number.NaN, 1)).rejects.toMatchObject({ status: 400, message: "Invalid year: NaN" });
+    await expect(ledger.listMonth(YEAR, 13)).rejects.toMatchObject({ status: 400, message: "Invalid month: 13" });
   });
 });
 
-describe("appendEntry auto-creates a missing year's workbook", () => {
+describe("appendEntry into a year nobody has written to", () => {
   const YEAR = 2097;
 
-  it("creates all 12 month sheets and adds the entry, on a year with no file at all", async () => {
-    // No rows for this year at all: it reads as missing, as a year with no
-    // workbook file did.
-    await expect(ledger.listMonth(YEAR, 3)).rejects.toMatchObject({ status: 404 });
+  it("adds the entry, with no setup step for the year", async () => {
+    // No rows for this year at all: it lists as empty, like any empty month.
+    expect(await ledger.listMonth(YEAR, 3)).toEqual([]);
 
     const result = await ledger.appendEntry({
       year: YEAR,
@@ -66,15 +71,13 @@ describe("appendEntry auto-creates a missing year's workbook", () => {
     });
     expect(result).toMatchObject({ amount: 500 });
 
-    // The year now exists: the entry is listed, and every other month reads
-    // as empty rather than missing.
+    // The entry is listed, and every other month still lists as empty.
     expect((await ledger.listMonth(YEAR, 3)).map((e) => e.row)).toEqual([result.row]);
     expect(await ledger.listMonth(YEAR, 12)).toEqual([]);
   });
 
-  it("does not throw for other years that still genuinely have no workbook", async () => {
-    // listMonth/updateEntry/etc. are unaffected — only appendEntry auto-creates.
-    await expect(ledger.listMonth(2098, 1)).rejects.toMatchObject({ status: 404 });
+  it("leaves other years that still have no entries listing as empty", async () => {
+    expect(await ledger.listMonth(2098, 1)).toEqual([]);
   });
 });
 
@@ -401,7 +404,7 @@ describe("isMonthLocked / setMonthLocked", () => {
     expect(await ledger.isMonthLocked(YEAR, 2)).toBe(true);
   });
 
-  it("reports a month in a year with no workbook on disk yet as unlocked, not an error", async () => {
+  it("reports a month in a year nobody has written to as unlocked, not an error", async () => {
     expect(await ledger.isMonthLocked(2999, 1)).toBe(false);
   });
 
@@ -433,8 +436,16 @@ describe("isMonthLocked / setMonthLocked", () => {
     expect(await ledger.isMonthLocked(YEAR, 2)).toBe(false);
   });
 
-  it("throws a 404 trying to lock a month in a year with no workbook", async () => {
-    await expect(ledger.setMonthLocked(2999, 1, true)).rejects.toMatchObject({ status: 404 });
+  it("locks and unlocks an empty month in a year nobody has written to", async () => {
+    const NEVER_WRITTEN = 2998;
+    await ledger.setMonthLocked(NEVER_WRITTEN, 1, true);
+    expect(await ledger.isMonthLocked(NEVER_WRITTEN, 1)).toBe(true);
+    expect(await ledger.listMonth(NEVER_WRITTEN, 1)).toEqual([]);
+    await expect(
+      ledger.appendEntry({ year: NEVER_WRITTEN, month: 1, amount: 5, remarks: "blocked", category: "food", isCard: false }),
+    ).rejects.toMatchObject({ status: 403 });
+    await ledger.setMonthLocked(NEVER_WRITTEN, 1, false);
+    expect(await ledger.isMonthLocked(NEVER_WRITTEN, 1)).toBe(false);
   });
 });
 
@@ -522,9 +533,8 @@ describe("concurrent writes to the same workbook", () => {
   });
 });
 
-// The Excel edition's workbook file outlived its rows: once a year had been
-// written, deleting every entry left an empty workbook, not a missing one.
-describe("a year stays created after its last entry is deleted", () => {
+// Deleting a year's last entry leaves it like any other empty year.
+describe("a year whose last entry is deleted", () => {
   const YEAR = 2087;
 
   it("lists the emptied month as [] and still allows locking it", async () => {
@@ -540,32 +550,55 @@ describe("a year stays created after its last entry is deleted", () => {
   });
 });
 
-// The Excel edition loaded the year's workbook before looking at the month or
-// the row, so a year nobody has written to failed the same way everywhere.
-describe("a year with no workbook, checked before the month", () => {
+// There is no per-year "exists" state: a year nobody has written to answers
+// exactly as an existing, empty year does.
+describe("a year nobody has written to behaves like an empty one", () => {
   const NEVER = 2999;
-  const noWorkbook = { status: 404, message: `No workbook found for year ${NEVER}` };
+  const noEntry = { status: 404, message: `No entry found at row ${MISSING_ID} in January ${NEVER}` };
 
-  it("update, delete and move 404 with the missing-workbook message, even with a bad month", async () => {
-    for (const month of [1, 13]) {
+  it("lists as empty, reports unlocked, and sums to zero", async () => {
+    expect(await ledger.listMonth(NEVER, 1)).toEqual([]);
+    expect(await ledger.isMonthLocked(NEVER, 1)).toBe(false);
+    const summary = await ledger.yearSummary(NEVER);
+    expect(summary).toHaveLength(12);
+    expect(summary.every((m) => m.total === 0 && Object.values(m.categoryTotals).every((t) => t === 0))).toBe(true);
+  });
+
+  it("update, delete and move of a missing id are the ordinary 404 for a missing entry", async () => {
+    await expect(
+      ledger.updateEntry({ year: NEVER, month: 1, row: MISSING_ID, amount: 1, remarks: "x", category: "food", isCard: false }),
+    ).rejects.toMatchObject(noEntry);
+    await expect(ledger.deleteEntry({ year: NEVER, month: 1, row: MISSING_ID })).rejects.toMatchObject(noEntry);
+    await expect(ledger.moveEntry({ year: NEVER, month: 1, fromRow: MISSING_ID, toRow: MISSING_ID })).rejects.toMatchObject(noEntry);
+  });
+
+  it("rejects a bad month with a 400 everywhere, as an existing year does", async () => {
+    const badMonth = { status: 400, message: "Invalid month: 13" };
+    for (const year of [NEVER, 2086]) {
+      if (year === 2086) {
+        await ledger.appendEntry({ year, month: 1, amount: 1, remarks: "x", category: "food", isCard: false });
+      }
+      await expect(ledger.listMonth(year, 13)).rejects.toMatchObject(badMonth);
+      await expect(ledger.isMonthLocked(year, 13)).rejects.toMatchObject(badMonth);
+      await expect(ledger.setMonthLocked(year, 13, true)).rejects.toMatchObject(badMonth);
       await expect(
-        ledger.updateEntry({ year: NEVER, month, row: MISSING_ID, amount: 1, remarks: "x", category: "food", isCard: false }),
-      ).rejects.toMatchObject(noWorkbook);
-      await expect(ledger.deleteEntry({ year: NEVER, month, row: MISSING_ID })).rejects.toMatchObject(noWorkbook);
-      await expect(ledger.moveEntry({ year: NEVER, month, fromRow: MISSING_ID, toRow: MISSING_ID })).rejects.toMatchObject(noWorkbook);
-      await expect(ledger.listMonth(NEVER, month)).rejects.toMatchObject(noWorkbook);
-      await expect(ledger.setMonthLocked(NEVER, month, true)).rejects.toMatchObject(noWorkbook);
+        ledger.updateEntry({ year, month: 13, row: MISSING_ID, amount: 1, remarks: "x", category: "food", isCard: false }),
+      ).rejects.toMatchObject(badMonth);
+      await expect(ledger.deleteEntry({ year, month: 13, row: MISSING_ID })).rejects.toMatchObject(badMonth);
+      await expect(ledger.moveEntry({ year, month: 13, fromRow: MISSING_ID, toRow: MISSING_ID })).rejects.toMatchObject(badMonth);
     }
   });
 
-  it("isMonthLocked is false for any month of it, and an existing year still rejects a bad month", async () => {
-    expect(await ledger.isMonthLocked(NEVER, 13)).toBe(false);
-    await ledger.appendEntry({ year: 2086, month: 1, amount: 1, remarks: "x", category: "food", isCard: false });
-    await expect(ledger.isMonthLocked(2086, 13)).rejects.toMatchObject({ status: 400, message: "Invalid month: 13" });
-    await expect(ledger.deleteEntry({ year: 2086, month: 13, row: MISSING_ID })).rejects.toMatchObject({
-      status: 400,
-      message: "Invalid month: 13",
-    });
+  it("rejects a year the column can't hold with a 400 everywhere", async () => {
+    const badYear = { status: 400, message: "Invalid year: 2017" };
+    await expect(ledger.listMonth(2017, 1)).rejects.toMatchObject(badYear);
+    await expect(ledger.isMonthLocked(2017, 1)).rejects.toMatchObject(badYear);
+    await expect(ledger.setMonthLocked(2017, 1, true)).rejects.toMatchObject(badYear);
+    await expect(
+      ledger.updateEntry({ year: 2017, month: 1, row: MISSING_ID, amount: 1, remarks: "x", category: "food", isCard: false }),
+    ).rejects.toMatchObject(badYear);
+    await expect(ledger.deleteEntry({ year: 2017, month: 1, row: MISSING_ID })).rejects.toMatchObject(badYear);
+    await expect(ledger.moveEntry({ year: 2017, month: 1, fromRow: MISSING_ID, toRow: MISSING_ID })).rejects.toMatchObject(badYear);
   });
 });
 

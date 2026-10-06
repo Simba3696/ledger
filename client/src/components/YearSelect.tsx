@@ -8,8 +8,8 @@ interface Props {
 export function YearSelect({ value, onChange }: Props) {
   const currentYear = new Date().getFullYear();
   // +1 beyond the current year so next year is selectable ahead of time (e.g.
-  // setting things up in December) — the Expenses workbook for it gets
-  // created automatically on the first entry added there.
+  // setting things up in December). A year needs no setup: its months list
+  // as empty until the first entry is added there.
   const years = Array.from({ length: currentYear - EARLIEST_YEAR + 2 }, (_, i) => EARLIEST_YEAR + i);
 
   return (

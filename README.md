@@ -150,11 +150,10 @@ auto-advances to the next real cycle, never silently going stale:
   this is the only reorder path a screen reader can reach. Copy adds a
   brand new entry with the same amount/remarks/category/card status,
   appended at the end like any other, never linked back to the original.
-- Adding an entry to a year nobody has written to yet (next January, say)
-  starts that year automatically. Until then, browsing a month in that year
-  shows "No workbook found for year N" below the form (wording kept from the
-  Excel edition for API compatibility); the form still works. On a new
-  copy that's every year, until the first expense is added.
+- A year needs no setup. Browsing a month nobody has written to yet (next
+  January, say, or any month on a brand-new copy) shows an empty list, and
+  the first expense added there just appears. Such a month can be locked
+  like any other.
 - The app opens on the **Dashboard** tab. It shows a stacked bar chart of
   category totals per month for a selected year, computed live from the
   expenses (no separate storage), with a year selector independent of the
@@ -562,8 +561,9 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   persistence, and the auth flows (a request without a token is a 401, a
   wrong password, sign-out, the not-allowed screen, a mid-session 401
   signing out with a notice). `e2e/expensesOnly.ts` then runs with
-  `ENABLED_MODULES=expenses`: only Dashboard and Expenses tabs, expense
-  add/edit/delete, a Dashboard with no card from a disabled section, and a
+  `ENABLED_MODULES=expenses` on a database with no expenses, like a new
+  copy: only Dashboard and Expenses tabs, an empty Expenses month with no
+  error before the first expense, expense add/edit/delete, a Dashboard with no card from a disabled section, and a
   disabled section's API answering 404. Both fail on any browser console
   error. Run it after any client or server change.
 - **`npm run screenshots`**: `e2e/screenshots.ts` regenerates every image
