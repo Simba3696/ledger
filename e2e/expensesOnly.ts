@@ -35,7 +35,7 @@ async function main() {
   // "Now" as the server sees it (APP_TIMEZONE), the year the API checks ask
   // about. Nothing is seeded: the first expense goes in through the UI, as
   // on a brand-new deployment.
-  const { todayInAppZone } = await import("../server/src/domain/today.js");
+  const { todayInAppZone } = await import("../shared/src/today.js");
   const year = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined).getFullYear();
 
   console.log("Starting dev server with ENABLED_MODULES=expenses...");

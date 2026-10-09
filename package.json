@@ -3,7 +3,8 @@
   "private": true,
   "workspaces": [
     "server",
-    "client"
+    "client",
+    "shared"
   ],
   "scripts": {
     "predev": "node scripts/kill-ports.js",
@@ -16,7 +17,7 @@
     "build": "npm run build -w client && npm run build -w server",
     "prestart": "node scripts/kill-ports.js",
     "start": "npm run build && npm run start -w server",
-    "lint": "npm run lint -w client && npm run lint -w server",
+    "lint": "npm run lint -w client && npm run lint -w server && npm run lint -w shared",
     "knip": "knip"
   },
   "devDependencies": {

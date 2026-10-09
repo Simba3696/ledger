@@ -1,5 +1,5 @@
 import { getSql } from "../db/client.js";
-import { LedgerError } from "../errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
 
 export interface DebtEntry {

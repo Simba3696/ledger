@@ -6,10 +6,11 @@
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/index.js",
+    "start": "node --import tsx dist/index.js",
     "lint": "oxlint"
   },
   "dependencies": {
+    "@ledger/shared": "*",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "jose": "^6.2.12",

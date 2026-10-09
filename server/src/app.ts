@@ -2,7 +2,7 @@ import express, { type ErrorRequestHandler, type Express, type RequestHandler } 
 import type { JWTVerifyGetKey } from "jose";
 import { isDeployedRuntime, readAuthConfig, requireOwner } from "./auth.js";
 import { mapDatabaseError } from "./dbErrors.js";
-import { LedgerError } from "./errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 import { parseEnabledModules, requireEnabledModule } from "./modules.js";
 import { router } from "./routes.js";
 

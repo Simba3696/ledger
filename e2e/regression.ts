@@ -49,13 +49,13 @@ async function main() {
   // expenses seeded below need the seeded categories.
   await resetLocalDatabase(ROOT, serverEnv.DATABASE_URL);
 
-  const { DEFAULT_CATEGORIES } = await import("../server/src/domain/categoryColors.js");
+  const { DEFAULT_CATEGORIES } = await import("../shared/src/categoryColors.js");
   // Reused (not reimplemented) for the EMI Duration test below — computing
   // "10 months from today" independently here risks silently drifting from
   // addMonths' actual clamp-at-month-end behavior on an edge-case day.
-  const { addMonths, startOfDay, formatDate } = await import("../server/src/domain/dateMath.js");
-  const { dueDateOnOrAfter } = await import("../server/src/domain/emiMath.js");
-  const { todayInAppZone } = await import("../server/src/domain/today.js");
+  const { addMonths, startOfDay, formatDate } = await import("../shared/src/dateMath.js");
+  const { dueDateOnOrAfter } = await import("../shared/src/emiMath.js");
+  const { todayInAppZone } = await import("../shared/src/today.js");
 
   // Seed a custom 5th category alongside the defaults — proves the
   // categories table actually drives the running app end to end, not just

@@ -125,7 +125,7 @@ async function main() {
     // "Now" as the server sees it (APP_TIMEZONE, default Asia/Kolkata), as in
     // regression.ts, so the seeded month is the one the app treats as this
     // month even on a machine in another timezone near a month boundary.
-    const { todayInAppZone } = await import("../server/src/domain/today.js");
+    const { todayInAppZone } = await import("../shared/src/today.js");
     const appTimezone = serverEnv.APP_TIMEZONE || "Asia/Kolkata";
     const now = todayInAppZone(new Date(), appTimezone);
     const year = now.getFullYear();

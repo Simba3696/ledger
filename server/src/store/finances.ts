@@ -1,6 +1,6 @@
 import { getSql, type Sql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 import { assertMoney, assertText } from "./validate.js";
 import { expenseTotalsForYears } from "./ledger.js";
 import {
@@ -11,13 +11,13 @@ import {
   type MonthFinanceSummary,
   type MonthIncome,
   type SavingsEntry,
-} from "../domain/financeMath.js";
+} from "@ledger/shared/financeMath";
 
 export {
   EARLIEST_YEAR,
   type MonthFinanceSummary,
   type MonthIncome,
-} from "../domain/financeMath.js";
+} from "@ledger/shared/financeMath";
 
 /** The `year` column is int4. The Excel edition had no upper bound; this is
  * only the column's limit, checked here so a huge year gets this store's own

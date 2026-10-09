@@ -1,10 +1,10 @@
 import { getSql } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 import { assertMoney, assertText, isRealDate } from "./validate.js";
-import { summarize, type CardBill, type MonthBills, type MonthBillsSummary } from "../domain/creditCardMath.js";
+import { summarize, type CardBill, type MonthBills, type MonthBillsSummary } from "@ledger/shared/creditCardMath";
 
-export { type CardBill, type MonthBills, type MonthBillsSummary } from "../domain/creditCardMath.js";
+export { type CardBill, type MonthBills, type MonthBillsSummary } from "@ledger/shared/creditCardMath";
 
 const EARLIEST_YEAR = 2018;
 /** The `year` column is int4. The Excel edition had no upper bound; this is

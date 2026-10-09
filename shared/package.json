@@ -1,0 +1,14 @@
+{
+  "name": "@ledger/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "lint": "oxlint"
+  },
+  "devDependencies": {
+    "oxlint": "^1.71.0"
+  }
+}
