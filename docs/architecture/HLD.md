@@ -83,6 +83,7 @@ Every write is one SQL transaction. That replaces the Excel edition's per-file l
 - **One Git repo, one Netlify site.** On every push to the deploy branch, Netlify builds the client and bundles the function. `netlify.toml` routes `/api/*` to the function and every other path to the SPA's `index.html`.
 - **One Supabase project per owner.** The schema lives in `supabase/migrations/` and is applied with the Supabase CLI. The same files drive the local Docker stack used in development and tests.
 - **Configuration is environment variables only** (listed in [LLD §9](LLD.md#9-configuration)). No secrets in the repo.
+- **Optional GitHub Pages build.** `vite build --mode github` produces a separate static client (`client/dist-pages`) that stores encrypted data in a private GitHub repo instead of Supabase. `.github/workflows/pages.yml` builds it and deploys it to Pages. The default build, which Netlify publishes, contains none of its code ([ADR-0007](../adr/0007-serverless-github-storage-mode.md)).
 
 ## 6. Quality attributes
 
