@@ -4,7 +4,7 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 
 ## Branches
 - **`main`**: the generic, public, hosted edition: **Netlify + Supabase**, no Excel at runtime. It was built on the `supabase-migration` branch (HLD §7) and merged into `main`. See the [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and [ADRs](docs/adr/).
-- **`personal`**: the owner's own local Excel edition. Port changes **only by `git cherry-pick`**, never `git merge` across `personal`/`main`. Only `server/src/domain/*` and `client/*` changes port cleanly. Storage code (`server/src/store/*` here, `server/src/excel/*` there) doesn't.
+- **`personal`**: the owner's own local Excel edition. Port changes **only by `git cherry-pick`**, never `git merge` across `personal`/`main`. Only `shared/src/*` (still `server/src/domain/*` on `personal`; git's rename detection maps between them) and `client/*` changes port cleanly. Storage code (`server/src/store/*` here, `server/src/excel/*` there) doesn't.
 
 ## Read before changing anything
 | Need | Read |
@@ -19,7 +19,7 @@ Personal-finance web app: expenses, finances and savings, debts, EMIs, credit ca
 ## Non-negotiables
 1. **Stay local and isolated.** Use only the local Supabase stack or a temporary directory, never real data or a hosted project. If another checkout of Ledger runs on this machine, give this one its own ports in `server/.env` and `client/.env` so `kill-ports.js` can't kill the other. See `.claude/skills/safe-dev-environment`, and `CLAUDE.local.md` (untracked) if it exists for this machine's own rules.
 2. **API compatibility.** Request and response shapes stay byte-compatible with the Excel edition. `row` fields now carry database ids.
-3. **Keep calculations pure** in `server/src/domain/`. SQL and I/O live in `server/src/store/`. "Today" comes from `todayInAppZone()` or an injected `today` parameter, never a bare `new Date()`.
+3. **Keep calculations pure** in `shared/src/` (the `@ledger/shared` workspace, browser-safe: no `process`, Node or DOM APIs; the server imports it by package name only). SQL and I/O live in `server/src/store/`. "Today" comes from `appToday()` on the server (`server/src/today.ts`, which reads `APP_TIMEZONE`), an explicit zone in shared code (`todayInAppZone(now, timeZone)`), or an injected `today` parameter, never a bare `new Date()`.
 4. **Schema changes only through new migrations** in `supabase/migrations/`. See `.claude/skills/supabase-migrations`.
 5. **Verify before calling anything done.** Run client and server `tsc` (server checks from `server/`, so its own TypeScript runs, not the client's hoisted one; see `safe-dev-environment`), the full `npm test`, then `npm run test:e2e`, and report the real counts. Rerun once only for the two known e2e flakes.
 6. **Commits:** small, one concern each, with a body explaining *why*. No `Co-Authored-By` trailer. Don't push without being asked.
@@ -69,7 +69,9 @@ npx supabase migration new <name>                       # new schema change (nev
 (cd server && npx tsc -p tsconfig.build.json --noEmit)  # what the server build compiles
 (cd server && npx tsc -p ../netlify/tsconfig.json)      # the Netlify function
 (cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy Excel readers
-npm run lint                                            # oxlint on client/ and server/
+(cd client && npx tsc -p ../shared/tsconfig.json)       # shared/ is browser-safe, under the client's TypeScript
+(cd server && npx tsc -p ../shared/tsconfig.json)       # ...and under the server's
+npm run lint                                            # oxlint on client/, server/ and shared/
 npm run knip                                            # unused files, exports and dependencies
 ```
 

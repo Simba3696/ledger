@@ -348,9 +348,11 @@ client/     React 19 + Vite app. src/components/ (one .tsx + .css per piece),
 server/     Express API (TypeScript).
   src/      app.ts (createApp: logging, auth, section gate, routes, errors),
             routes.ts, auth.ts, modules.ts, index.ts (local entry point),
-            db/ (Postgres client, transactions), store/ (SQL, one module per
-            concern), domain/ (pure calculations, no I/O).
+            today.ts (appToday, in APP_TIMEZONE), db/ (Postgres client,
+            transactions), store/ (SQL, one module per concern).
   test/     vitest suites, run against the local Supabase Postgres.
+shared/     @ledger/shared: pure calculations, no I/O, browser-safe
+            (src/: dateMath, emiMath, ..., today.ts, errors.ts).
 netlify/    functions/api.ts: the whole API as one Netlify Function.
 supabase/   config.toml (local stack), migrations/ (the schema),
             seed.sql (local only: default categories + a test owner).
@@ -584,6 +586,8 @@ Typechecks:
 (cd server && npx tsc -p tsconfig.build.json --noEmit)   # what the server build compiles
 (cd server && npx tsc -p ../netlify/tsconfig.json)       # the Netlify function
 (cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy readers
+(cd client && npx tsc -p ../shared/tsconfig.json)        # shared/ is browser-safe (client's TypeScript)
+(cd server && npx tsc -p ../shared/tsconfig.json)        # ...and under the server's
 ```
 
 Run the server checks from `server/` so they use the server's own
@@ -592,7 +596,7 @@ TypeScript version.
 Lint:
 
 ```
-npm run lint   # oxlint on client/ and server/
+npm run lint   # oxlint on client/, server/ and shared/
 npm run knip   # unused files, exports and dependencies (read-only report)
 ```
 

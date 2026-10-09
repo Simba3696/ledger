@@ -1,0 +1,30 @@
+{
+  // Browser-safety typecheck for the shared domain code, which the server
+  // runs today and the browser will run too. The client's strict flags
+  // (client/tsconfig.app.json) with no DOM and no ambient types, so any
+  // `process`, `Buffer`, `node:` import, `import.meta.env` or `window` in
+  // shared/src fails to compile. Run it under both TypeScript versions:
+  // `cd client && npx tsc -p ../shared/tsconfig.json` and
+  // `cd server && npx tsc -p ../shared/tsconfig.json`.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "module": "esnext",
+    "types": [],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"]
+}

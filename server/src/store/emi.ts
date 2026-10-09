@@ -1,8 +1,8 @@
 import { getSql } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
-import { formatDate, startOfDay } from "../domain/dateMath.js";
-import { todayInAppZone } from "../domain/today.js";
+import { LedgerError } from "@ledger/shared/errors";
+import { formatDate, startOfDay } from "@ledger/shared/dateMath";
+import { appToday } from "../today.js";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
 import {
   EMI_PROJECTION_MONTHS,
@@ -13,9 +13,9 @@ import {
   type EmiEntry,
   type EmiEntryComputed,
   type EmiMonthlyProjection,
-} from "../domain/emiMath.js";
+} from "@ledger/shared/emiMath";
 
-export { type EmiEntryComputed, type EmiMonthlyProjection } from "../domain/emiMath.js";
+export { type EmiEntryComputed, type EmiMonthlyProjection } from "@ledger/shared/emiMath";
 
 export interface EmiEditsInput {
   cardOrBank: string;
@@ -138,7 +138,7 @@ function notFound(row: number): LedgerError {
 }
 
 /** Insertion order, matching the Excel edition's sheet order. */
-export async function listEmis(today: Date = todayInAppZone()): Promise<EmiEntryComputed[]> {
+export async function listEmis(today: Date = appToday()): Promise<EmiEntryComputed[]> {
   const sql = getSql();
   const rows = await sql<EmiRow[]>`
     select id, card_or_bank, emi_amount, due_day, total_amount, remarks, remaining_as_of,
@@ -148,15 +148,15 @@ export async function listEmis(today: Date = todayInAppZone()): Promise<EmiEntry
 }
 
 /** Loads every EMI and simulates its future installments month by month
- * (see `projectEmiMonthly` in domain/emiMath.ts). */
+ * (see `projectEmiMonthly` in @ledger/shared/emiMath). */
 export async function emiMonthlyProjection(
   months: number | "auto" = EMI_PROJECTION_MONTHS,
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
 ): Promise<EmiMonthlyProjection[]> {
   return projectEmiMonthly(await listEmis(today), months, today);
 }
 
-export async function addEmi(input: EmiEditsInput, today: Date = todayInAppZone()): Promise<EmiEntryComputed> {
+export async function addEmi(input: EmiEditsInput, today: Date = appToday()): Promise<EmiEntryComputed> {
   const { cardOrBank, remarks, interestRate, foreclosureCharge } = prepareInput(input);
   const asOfDate = formatDate(startOfDay(today));
   const untilTarget = input.durationMonths ? resolveUntilTarget(input.durationMonths, today) : null;
@@ -175,7 +175,7 @@ export async function addEmi(input: EmiEditsInput, today: Date = todayInAppZone(
 export async function updateEmi(
   rowNumber: number,
   input: EmiEditsInput,
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
 ): Promise<EmiEntryComputed> {
   const { cardOrBank, remarks, interestRate, foreclosureCharge } = prepareInput(input);
   if (!isPossibleId(rowNumber)) throw notFound(rowNumber);
@@ -237,7 +237,7 @@ export async function updateEmi(
  * month — checked here by always advancing to the true next due date after
  * the current anchor in that case, so every call moves strictly forward.
  *
- * The rule itself is `settleEmiPayment` (domain/emiMath.ts). Only the
+ * The rule itself is `settleEmiPayment` (@ledger/shared/emiMath). Only the
  * balance snapshot and its anchor change: Card/Bank, amounts, remarks, the
  * until-target, interest rate and foreclosure charge are all kept as stored.
  * The read and the write share one transaction with the row locked (FOR
@@ -246,7 +246,7 @@ export async function updateEmi(
 export async function recordEmiPayment(
   rowNumber: number,
   amountPaid: number,
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
 ): Promise<EmiEntryComputed> {
   if (!Number.isFinite(amountPaid) || amountPaid < 0) {
     throw new LedgerError("Payment amount must be a non-negative number", 400);

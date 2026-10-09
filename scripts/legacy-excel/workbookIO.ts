@@ -18,7 +18,7 @@ export function getDbDir(): string {
 }
 
 // Legacy copy for the Phase 4 importer (LLD §8). LedgerError is defined
-// here rather than imported from server/src/errors.ts so this folder has no
+// here rather than imported from shared/src/errors.ts so this folder has no
 // dependency on server code.
 export class LedgerError extends Error {
   constructor(

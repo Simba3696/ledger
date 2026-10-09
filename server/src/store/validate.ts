@@ -1,5 +1,5 @@
-import { LedgerError } from "../errors.js";
-import { daysInMonth } from "../domain/dateMath.js";
+import { LedgerError } from "@ledger/shared/errors";
+import { daysInMonth } from "@ledger/shared/dateMath";
 
 // Shared input checks for the Postgres store modules. Each rejects, as a
 // clear 400, a value a column would otherwise refuse with a database error

@@ -1,7 +1,7 @@
 import { getSql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
-import type { Category } from "../domain/categoryColors.js";
+import { LedgerError } from "@ledger/shared/errors";
+import type { Category } from "@ledger/shared/categoryColors";
 import { loadCategoryConfig } from "./categories.js";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
 

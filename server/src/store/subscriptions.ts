@@ -1,15 +1,15 @@
 import { getSql } from "../db/client.js";
-import { LedgerError } from "../errors.js";
-import { todayInAppZone } from "../domain/today.js";
+import { LedgerError } from "@ledger/shared/errors";
+import { appToday } from "../today.js";
 import { assertMoney, assertText, isPossibleId, isRealDate } from "./validate.js";
 import {
   withComputed,
   type Duration,
   type SubscriptionEntry,
   type SubscriptionEntryComputed,
-} from "../domain/subscriptionMath.js";
+} from "@ledger/shared/subscriptionMath";
 
-export { type SubscriptionEntryComputed } from "../domain/subscriptionMath.js";
+export { type SubscriptionEntryComputed } from "@ledger/shared/subscriptionMath";
 
 export interface SubscriptionEditsInput {
   service: string;
@@ -53,7 +53,7 @@ function notFound(row: number): LedgerError {
 }
 
 /** Insertion order, matching the Excel edition's sheet order. */
-export async function listSubscriptions(today: Date = todayInAppZone()): Promise<SubscriptionEntryComputed[]> {
+export async function listSubscriptions(today: Date = appToday()): Promise<SubscriptionEntryComputed[]> {
   const sql = getSql();
   const rows = await sql<SubscriptionRow[]>`
     select id, service, amount, duration, expiry_anchor, card_or_bank
@@ -63,7 +63,7 @@ export async function listSubscriptions(today: Date = todayInAppZone()): Promise
 
 export async function addSubscription(
   input: SubscriptionEditsInput,
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
 ): Promise<SubscriptionEntryComputed> {
   const service = input.service.trim();
   const cardOrBank = input.cardOrBank.trim();
@@ -80,7 +80,7 @@ export async function addSubscription(
 export async function updateSubscription(
   rowNumber: number,
   input: SubscriptionEditsInput,
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
 ): Promise<SubscriptionEntryComputed> {
   const service = input.service.trim();
   const cardOrBank = input.cardOrBank.trim();

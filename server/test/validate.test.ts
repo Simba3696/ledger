@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { sql, resetTables, closeSql } from "./dbHelpers.js";
 import { assertMoney, assertText, isPossibleId, isRealDate } from "../src/store/validate.js";
 import { mapDatabaseError } from "../src/dbErrors.js";
-import { LedgerError } from "../src/errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 
 afterAll(async () => {
   await closeSql();
