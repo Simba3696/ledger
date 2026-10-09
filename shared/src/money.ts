@@ -57,14 +57,6 @@ function formatUnits(units: bigint, scale: Scale): string {
   return `${text.slice(0, -scale)}.${text.slice(-scale)}`;
 }
 
-/** How many digits a decimal string has before its point ("-123.45" → 3),
- * for checking it against a numeric(p,s) column's p - s. */
-export function integerDigits(decimal: string): number {
-  const unsigned = decimal.startsWith("-") ? decimal.slice(1) : decimal;
-  const whole = unsigned.split(".")[0].replace(/^0+/, "");
-  return whole.length;
-}
-
 /** The sum of 2-decimal strings (as toDecimalString(…, 2) writes them) as a
  * number: exact in BigInt cents, converted once through the decimal string,
  * the way `sum(amount)` on numeric(14,2) comes back from postgres.js. */

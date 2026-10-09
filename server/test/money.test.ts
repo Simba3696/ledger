@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { integerDigits, sumToNumber, toDecimalString } from "@ledger/shared/money";
+import { sumToNumber, toDecimalString } from "@ledger/shared/money";
 
 // The decimal-string money helper behind GitHub storage mode's documents
 // (shared/src/money.ts). Each expectation is what Postgres stores for the
@@ -36,8 +36,6 @@ describe("toDecimalString", () => {
     expect(toDecimalString(0.0051, 2)).toBe("0.01");
     expect(toDecimalString(1e21, 2)).toBe("1000000000000000000000.00");
     expect(toDecimalString(1.5e21, 3)).toBe("1500000000000000000000.000");
-    expect(integerDigits(toDecimalString(1e21, 2))).toBe(22);
-    expect(integerDigits("-0.50")).toBe(0);
     expect(() => toDecimalString(Number.NaN, 2)).toThrow(RangeError);
   });
 
