@@ -15,15 +15,7 @@ import {
   type EmiMonthlyProjection,
 } from "../domain/emiMath.js";
 
-export {
-  EMI_PROJECTION_MONTHS,
-  dueDateOnOrAfter,
-  nextDueDateAfter,
-  withComputed,
-  type EmiEntry,
-  type EmiEntryComputed,
-  type EmiMonthlyProjection,
-} from "../domain/emiMath.js";
+export { type EmiEntryComputed, type EmiMonthlyProjection } from "../domain/emiMath.js";
 
 export interface EmiEditsInput {
   cardOrBank: string;

@@ -100,7 +100,7 @@ export interface EmiEntryComputed extends EmiEntry {
  * (no rate on record): the formula's mathematical limit as `r → 0` is `A ×
  * n`, i.e. `remaining` itself, but that limit isn't safe to evaluate
  * directly (literal division by `r = 0`), so it's special-cased. */
-export function computeOutstandingPrincipal(remaining: number, emiAmount: number, interestRate: number | null): number {
+function computeOutstandingPrincipal(remaining: number, emiAmount: number, interestRate: number | null): number {
   if (remaining <= 0 || emiAmount <= 0) return 0;
   const monthlyRate = (interestRate ?? 0) / 12 / 100;
   if (monthlyRate === 0) return remaining;
@@ -108,22 +108,22 @@ export function computeOutstandingPrincipal(remaining: number, emiAmount: number
   return round2((emiAmount * (1 - Math.pow(1 + monthlyRate, -n))) / monthlyRate);
 }
 
-export function computeForeclosurePayoff(outstandingPrincipal: number, foreclosureCharge: number | null): number {
+function computeForeclosurePayoff(outstandingPrincipal: number, foreclosureCharge: number | null): number {
   return round2(outstandingPrincipal * (1 + (foreclosureCharge ?? 0) / 100));
 }
 
-export function round2(n: number): number {
+function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-export function toMonthOnly(date: Date): string {
+function toMonthOnly(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
 /** Counts how many monthly due dates (on `dueDay`) fall strictly after
  * `asOfDate` and on or before `today` — the number of installments that have
  * been paid since the snapshot was taken. */
-export function countDueDatesPassed(asOfDate: Date, dueDay: number, today: Date): number {
+function countDueDatesPassed(asOfDate: Date, dueDay: number, today: Date): number {
   let year = asOfDate.getFullYear();
   let month = asOfDate.getMonth() + 1;
   let count = 0;
@@ -183,7 +183,7 @@ export function dueDateOnOrAfter(target: Date, dueDay: number): Date {
 }
 
 /** Finds the Nth monthly due date (on `dueDay`) strictly after `today`. */
-export function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
+function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   let year = today.getFullYear();
   let month = today.getMonth() + 1;
   let found = 0;
@@ -268,7 +268,7 @@ export const EMI_PROJECTION_MONTHS = 12;
  * matches `validateDurationMonths`'s own 600-month (50-year) ceiling, so
  * "auto" can never simulate further out than a loan's own Duration field
  * could ever legitimately claim to finish. */
-export const EMI_PROJECTION_MAX_MONTHS = 600;
+const EMI_PROJECTION_MAX_MONTHS = 600;
 
 export interface EmiMonthlyProjection {
   month: string; // YYYY-MM

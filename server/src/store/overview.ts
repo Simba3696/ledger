@@ -35,9 +35,9 @@ function cardOutstanding(card: CardBill): number {
   return card.settled ? 0 : card.due - card.paid;
 }
 
-export type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
+type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
 
-export interface UpcomingItem {
+interface UpcomingItem {
   source: UpcomingSource;
   name: string;
   /** What's still owed for this item — the full EMI/subscription amount, or
@@ -48,7 +48,7 @@ export interface UpcomingItem {
 
 /** Each figure is null when its module is disabled; the client hides that
  * card. */
-export interface NetWorthBreakdown {
+interface NetWorthBreakdown {
   /** Most recently entered Current Savings snapshot from Finances, carried
    * forward the same way that tab already does. */
   currentSavings: number | null;

@@ -30,7 +30,7 @@ export interface SubscriptionEntryComputed extends SubscriptionEntry {
   nextExpiry: string; // YYYY-MM-DD
 }
 
-export function advanceToOnOrAfter(anchor: Date, duration: Duration, today: Date): Date {
+function advanceToOnOrAfter(anchor: Date, duration: Duration, today: Date): Date {
   let date = anchor;
   for (let i = 0; i < 1200 && date < today; i++) {
     date = duration === "Monthly" ? addMonths(date, 1) : addYears(date, 1);

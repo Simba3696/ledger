@@ -47,7 +47,7 @@ function authEnv(): Record<string, string> {
   };
 }
 
-export async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {

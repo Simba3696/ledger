@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useDismiss } from "../hooks/useDismiss";
 import "./OverflowMenu.css";
 
-export interface OverflowMenuItem {
+interface OverflowMenuItem {
   label: string;
   icon?: string;
   onClick: () => void;

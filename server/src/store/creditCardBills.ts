@@ -6,7 +6,7 @@ import { summarize, type CardBill, type MonthBills, type MonthBillsSummary } fro
 
 export { type CardBill, type MonthBills, type MonthBillsSummary } from "../domain/creditCardMath.js";
 
-export const EARLIEST_YEAR = 2018;
+const EARLIEST_YEAR = 2018;
 /** The `year` column is int4. The Excel edition had no upper bound; this is
  * only the column's limit, checked here so a huge year gets this store's own
  * "Invalid year" 400 rather than the generic out-of-range database error. */

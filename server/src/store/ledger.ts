@@ -5,8 +5,6 @@ import type { Category } from "../domain/categoryColors.js";
 import { loadCategoryConfig } from "./categories.js";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
 
-export { LedgerError };
-
 export const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",

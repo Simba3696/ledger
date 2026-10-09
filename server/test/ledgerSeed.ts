@@ -4,7 +4,7 @@
 import { sql } from "./dbHelpers.js";
 import { loadCategoryConfig, type Category } from "../src/store/categories.js";
 
-export interface SeedEntry {
+interface SeedEntry {
   amount: number; // positive rupee amount
   remarks: string;
   category: Category;

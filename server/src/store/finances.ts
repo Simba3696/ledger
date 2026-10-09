@@ -17,7 +17,6 @@ export {
   EARLIEST_YEAR,
   type MonthFinanceSummary,
   type MonthIncome,
-  type SavingsEntry,
 } from "../domain/financeMath.js";
 
 /** The `year` column is int4. The Excel edition had no upper bound; this is

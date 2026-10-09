@@ -63,16 +63,16 @@ export interface MonthFinanceSummary {
   currentSavingsBreakdown: SavingsEntry[];
 }
 
-export function sumSavings(savings: SavingsEntry[]): number {
+function sumSavings(savings: SavingsEntry[]): number {
   return savings.reduce((sum, s) => sum + s.amount, 0);
 }
 
-export function previousMonth(year: number, month: number): { year: number; month: number } | null {
+function previousMonth(year: number, month: number): { year: number; month: number } | null {
   if (year <= EARLIEST_YEAR && month <= 1) return null;
   return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 }
 
-export function monthsFromEarliestThrough(year: number, month: number): Array<{ year: number; month: number }> {
+function monthsFromEarliestThrough(year: number, month: number): Array<{ year: number; month: number }> {
   const months: Array<{ year: number; month: number }> = [];
   for (let y = EARLIEST_YEAR; y <= year; y++) {
     const lastMonth = y === year ? month : 12;

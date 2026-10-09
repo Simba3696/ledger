@@ -115,7 +115,7 @@ export interface MonthBillsSummary extends MonthBills {
   overpaidOrSaved: number;
 }
 
-export interface EmiEntry {
+interface EmiEntry {
   row: number;
   cardOrBank: string;
   emiAmount: number;
@@ -167,7 +167,7 @@ export interface EmiEdits {
 
 export type SubscriptionDuration = "Monthly" | "Yearly";
 
-export interface SubscriptionEntry {
+interface SubscriptionEntry {
   row: number;
   service: string;
   amount: number;
@@ -420,7 +420,7 @@ export function deleteSubscription(row: number): Promise<void> {
   return request(`${BASE}/subscriptions/${row}`, { method: "DELETE" });
 }
 
-export type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
+type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
 
 export interface UpcomingItem {
   source: UpcomingSource;
@@ -431,7 +431,7 @@ export interface UpcomingItem {
 
 /** A figure is null when its module is disabled; netWorth is null unless
  * all four inputs are enabled. */
-export interface NetWorthBreakdown {
+interface NetWorthBreakdown {
   currentSavings: number | null;
   totalDebt: number | null;
   emiRemaining: number | null;

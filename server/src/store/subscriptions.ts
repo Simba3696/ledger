@@ -9,12 +9,7 @@ import {
   type SubscriptionEntryComputed,
 } from "../domain/subscriptionMath.js";
 
-export {
-  withComputed,
-  type Duration,
-  type SubscriptionEntry,
-  type SubscriptionEntryComputed,
-} from "../domain/subscriptionMath.js";
+export { type SubscriptionEntryComputed } from "../domain/subscriptionMath.js";
 
 export interface SubscriptionEditsInput {
   service: string;

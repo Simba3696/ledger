@@ -9,7 +9,7 @@ import "./SignIn.css";
 /** The page frame for the screens shown before the app itself: the same
  * header as the app (so the theme toggle, which also applies the saved
  * theme, is there too) around one centered card. */
-export function AuthShell({ children }: { children: ReactNode }) {
+function AuthShell({ children }: { children: ReactNode }) {
   return (
     <div className="app">
       <header>
