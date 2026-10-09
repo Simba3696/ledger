@@ -7,6 +7,10 @@
 ```
 client/                      React app (the Excel edition's, plus auth and api.ts's bearer header)
   src/auth/                  Supabase client, <SignIn/>, session hook
+  src/backend/github/        GitHub storage mode (ADR-0007); index.ts's startGithubStorage is the
+                             one entry, reached only by main.tsx's dynamic import() in --mode github
+  src/githubStorage/         reserved for GitHub-mode-only UI
+  dist-pages/                output of `npm run build:pages -w client` (--mode github); gitignored
 server/
   src/
     app.ts                   createApp({ basePath }): request log, auth, module gate, JSON body, router, error handler
@@ -40,6 +44,9 @@ scripts/
   legacy-excel/              the old Excel readers, kept only for the importer, and
                              importer.ts (the import itself); typecheck-only
                              tsconfig.json; exceljs is a root devDependency
+  check-storage-isolation.mjs  npm run check:isolation: the default build has no GitHub-mode
+                             code, the Pages build has it behind the dynamic import (ADR-0007)
+.github/workflows/pages.yml  builds both clients, runs check:isolation, deploys dist-pages to Pages
 netlify.toml
 ```
 

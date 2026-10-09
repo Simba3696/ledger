@@ -17,7 +17,8 @@
     "prestart": "node scripts/kill-ports.js",
     "start": "npm run build && npm run start -w server",
     "lint": "npm run lint -w client && npm run lint -w server",
-    "knip": "knip"
+    "knip": "knip",
+    "check:isolation": "node scripts/check-storage-isolation.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
