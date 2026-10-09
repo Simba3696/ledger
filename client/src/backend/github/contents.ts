@@ -139,11 +139,16 @@ function parseExpiration(value: string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/** When a rate limit lifts, in GitHub's documented order: `retry-after`
+ * when present (a secondary limit, usually about a minute), otherwise
+ * `x-ratelimit-reset` when the primary limit is spent. GitHub sends
+ * `x-ratelimit-reset` on every response, so on a secondary limit it names
+ * the hourly window's reset, not when to retry. */
 function rateLimitReset(res: Response): string | null {
-  const reset = Number(res.headers.get("x-ratelimit-reset"));
-  if (reset > 0) return new Date(reset * 1000).toISOString();
   const retryAfter = Number(res.headers.get("retry-after"));
-  if (retryAfter >= 0 && res.headers.has("retry-after")) return new Date(Date.now() + retryAfter * 1000).toISOString();
+  if (res.headers.has("retry-after") && retryAfter >= 0) return new Date(Date.now() + retryAfter * 1000).toISOString();
+  const reset = Number(res.headers.get("x-ratelimit-reset"));
+  if (res.headers.get("x-ratelimit-remaining") === "0" && reset > 0) return new Date(reset * 1000).toISOString();
   return null;
 }
 

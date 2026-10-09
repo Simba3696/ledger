@@ -148,10 +148,8 @@ describe("contents client", () => {
     expect((forbidden as GitHubForbiddenError).message).toBe("Resource not accessible by personal access token");
     expect((forbidden as GitHubForbiddenError).status).toBe(403);
 
-    fake.failNext({ status: 403, rateLimit: true });
-    const limited = await rejection(client().readFile());
-    expect(limited).toBeInstanceOf(GitHubRateLimitError);
-    expect((limited as GitHubRateLimitError).resetAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    fake.failNext({ status: 403, rateLimit: "primary" });
+    await expect(client().readFile()).rejects.toBeInstanceOf(GitHubRateLimitError);
     fake.failNext({ status: 429 });
     await expect(client().readFile()).rejects.toBeInstanceOf(GitHubRateLimitError);
 
@@ -174,6 +172,28 @@ describe("contents client", () => {
     ];
     for (const ErrorType of typed) {
       expect(ErrorType.prototype).toBeInstanceOf(GitHubError);
+    }
+  });
+
+  it("reports when a rate limit lifts: retry-after first, x-ratelimit-reset only when the hour is spent", async () => {
+    const secondsFromNow = (err: unknown) => (Date.parse((err as GitHubRateLimitError).resetAt!) - Date.now()) / 1000;
+
+    // Primary: x-ratelimit-remaining 0, reset 60 s out.
+    fake.failNext({ status: 403, rateLimit: "primary" });
+    const primary = await rejection(client().readFile());
+    expect(primary).toBeInstanceOf(GitHubRateLimitError);
+    expect(secondsFromNow(primary)).toBeGreaterThan(55);
+    expect(secondsFromNow(primary)).toBeLessThanOrEqual(60);
+
+    // Secondary (403 or 429): retry-after 60 with requests left in the hour.
+    // x-ratelimit-reset still names the hourly window, about 3600 s out,
+    // and must not win.
+    for (const failure of [{ status: 403, rateLimit: "secondary" }, { status: 429 }] as const) {
+      fake.failNext(failure);
+      const secondary = await rejection(client().readFile());
+      expect(secondary).toBeInstanceOf(GitHubRateLimitError);
+      expect(secondsFromNow(secondary)).toBeGreaterThan(55);
+      expect(secondsFromNow(secondary)).toBeLessThanOrEqual(60);
     }
   });
 

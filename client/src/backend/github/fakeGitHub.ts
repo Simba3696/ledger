@@ -46,10 +46,12 @@ interface FakeCommit {
 }
 
 /** A one-shot failure for the next request (with `method`, the next request
- * using it). `rateLimit` turns a 403 into GitHub's rate-limit answer;
+ * using it). `rateLimit` turns a 403 into one of GitHub's rate-limit
+ * answers: "primary" (the hourly limit spent, `x-ratelimit-remaining: 0`)
+ * or "secondary" (`retry-after: 60` with requests still left in the hour);
  * `network` makes fetch reject as it does offline. */
 type FakeFailure =
-  | { status: 401 | 403 | 404 | 409 | 422 | 429 | 500; method?: string; rateLimit?: boolean; message?: string }
+  | { status: 401 | 403 | 404 | 409 | 422 | 429 | 500; method?: string; rateLimit?: "primary" | "secondary"; message?: string }
   | { network: true; method?: string };
 
 export interface FakeGitHub {
@@ -105,6 +107,19 @@ function expirationHeader(iso: string): string {
   return `${new Date(iso).toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
+/** The x-ratelimit-* headers GitHub sends on every authenticated response.
+ * `x-ratelimit-reset` is the end of the hourly window, even when another
+ * limit is what stopped the request. */
+function rateLimitHeaders(remaining: number): Record<string, string> {
+  return {
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": String(remaining),
+    "x-ratelimit-used": String(5000 - remaining),
+    "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600),
+    "x-ratelimit-resource": "core",
+  };
+}
+
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -157,18 +172,19 @@ export function createFakeGitHub({
   }
 
   function failureResponse(failure: Exclude<FakeFailure, { network: true }>): Response {
-    const resetEpoch = String(Math.floor(Date.now() / 1000) + 60);
+    const secondary = { ...rateLimitHeaders(4990), "retry-after": "60" };
     switch (failure.status) {
       case 401:
         return json(401, { message: failure.message ?? "Bad credentials" });
       case 403:
-        return failure.rateLimit
-          ? json(
-              403,
-              { message: failure.message ?? "API rate limit exceeded" },
-              { "x-ratelimit-remaining": "0", "x-ratelimit-reset": resetEpoch },
-            )
-          : json(403, { message: failure.message ?? "Resource not accessible by personal access token" });
+        if (failure.rateLimit === "primary") {
+          const spent = { ...rateLimitHeaders(0), "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 60) };
+          return json(403, { message: failure.message ?? "API rate limit exceeded" }, spent);
+        }
+        if (failure.rateLimit === "secondary") {
+          return json(403, { message: failure.message ?? "You have exceeded a secondary rate limit." }, secondary);
+        }
+        return json(403, { message: failure.message ?? "Resource not accessible by personal access token" });
       case 404:
         return json(404, { message: failure.message ?? "Not Found" });
       case 409:
@@ -176,7 +192,7 @@ export function createFakeGitHub({
       case 422:
         return json(422, { message: failure.message ?? 'Invalid request.\n\n"sha" wasn\'t supplied.' });
       case 429:
-        return json(429, { message: failure.message ?? "Too many requests" }, { "retry-after": "60" });
+        return json(429, { message: failure.message ?? "Too many requests" }, secondary);
       case 500:
         return json(500, { message: failure.message ?? "Server Error" });
     }
@@ -237,7 +253,7 @@ export function createFakeGitHub({
     if (!grant || (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())) {
       return json(401, { message: "Bad credentials" });
     }
-    const common: Record<string, string> = { "x-ratelimit-remaining": "4999" };
+    const common: Record<string, string> = rateLimitHeaders(4999);
     if (grant.expiresAt) common["github-authentication-token-expiration"] = expirationHeader(grant.expiresAt);
 
     if (route.kind === "user") return json(200, { login: grant.login }, common);
