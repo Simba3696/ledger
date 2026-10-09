@@ -13,7 +13,7 @@ You verify; you don't fix. Run the checks, read the output, and report exactly w
 3. Make sure the local stack is up: `npx supabase status`. If it isn't, start it with `npx supabase start`.
 
 ## Checks, in order
-1. `npx tsc -b` in `client/`, then **in `server/`**: `npx tsc --noEmit`, `npx tsc -p tsconfig.build.json --noEmit`, `npx tsc -p ../netlify/tsconfig.json` and `npx tsc -p ../scripts/legacy-excel/tsconfig.json`. Run them from `server/` so they use the server's own TypeScript; from the repo root, `npx tsc` resolves the client's hoisted TypeScript 6, which accepts code the server build rejects. Also `npm run lint -w client`.
+1. `npx tsc -b` in `client/`, then **in `server/`**: `npx tsc --noEmit`, `npx tsc -p tsconfig.build.json --noEmit`, `npx tsc -p ../netlify/tsconfig.json` and `npx tsc -p ../scripts/legacy-excel/tsconfig.json`. Run them from `server/` so they use the server's own TypeScript; from the repo root, `npx tsc` resolves the client's hoisted TypeScript 6, which accepts code the server build rejects. Also `npm run lint` (oxlint on client and server) and `npm run knip`.
 2. `npm test` (server suite)
 3. `npm run test:e2e` (resets the local database, then `e2e/regression.ts` and `e2e/expensesOnly.ts`; report both pass counts)
 

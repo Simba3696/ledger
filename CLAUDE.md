@@ -69,4 +69,6 @@ npx supabase migration new <name>                       # new schema change (nev
 (cd server && npx tsc -p tsconfig.build.json --noEmit)  # what the server build compiles
 (cd server && npx tsc -p ../netlify/tsconfig.json)      # the Netlify function
 (cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy Excel readers
+npm run lint                                            # oxlint on client/ and server/
+npm run knip                                            # unused files, exports and dependencies
 ```

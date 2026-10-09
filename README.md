@@ -589,6 +589,13 @@ Typechecks:
 Run the server checks from `server/` so they use the server's own
 TypeScript version.
 
+Lint:
+
+```
+npm run lint   # oxlint on client/ and server/
+npm run knip   # unused files, exports and dependencies (read-only report)
+```
+
 ## Notes / gotchas
 
 - A phone's numeric/decimal keyboard has no "-" key, so
