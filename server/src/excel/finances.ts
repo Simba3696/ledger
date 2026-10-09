@@ -10,7 +10,7 @@ const FINANCES_PATH = path.join(DB_DIR, "Finances.xlsx");
 const SHEET_NAME = "Income";
 const HEADERS = ["Year", "Month", "Salary", "Other Income", "Current Savings Breakdown"];
 
-export interface SavingsEntry {
+interface SavingsEntry {
   name: string; // e.g. "PPF", "NPS", "APY"
   amount: number;
 }

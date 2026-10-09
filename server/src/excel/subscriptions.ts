@@ -8,11 +8,11 @@ const SUBSCRIPTIONS_PATH = path.join(DB_DIR, "Subscriptions.xlsx");
 const SHEET_NAME = "Subscriptions";
 const HEADERS = ["Service", "Amount", "Duration", "Expiry", "Card/Bank"];
 
-export type Duration = "Monthly" | "Yearly";
+type Duration = "Monthly" | "Yearly";
 
 /** A recurring subscription, tracked flat (not month-indexed) like Debts and
  * EMI — the set of active subscriptions changes as you add or cancel one. */
-export interface SubscriptionEntry {
+interface SubscriptionEntry {
   row: number;
   service: string;
   amount: number;
@@ -40,7 +40,7 @@ function advanceToOnOrAfter(anchor: Date, duration: Duration, today: Date): Date
   return date;
 }
 
-export function withComputed(entry: SubscriptionEntry, today: Date = new Date()): SubscriptionEntryComputed {
+function withComputed(entry: SubscriptionEntry, today: Date = new Date()): SubscriptionEntryComputed {
   const nextExpiry = formatDate(advanceToOnOrAfter(parseDate(entry.expiryAnchor), entry.duration, startOfDay(today)));
   return { ...entry, nextExpiry };
 }

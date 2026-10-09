@@ -22,7 +22,7 @@ const HEADERS = [
 /** A loan/EMI plan, tracked flat (not month-indexed) like Debts — there's no
  * fixed count of active loans, so adding one or foreclosing one is just
  * adding/removing a row. */
-export interface EmiEntry {
+interface EmiEntry {
   row: number;
   cardOrBank: string;
   /** Fixed monthly installment amount. */
@@ -210,7 +210,7 @@ function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   return null;
 }
 
-export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntryComputed {
+function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntryComputed {
   const asOf = parseDate(entry.asOfDate);
   const passed = countDueDatesPassed(asOf, entry.dueDay, startOfDay(today));
   const remaining = Math.max(0, round2(entry.remainingAsOf - passed * entry.emiAmount));
@@ -344,7 +344,7 @@ export async function listEmis(today: Date = new Date()): Promise<EmiEntryComput
  * dominates the chart. The chart also offers other fixed scales and an
  * "auto" (until every active loan is paid off) mode — see
  * `emiMonthlyProjection`. */
-export const EMI_PROJECTION_MONTHS = 12;
+const EMI_PROJECTION_MONTHS = 12;
 
 /** Upper bound for the "auto" (until paid off) mode's simulation window —
  * matches `validateDurationMonths`'s own 600-month (50-year) ceiling, so

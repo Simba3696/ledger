@@ -3,7 +3,7 @@ import fs from "node:fs";
 import ExcelJS from "exceljs";
 import { DB_DIR, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
 
-export const EARLIEST_YEAR = 2018;
+const EARLIEST_YEAR = 2018;
 
 const BILLS_PATH = path.join(DB_DIR, "CreditCardBills.xlsx");
 const SHEET_NAME = "Bills";

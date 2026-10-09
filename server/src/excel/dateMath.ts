@@ -4,7 +4,7 @@
  * anchor date to "today" without drifting across month-length differences
  * (e.g. a due day of 31 in February). */
 
-export function daysInMonth(year: number, month: number): number {
+function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate();
 }
 
