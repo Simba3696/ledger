@@ -24,6 +24,8 @@ const FORBIDDEN_IN_DEFAULT = [
   'AES-GCM',
   'ledger.json.enc',
   'DocumentBackend',
+  'PBKDF2',
+  'ledger:github',
 ]
 
 // No file in the default build may have these in its name.
@@ -31,7 +33,13 @@ const FORBIDDEN_IN_DEFAULT_FILE_NAMES = ['github', 'DocumentBackend']
 
 // Literals the GitHub build must contain (client/src/backend/github), behind
 // the dynamic import: present in a non-entry chunk, absent from the entry.
-const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com']
+const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com', 'PBKDF2', 'ledger:github']
+
+// GitHub Pages can't send headers, so the GitHub build carries its
+// Content-Security-Policy as a meta tag (client/vite.config.ts). The default
+// build gets its CSP from netlify.toml and must have no meta tag.
+const CSP_META = /<meta\s[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi
+const PAGES_CONNECT_SRC = ["'self'", 'https://api.github.com']
 
 // The one file allowed to import() GitHub-mode code.
 const MOUNT_FILE = 'main.tsx'
@@ -68,7 +76,7 @@ function check(_name, fn) {
 function checkDefaultBuild() {
   if (!existsSync(distDir)) {
     failures.push(`${rel(distDir)}: missing; run \`npm run build -w client\` first`)
-    checks += 2
+    checks += 3
     return
   }
   const files = walk(distDir)
@@ -90,6 +98,14 @@ function checkDefaultBuild() {
       }
     }
   })
+  check('default build index.html has no CSP meta', () => {
+    const indexPath = path.join(distDir, 'index.html')
+    if (!existsSync(indexPath)) {
+      failures.push(`${rel(indexPath)}: missing`)
+      return
+    }
+    if (readFileSync(indexPath, 'utf8').match(CSP_META)) failures.push(`${rel(indexPath)}: has a Content-Security-Policy meta tag`)
+  })
 }
 
 // --- GitHub build: client/dist-pages ---------------------------------------
@@ -101,7 +117,7 @@ function attr(tag, name) {
 function checkPagesBuild() {
   if (!existsSync(pagesDir)) {
     failures.push(`${rel(pagesDir)}: missing; run \`npm run build:pages -w client -- --base /<repo>/\` first`)
-    checks += 6
+    checks += 7
     return
   }
   const indexPath = path.join(pagesDir, 'index.html')
@@ -113,7 +129,7 @@ function checkPagesBuild() {
   const base = baseMatch?.[1]
   if (!entrySrc || !base) {
     failures.push(`${rel(indexPath)}: no <script type="module" src=".../assets/*.js"> to read the entry chunk and base from`)
-    checks += 6
+    checks += 7
     return
   }
 
@@ -148,6 +164,25 @@ function checkPagesBuild() {
   })
   check('GitHub build index.html names no data file', () => {
     if (html.includes('ledger.json.enc')) failures.push(`${rel(indexPath)}: contains "ledger.json.enc"`)
+  })
+  check('GitHub build index.html carries the CSP meta before any script or link', () => {
+    const metas = html.match(CSP_META) ?? []
+    if (metas.length !== 1) {
+      failures.push(`${rel(indexPath)}: expected one Content-Security-Policy meta tag, found ${metas.length}`)
+      return
+    }
+    const policy = attr(metas[0], 'content') ?? ''
+    const connect = policy
+      .split(';')
+      .map((d) => d.trim().split(/\s+/))
+      .find(([name]) => name === 'connect-src')
+    for (const source of PAGES_CONNECT_SRC) {
+      if (!connect?.includes(source)) failures.push(`${rel(indexPath)}: CSP connect-src does not allow ${source}`)
+    }
+    const firstResource = html.search(/<(script|link)\b/)
+    if (firstResource >= 0 && html.indexOf(metas[0]) > firstResource) {
+      failures.push(`${rel(indexPath)}: the CSP meta comes after a <script> or <link>`)
+    }
   })
 
   const manifestPath = path.join(pagesDir, 'manifest.webmanifest')
@@ -224,4 +259,4 @@ if (failures.length > 0) {
   for (const line of failures) console.error(line)
   process.exit(1)
 }
-console.log(`check:isolation: ${checks} checks passed (client/dist clean of ${FORBIDDEN_IN_DEFAULT.length} tokens, client/dist-pages lazy-loads GitHub mode, single import() in client/src/${MOUNT_FILE})`)
+console.log(`check:isolation: ${checks} checks passed (client/dist clean of ${FORBIDDEN_IN_DEFAULT.length} tokens and CSP meta, client/dist-pages lazy-loads GitHub mode with its CSP meta, single import() in client/src/${MOUNT_FILE})`)

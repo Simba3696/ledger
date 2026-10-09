@@ -299,6 +299,11 @@ full coverage list, and README's **Testing** section the commands.
   unit tests in a node environment, no database or browser.
   `backend/HttpBackend.test.ts` stubs `fetch` and pins the exact request
   every `api.ts` function sends, plus `request()`'s auth and error paths.
+  GitHub storage mode's low-level pieces are tested the same way:
+  `backend/crypto.test.ts` (file format, wrong passphrase, tampered
+  header), `backend/base64.test.ts`, `backend/github/deviceStore.test.ts`
+  (IndexedDB through `fake-indexeddb`) and `backend/github/contents.test.ts`
+  against `backend/github/fakeGitHub.ts`, an in-memory GitHub API.
   The root `npm test` stays the server suite.
 - **`e2e/regression.ts` and `e2e/expensesOnly.ts` (Playwright, plain
   scripts)**: reset the local database (`e2e/localDb.ts`, local hosts only),
@@ -344,7 +349,9 @@ client/
   src/
     api.ts            Every backend call, typed; delegates to a LedgerBackend
     backend/          LedgerBackend.ts (the interface), HttpBackend.ts (REST API + bearer token:
-                      the only fetch() boundary), ApiError.ts; github/ is GitHub storage mode (ADR-0007)
+                      the only fetch() boundary), ApiError.ts; github/ is GitHub storage mode (ADR-0007):
+                      crypto.ts + base64.ts (the encrypted file format), github/contents.ts (GitHub
+                      REST client), github/deviceStore.ts (key and token in IndexedDB)
     App.tsx           Session gate, config load, tab state, top-level layout
     auth/             supabase.ts, session.ts, SignIn.tsx, SignOutButton.tsx
     components/       One flat set of .tsx + co-located .css

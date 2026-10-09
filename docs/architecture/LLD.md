@@ -10,8 +10,13 @@ client/                      React app (the Excel edition's, plus auth and the A
   src/auth/                  Supabase client, <SignIn/>, session hook
   src/backend/               LedgerBackend.ts (one method per api.ts export), HttpBackend.ts (httpBackend:
                              the REST API, request() and its bearer header), ApiError.ts
+  src/backend/crypto.ts      GitHub storage mode's file format: gzip + AES-GCM-256 (header line as AAD),
+                             key from PBKDF2-SHA256; base64.ts beside it. No DOM, so Node can import it
   src/backend/github/        GitHub storage mode (ADR-0007); index.ts's startGithubStorage is the
-                             one entry, reached only by main.tsx's dynamic import() in --mode github
+                             one entry, reached only by main.tsx's dynamic import() in --mode github.
+                             contents.ts: GitHub contents API client (sha writes, typed errors);
+                             deviceStore.ts: the one store for the key and connection (IndexedDB
+                             ledger:github); fakeGitHub.ts: in-memory GitHub API for tests
   src/githubStorage/         reserved for GitHub-mode-only UI
   dist-pages/                output of `npm run build:pages -w client` (--mode github); gitignored
 server/
@@ -429,7 +434,7 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | Layer | How |
 |---|---|
 | Domain | Unit tests on the pure functions, no database |
-| Client | `npm run test:client`: vitest in `client/` (node environment, `src/**/*.test.ts`), separate from the root `npm test`. `backend/HttpBackend.test.ts` stubs `fetch` and asserts the method, URL, `Content-Type`, bearer header and body each `api.ts` function sends, plus `request()`'s token, 401, non-JSON error and 204 paths |
+| Client | `npm run test:client`: vitest in `client/` (node environment, `src/**/*.test.ts`), separate from the root `npm test`. `backend/HttpBackend.test.ts` stubs `fetch` and asserts the method, URL, `Content-Type`, bearer header and body each `api.ts` function sends, plus `request()`'s token, 401, non-JSON error and 204 paths. `backend/crypto.test.ts` and `base64.test.ts` cover the encrypted file format (round trip, wrong passphrase, tampered or weak header, fresh IV, import with no DOM); `backend/github/deviceStore.test.ts` the key and connection store on `fake-indexeddb`; `backend/github/contents.test.ts` the contents client against `fakeGitHub.ts`, which by default shows only the response headers GitHub's CORS policy lets a browser read (sha conflicts, blobs over 1 MB, typed errors, the one `onUnauthorized` retry, headers and `no-store`) |
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
 | Modules | `server/test/modules.test.ts` (parsing `ENABLED_MODULES`) and `server/test/overviewModules.test.ts` (`dashboardOverview` per module subset, with spies proving a disabled module's store is never called) |
 | API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers enabled modules (every route mapped to a module or always on, `/api/config`, a 404 on every route of each disabled module, an expenses-only overview, unknown names failing at startup), auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |

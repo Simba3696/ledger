@@ -1,9 +1,19 @@
 import { createElement, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import * as encryption from '../crypto'
+import * as contents from './contents'
+import * as deviceStore from './deviceStore'
 
 // Entry point of the GitHub storage build (ADR-0007), reached only through
 // the dynamic import in main.tsx. Everything GitHub-mode-only hangs off
 // startGithubStorage, so none of it reaches the default (Supabase) bundle.
+
+// The encryption, device key store and GitHub contents client, for the sync
+// engine and onboarding UI to call. Until they do, nothing calls them and
+// the minifier would drop them, so the placeholder names them: that keeps
+// their string literals (PBKDF2, ledger:github) in this lazy chunk, where
+// check:isolation looks for them.
+const githubStorageModules = { encryption, contents, deviceStore }
 
 export const GITHUB_API_BASE = 'https://api.github.com'
 export const DATA_FILE_NAME = 'ledger.json.enc'
@@ -22,7 +32,12 @@ export function startGithubStorage(rootEl: HTMLElement): void {
       null,
       createElement(
         'p',
-        { 'data-api': GITHUB_API_BASE, 'data-repo': DEFAULT_REPO_NAME, 'data-file': DATA_FILE_NAME },
+        {
+          'data-api': GITHUB_API_BASE,
+          'data-repo': DEFAULT_REPO_NAME,
+          'data-file': DATA_FILE_NAME,
+          'data-modules': Object.keys(githubStorageModules).join(' '),
+        },
         'GitHub storage mode is not set up yet',
       ),
     ),
