@@ -14,10 +14,13 @@
     "screenshots": "tsx e2e/screenshots.ts",
     "build": "npm run build -w client && npm run build -w server",
     "prestart": "node scripts/kill-ports.js",
-    "start": "npm run build && npm run start -w server"
+    "start": "npm run build && npm run start -w server",
+    "lint": "npm run lint -w client && npm run lint -w server",
+    "knip": "knip"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
+    "knip": "^6.40.0",
     "playwright": "^1.61.1",
     "tsx": "^4.23.1"
   }
