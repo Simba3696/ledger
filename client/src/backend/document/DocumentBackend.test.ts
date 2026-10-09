@@ -298,12 +298,17 @@ describe("DocumentBackend order and handles", () => {
       amount: 12,
     });
     await expect(backend.updateDebt(debt.row, { name: "Alex", amount: 6 })).resolves.toMatchObject({ row: debt.row });
-    // A handle of another kind, or one never issued, is the store's 404.
+    // A handle of another kind, or one never issued, is the store's 404,
+    // and like every rejected write it commits nothing.
+    const before = JSON.stringify(host.current());
+    const commits = host.commits;
     await expect(backend.updateEntry(2026, 5, debt.row, { amount: 1, remarks: "x", category: "food", isCard: false })).rejects.toMatchObject({
       status: 404,
       message: `No entry found at row ${debt.row} in May 2026`,
     });
     await expect(backend.deleteDebt(1.5)).rejects.toMatchObject({ status: 404, message: "No debt entry at row 1.5" });
+    expect(JSON.stringify(host.current())).toBe(before);
+    expect(host.commits).toBe(commits);
   });
 
   it("returns fresh copies: mutating a result changes nothing stored", async () => {
@@ -345,9 +350,13 @@ describe("DocumentBackend gate and errors", () => {
     expect(methods).toHaveLength(31);
 
     const doc = createEmptyDocument({ modules: ["subscriptions", "expenses"], timeZone: "UTC" });
-    const { backend } = setup(doc);
+    const { host, backend } = setup(doc);
     await expect(backend.getConfig()).resolves.toEqual({ modules: ["expenses", "subscriptions"] });
+    const before = JSON.stringify(host.current());
     await expect(backend.addDebt({ name: "Alex", amount: 1 })).rejects.toEqual(new ApiError(404, "Debts is not enabled on this deployment"));
+    // The gate rejects before the write starts: nothing committed.
+    expect(JSON.stringify(host.current())).toBe(before);
+    expect(host.commits).toBe(0);
     await expect(backend.getMonthBills(2017, 13)).rejects.toEqual(new ApiError(404, "Credit Cards is not enabled on this deployment"));
     await expect(backend.getEmiMonthlyProjection(12)).rejects.toEqual(new ApiError(404, "EMI is not enabled on this deployment"));
     await expect(backend.getOverview()).resolves.toMatchObject({ netWorth: { netWorth: null, totalDebt: null } });
