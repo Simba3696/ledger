@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ledger/shared": "*",
     "@supabase/supabase-js": "^2.117.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
