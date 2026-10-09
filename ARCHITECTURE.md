@@ -294,7 +294,9 @@ full coverage list, and README's **Testing** section the commands.
   touches; `fileParallelism: false` since the files share one database;
   `dbHelpers.ts` refuses any non-local host); schema constraint tests;
   `api.test.ts` with supertest on `createApp()` and a test-generated ES256
-  key pair injected as the JWKS.
+  key pair injected as the JWKS. `server/test/parity/` runs the store
+  cases against both the SQL store (over HTTP) and GitHub storage mode's
+  `DocumentBackend`, requiring identical results and errors (LLD §10).
 - **`client/src/**/*.test.ts` (vitest, `npm run test:client`)**: client
   unit tests in a node environment, no database or browser.
   `backend/HttpBackend.test.ts` stubs `fetch` and pins the exact request
@@ -304,6 +306,8 @@ full coverage list, and README's **Testing** section the commands.
   header), `backend/base64.test.ts`, `backend/github/deviceStore.test.ts`
   (IndexedDB through `fake-indexeddb`) and `backend/github/contents.test.ts`
   against `backend/github/fakeGitHub.ts`, an in-memory GitHub API.
+  `backend/document/DocumentBackend.test.ts` covers what only its
+  document shows (atomic writes, record stamps, tombstones, string money).
   The root `npm test` stays the server suite.
 - **`e2e/regression.ts` and `e2e/expensesOnly.ts` (Playwright, plain
   scripts)**: reset the local database (`e2e/localDb.ts`, local hosts only),
@@ -351,7 +355,8 @@ client/
     backend/          LedgerBackend.ts (the interface), HttpBackend.ts (REST API + bearer token:
                       the only fetch() boundary), ApiError.ts; github/ is GitHub storage mode (ADR-0007):
                       crypto.ts + base64.ts (the encrypted file format), github/contents.ts (GitHub
-                      REST client), github/deviceStore.ts (key and token in IndexedDB)
+                      REST client), github/deviceStore.ts (key and token in IndexedDB), document/
+                      (DocumentBackend: the LedgerBackend over an in-memory LedgerDocument)
     App.tsx           Session gate, config load, tab state, top-level layout
     auth/             supabase.ts, session.ts, SignIn.tsx, SignOutButton.tsx
     components/       One flat set of .tsx + co-located .css
