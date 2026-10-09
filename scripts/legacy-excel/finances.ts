@@ -1,10 +1,10 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError } from "./workbookIO.js";
 import { yearExpenseTotals } from "./ledger.js";
 
-export const EARLIEST_YEAR = 2018;
+const EARLIEST_YEAR = 2018;
 
 function financesPath(): string {
   return path.join(getDbDir(), "Finances.xlsx");
@@ -12,7 +12,7 @@ function financesPath(): string {
 const SHEET_NAME = "Income";
 const HEADERS = ["Year", "Month", "Salary", "Other Income", "Current Savings Breakdown"];
 
-export interface SavingsEntry {
+interface SavingsEntry {
   name: string; // e.g. "PPF", "NPS", "APY"
   amount: number;
 }
@@ -58,18 +58,6 @@ function sumSavings(savings: SavingsEntry[]): number {
 function validateYearMonth(year: number, month: number) {
   if (!Number.isInteger(year) || year < EARLIEST_YEAR) throw new LedgerError(`Invalid year: ${year}`, 400);
   if (!Number.isInteger(month) || month < 1 || month > 12) throw new LedgerError(`Invalid month: ${month}`, 400);
-}
-
-function validateAmount(value: number | null, label: string) {
-  if (value === null) return;
-  if (!Number.isFinite(value)) throw new LedgerError(`${label} must be a number`, 400);
-}
-
-function validateSavings(savings: SavingsEntry[]) {
-  for (const entry of savings) {
-    if (!entry.name || !entry.name.trim()) throw new LedgerError("Each savings entry needs a name", 400);
-    if (!Number.isFinite(entry.amount)) throw new LedgerError(`Savings amount for "${entry.name}" must be a number`, 400);
-  }
 }
 
 async function loadOrCreateFinancesWorkbook(): Promise<ExcelJS.Workbook> {
@@ -201,43 +189,6 @@ export async function listIncomeRows(): Promise<{ rows: IncomeRow[]; ignored: nu
     });
   });
   return { rows, ignored };
-}
-
-export interface SetMonthIncomeInput {
-  year: number;
-  month: number;
-  salary: number | null;
-  otherIncome: number | null;
-  savings: SavingsEntry[];
-}
-
-export async function setMonthIncome(input: SetMonthIncomeInput): Promise<MonthIncome> {
-  const { year, month, salary, otherIncome, savings } = input;
-  validateYearMonth(year, month);
-  validateAmount(salary, "Salary");
-  validateAmount(otherIncome, "Other income");
-  validateSavings(savings);
-
-  return withFileLock(financesPath(), async () => {
-    const workbook = await loadOrCreateFinancesWorkbook();
-    const sheet = getFinancesSheet(workbook);
-    let row = findIncomeRow(sheet, year, month);
-    if (!row) {
-      row = sheet.getRow(sheet.rowCount + 1);
-      row.getCell(1).value = year;
-      row.getCell(2).value = month;
-    }
-    const previousSavings = savingsBaselineFrom(buildSavingsByKey(sheet), year, month);
-
-    row.getCell(3).value = salary;
-    row.getCell(4).value = otherIncome;
-    row.getCell(5).value = savings.length > 0 ? JSON.stringify(savings) : null;
-    row.commit();
-
-    await saveWorkbook(workbook, financesPath());
-
-    return { year, month, salary, otherIncome, savings, previousSavings };
-  });
 }
 
 export interface MonthFinanceSummary {

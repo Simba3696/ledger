@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError } from "./workbookIO.js";
 import { addMonths, addYears, formatDate, parseDate, startOfDay } from "./dateMath.js";
 
 function subscriptionsPath(): string {
@@ -10,11 +10,11 @@ function subscriptionsPath(): string {
 const SHEET_NAME = "Subscriptions";
 const HEADERS = ["Service", "Amount", "Duration", "Expiry", "Card/Bank"];
 
-export type Duration = "Monthly" | "Yearly";
+type Duration = "Monthly" | "Yearly";
 
 /** A recurring subscription, tracked flat (not month-indexed) like Debts and
  * EMI — the set of active subscriptions changes as you add or cancel one. */
-export interface SubscriptionEntry {
+interface SubscriptionEntry {
   row: number;
   service: string;
   amount: number;
@@ -42,16 +42,9 @@ function advanceToOnOrAfter(anchor: Date, duration: Duration, today: Date): Date
   return date;
 }
 
-export function withComputed(entry: SubscriptionEntry, today: Date = new Date()): SubscriptionEntryComputed {
+function withComputed(entry: SubscriptionEntry, today: Date = new Date()): SubscriptionEntryComputed {
   const nextExpiry = formatDate(advanceToOnOrAfter(parseDate(entry.expiryAnchor), entry.duration, startOfDay(today)));
   return { ...entry, nextExpiry };
-}
-
-function validateEntry(service: string, amount: number, duration: string, expiryAnchor: string) {
-  if (!service) throw new LedgerError("Service is required", 400);
-  if (!Number.isFinite(amount) || amount <= 0) throw new LedgerError("Amount must be a positive number", 400);
-  if (duration !== "Monthly" && duration !== "Yearly") throw new LedgerError('Duration must be "Monthly" or "Yearly"', 400);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(expiryAnchor)) throw new LedgerError("Expiry must be YYYY-MM-DD", 400);
 }
 
 function resolveNumber(value: ExcelJS.CellValue): number | null {
@@ -76,13 +69,6 @@ function getSubscriptionsSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
   const sheet = workbook.getWorksheet(SHEET_NAME);
   if (!sheet) throw new LedgerError(`Subscriptions.xlsx is missing its "${SHEET_NAME}" sheet`, 500);
   return sheet;
-}
-
-function assertRealSubscriptionRow(sheet: ExcelJS.Worksheet, row: number) {
-  const service = row >= 2 ? sheet.getRow(row).getCell(1).value : null;
-  if (typeof service !== "string" || !service.trim()) {
-    throw new LedgerError(`No subscription at row ${row}`, 404);
-  }
 }
 
 export async function listSubscriptions(today: Date = new Date()): Promise<SubscriptionEntryComputed[]> {
@@ -114,89 +100,4 @@ export async function listSubscriptions(today: Date = new Date()): Promise<Subsc
     }
   });
   return entries.map((e) => withComputed(e, today));
-}
-
-export interface SubscriptionEditsInput {
-  service: string;
-  amount: number;
-  duration: Duration;
-  expiryAnchor: string; // YYYY-MM-DD
-  cardOrBank: string;
-}
-
-export async function addSubscription(
-  input: SubscriptionEditsInput,
-  today: Date = new Date(),
-): Promise<SubscriptionEntryComputed> {
-  const service = input.service.trim();
-  validateEntry(service, input.amount, input.duration, input.expiryAnchor);
-
-  return withFileLock(subscriptionsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getSubscriptionsSheet(workbook);
-    const rowNumber = sheet.rowCount + 1;
-    const row = sheet.getRow(rowNumber);
-    row.getCell(1).value = service;
-    row.getCell(2).value = input.amount;
-    row.getCell(3).value = input.duration;
-    row.getCell(4).value = input.expiryAnchor;
-    row.getCell(5).value = input.cardOrBank.trim();
-    row.commit();
-
-    await saveWorkbook(workbook, subscriptionsPath());
-    const entry: SubscriptionEntry = {
-      row: rowNumber,
-      service,
-      amount: input.amount,
-      duration: input.duration,
-      expiryAnchor: input.expiryAnchor,
-      cardOrBank: input.cardOrBank.trim(),
-    };
-    return withComputed(entry, today);
-  });
-}
-
-export async function updateSubscription(
-  rowNumber: number,
-  input: SubscriptionEditsInput,
-  today: Date = new Date(),
-): Promise<SubscriptionEntryComputed> {
-  const service = input.service.trim();
-  validateEntry(service, input.amount, input.duration, input.expiryAnchor);
-
-  return withFileLock(subscriptionsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getSubscriptionsSheet(workbook);
-    assertRealSubscriptionRow(sheet, rowNumber);
-
-    const row = sheet.getRow(rowNumber);
-    row.getCell(1).value = service;
-    row.getCell(2).value = input.amount;
-    row.getCell(3).value = input.duration;
-    row.getCell(4).value = input.expiryAnchor;
-    row.getCell(5).value = input.cardOrBank.trim();
-    row.commit();
-
-    await saveWorkbook(workbook, subscriptionsPath());
-    const entry: SubscriptionEntry = {
-      row: rowNumber,
-      service,
-      amount: input.amount,
-      duration: input.duration,
-      expiryAnchor: input.expiryAnchor,
-      cardOrBank: input.cardOrBank.trim(),
-    };
-    return withComputed(entry, today);
-  });
-}
-
-export async function deleteSubscription(rowNumber: number): Promise<void> {
-  await withFileLock(subscriptionsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getSubscriptionsSheet(workbook);
-    assertRealSubscriptionRow(sheet, rowNumber);
-
-    sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, subscriptionsPath());
-  });
 }

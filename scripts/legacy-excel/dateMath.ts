@@ -4,13 +4,13 @@
  * anchor date to "today" without drifting across month-length differences
  * (e.g. a due day of 31 in February). */
 
-export function daysInMonth(year: number, month: number): number {
+function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate();
 }
 
 /** Clamps a day-of-month to the last real day of that month (e.g. 31 in
  * February becomes 28 or 29). */
-export function clampDay(year: number, month: number, day: number): number {
+function clampDay(year: number, month: number, day: number): number {
   return Math.min(day, daysInMonth(year, month));
 }
 

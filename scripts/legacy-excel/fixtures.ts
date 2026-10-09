@@ -10,7 +10,7 @@ import { categoryArgb, DEFAULT_CATEGORIES, type Category, type CategoryConfig } 
 const AMOUNT_NUMFMT =
   '_ [$₹-4009]\\ * #,##0.00_ ;_ [$₹-4009]\\ * \\-#,##0.00_ ;_ [$₹-4009]\\ * "-"??_ ;_ @_ ';
 
-export interface SeedEntry {
+interface SeedEntry {
   amount: number; // positive rupee amount
   remarks: string;
   category: Category;

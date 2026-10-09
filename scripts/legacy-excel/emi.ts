@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError } from "./workbookIO.js";
 import { addMonths, makeDate, parseDate, formatDate, startOfDay } from "./dateMath.js";
 
 function emiPath(): string {
@@ -24,7 +24,7 @@ const HEADERS = [
 /** A loan/EMI plan, tracked flat (not month-indexed) like Debts — there's no
  * fixed count of active loans, so adding one or foreclosing one is just
  * adding/removing a row. */
-export interface EmiEntry {
+interface EmiEntry {
   row: number;
   cardOrBank: string;
   /** Fixed monthly installment amount. */
@@ -43,13 +43,13 @@ export interface EmiEntry {
   remainingAsOf: number;
   asOfDate: string; // YYYY-MM-DD
   /** An exact payoff target, given by the bank at EMI-conversion time (as a
-   * duration in months — see `EmiEditsInput.durationMonths`) and stored here
-   * as the literal resulting date. When set, this — not a derived estimate —
-   * is what `estimatedPayoffMonth` reports, since a real bank schedule's
-   * final installment is often adjusted (larger *or* smaller) to hit this
-   * exact date, which a plain `remaining ÷ emiAmount` estimate can't always
-   * reproduce. Sticky across edits/payments unless a new Duration is
-   * explicitly given — routine balance corrections shouldn't perturb it. */
+   * duration in months) and stored here as the literal resulting date. When
+   * set, this — not a derived estimate — is what `estimatedPayoffMonth`
+   * reports, since a real bank schedule's final installment is often adjusted
+   * (larger *or* smaller) to hit this exact date, which a plain
+   * `remaining ÷ emiAmount` estimate can't always reproduce. Sticky across
+   * edits/payments unless a new Duration is explicitly given — routine
+   * balance corrections shouldn't perturb it. */
   untilTarget: string | null; // YYYY-MM-DD
   /** Annual interest rate as a percentage (e.g. 12.5 for 12.5% p.a.), if the
    * user has entered one — optional since plenty of entries (an interest-
@@ -150,26 +150,6 @@ function countDueDatesPassed(asOfDate: Date, dueDay: number, today: Date): numbe
   return count;
 }
 
-/** Finds the earliest monthly due date (on `dueDay`) strictly after `anchor`.
- * Exported for `overview.ts`'s Upcoming list — using an EMI's own stored
- * `asOfDate` (not "today") is what makes a just-recorded payment correctly
- * advance which cycle is actually next, instead of recomputing "the next
- * occurrence of dueDay" from scratch and re-surfacing the cycle just paid. */
-export function nextDueDateAfter(anchor: Date, dueDay: number): Date {
-  let year = anchor.getFullYear();
-  let month = anchor.getMonth() + 1;
-  for (let i = 0; i < 1200; i++) {
-    const due = makeDate(year, month, dueDay);
-    if (due > anchor) return due;
-    month++;
-    if (month > 12) {
-      month = 1;
-      year++;
-    }
-  }
-  throw new Error("nextDueDateAfter: no due date found within 100 years");
-}
-
 /** Finds the first real due date (on `dueDay`) on or after `target`.
  *
  * `untilTarget` (a bank-stated tenure resolved to `addMonths(asOfDate,
@@ -182,12 +162,8 @@ export function nextDueDateAfter(anchor: Date, dueDay: number): Date {
  * date instead (e.g. target day 23 with dueDay 9: the 9th of that month is
  * before the 23rd, so the real final installment is the 9th of the *next*
  * month, not that month's 9th). If `dueDay` falls on or after the target's
- * day, that month's own due date already covers it, unchanged.
- *
- * Exported so the e2e regression suite can reuse this exact logic when
- * computing its own expected finish date, rather than risking a
- * hand-rolled equivalent silently drifting from this one. */
-export function dueDateOnOrAfter(target: Date, dueDay: number): Date {
+ * day, that month's own due date already covers it, unchanged. */
+function dueDateOnOrAfter(target: Date, dueDay: number): Date {
   const sameMonth = makeDate(target.getFullYear(), target.getMonth() + 1, dueDay);
   return sameMonth >= target ? sameMonth : addMonths(sameMonth, 1);
 }
@@ -212,7 +188,7 @@ function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   return null;
 }
 
-export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntryComputed {
+function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntryComputed {
   const asOf = parseDate(entry.asOfDate);
   const passed = countDueDatesPassed(asOf, entry.dueDay, startOfDay(today));
   const remaining = Math.max(0, round2(entry.remainingAsOf - passed * entry.emiAmount));
@@ -227,35 +203,6 @@ export function withComputed(entry: EmiEntry, today: Date = new Date()): EmiEntr
   const outstandingPrincipal = computeOutstandingPrincipal(remaining, entry.emiAmount, entry.interestRate);
   const foreclosurePayoff = computeForeclosurePayoff(outstandingPrincipal, entry.foreclosureCharge);
   return { ...entry, remaining, isPaidOff, estimatedPayoffMonth, estimatedPayoffDate, foreclosurePayoff };
-}
-
-function validateEntry(cardOrBank: string, emiAmount: number, dueDay: number, totalAmount: number, remainingAsOf: number) {
-  if (!cardOrBank) throw new LedgerError("Card/Bank is required", 400);
-  if (!Number.isFinite(emiAmount) || emiAmount <= 0) throw new LedgerError("EMI Amount must be a positive number", 400);
-  if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) throw new LedgerError("Due Day must be between 1 and 31", 400);
-  if (!Number.isFinite(totalAmount) || totalAmount < 0) throw new LedgerError("Total Amount must be a number", 400);
-  if (!Number.isFinite(remainingAsOf) || remainingAsOf < 0) throw new LedgerError("Remaining must be a number", 400);
-}
-
-function validateDurationMonths(durationMonths: number | null | undefined) {
-  if (durationMonths === null || durationMonths === undefined) return;
-  if (!Number.isInteger(durationMonths) || durationMonths < 1 || durationMonths > 600) {
-    throw new LedgerError("Duration must be a whole number of months (1-600)", 400);
-  }
-}
-
-function validateInterestRate(interestRate: number | null | undefined) {
-  if (interestRate === null || interestRate === undefined) return;
-  if (!Number.isFinite(interestRate) || interestRate < 0 || interestRate > 100) {
-    throw new LedgerError("Interest Rate must be a number between 0 and 100", 400);
-  }
-}
-
-function validateForeclosureCharge(foreclosureCharge: number | null | undefined) {
-  if (foreclosureCharge === null || foreclosureCharge === undefined) return;
-  if (!Number.isFinite(foreclosureCharge) || foreclosureCharge < 0 || foreclosureCharge > 100) {
-    throw new LedgerError("Foreclosure Charge must be a number between 0 and 100", 400);
-  }
 }
 
 function resolveNumber(value: ExcelJS.CellValue): number | null {
@@ -280,21 +227,6 @@ function getEmiSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
   const sheet = workbook.getWorksheet(SHEET_NAME);
   if (!sheet) throw new LedgerError(`EMI.xlsx is missing its "${SHEET_NAME}" sheet`, 500);
   return sheet;
-}
-
-function assertRealEmiRow(sheet: ExcelJS.Worksheet, row: number) {
-  const cardOrBank = row >= 2 ? sheet.getRow(row).getCell(1).value : null;
-  if (typeof cardOrBank !== "string" || !cardOrBank.trim()) {
-    throw new LedgerError(`No EMI entry at row ${row}`, 404);
-  }
-}
-
-/** Reads whatever `untilTarget` is currently stored for a row, without the
- * rest of `EmiEntry` — used by `updateEmi` to preserve it across an edit that
- * doesn't supply a fresh Duration. */
-function readStoredUntilTarget(sheet: ExcelJS.Worksheet, rowNumber: number): string | null {
-  const value = sheet.getRow(rowNumber).getCell(8).value;
-  return typeof value === "string" && value ? value : null;
 }
 
 export async function listEmis(today: Date = new Date()): Promise<EmiEntryComputed[]> {
@@ -338,330 +270,4 @@ export async function listEmis(today: Date = new Date()): Promise<EmiEntryComput
     }
   });
   return entries.map((e) => withComputed(e, today));
-}
-
-/** How many calendar months ahead the Dashboard's upcoming-EMIs chart
- * projects by default — a year gives a full picture of the near-term EMI
- * load without projecting so far out that a long-tenure loan's tail
- * dominates the chart. The chart also offers other fixed scales and an
- * "auto" (until every active loan is paid off) mode — see
- * `emiMonthlyProjection`. */
-export const EMI_PROJECTION_MONTHS = 12;
-
-/** Upper bound for the "auto" (until paid off) mode's simulation window —
- * matches `validateDurationMonths`'s own 600-month (50-year) ceiling, so
- * "auto" can never simulate further out than a loan's own Duration field
- * could ever legitimately claim to finish. */
-const EMI_PROJECTION_MAX_MONTHS = 600;
-
-export interface EmiMonthlyProjection {
-  month: string; // YYYY-MM
-  count: number;
-  totalAmount: number;
-}
-
-/** Projects every active EMI's future installments forward, bucketed by
- * calendar month, for the Dashboard's upcoming-EMIs chart. Each loan
- * contributes its full `emiAmount` every cycle until paid off, except
- * possibly a smaller final installment (whatever balance is actually left)
- * — the same amortization `withComputed` already does for a single "final
- * payoff" date, just simulated across every future cycle instead of only
- * the last one, and summed across every loan per month. Months with no EMI
- * due at all are still included (zeroed), so the chart's X-axis is a
- * continuous run of months rather than skipping gaps.
- *
- * `months: "auto"` extends the window instead of capping it — simulates the
- * generous `EMI_PROJECTION_MAX_MONTHS` ceiling (so even a long-tenure loan's
- * real payoff is always captured), then trims every trailing all-zero month
- * once every active loan has actually reached 0, so the chart's x-axis stops
- * right where the last installment lands instead of padding out to 50 years
- * of empty months. */
-export async function emiMonthlyProjection(
-  months: number | "auto" = EMI_PROJECTION_MONTHS,
-  today: Date = new Date(),
-): Promise<EmiMonthlyProjection[]> {
-  const day = startOfDay(today);
-  const firstOfThisMonth = makeDate(day.getFullYear(), day.getMonth() + 1, 1);
-  const windowSize = months === "auto" ? EMI_PROJECTION_MAX_MONTHS : months;
-  const windowMonths = Array.from({ length: windowSize }, (_, i) => toMonthOnly(addMonths(firstOfThisMonth, i)));
-  const lastWindowMonth = windowMonths[windowMonths.length - 1];
-
-  const buckets = new Map<string, { count: number; totalAmount: number }>(
-    windowMonths.map((m) => [m, { count: 0, totalAmount: 0 }]),
-  );
-
-  const emis = await listEmis(today);
-  for (const emi of emis) {
-    if (emi.isPaidOff) continue;
-    let balance = emi.remaining;
-    const asOf = parseDate(emi.asOfDate);
-    // Anchored to whichever is later: the EMI's own stored asOfDate — so an
-    // early payment (which can advance that anchor *past* today, to the
-    // due date it settled) still correctly skips the cycle just paid, same
-    // reasoning as overview.ts's Upcoming list — or "today", so a *stale*
-    // asOfDate (no payment recorded in a while) can't walk this projection
-    // backward into an already-decayed past month. `remaining` is already
-    // decayed through today (see `withComputed`), so re-projecting a due
-    // date before today would double-count that installment; it can also
-    // fall outside this window's map entirely, which crashed here before
-    // this fix (real bug: a loan whose asOfDate hadn't been touched in a
-    // while threw "Cannot read properties of undefined (reading 'count')").
-    const anchor = asOf > day ? asOf : day;
-    let due = nextDueDateAfter(anchor, emi.dueDay);
-    while (balance > 0) {
-      const monthKey = toMonthOnly(due);
-      if (monthKey > lastWindowMonth) break;
-      const payment = Math.min(emi.emiAmount, balance);
-      const bucket = buckets.get(monthKey);
-      if (bucket) {
-        bucket.count += 1;
-        bucket.totalAmount = round2(bucket.totalAmount + payment);
-      }
-      balance = round2(balance - payment);
-      due = nextDueDateAfter(due, emi.dueDay);
-    }
-  }
-
-  const result = windowMonths.map((month) => ({ month, ...buckets.get(month)! }));
-  if (months !== "auto") return result;
-
-  // Trim trailing all-zero months once every loan's simulated above has
-  // actually reached 0 — always keeps at least the current month, so a
-  // portfolio with no active EMIs at all still returns one (zeroed) row
-  // rather than an empty array.
-  let lastNonZero = 0;
-  result.forEach((r, i) => {
-    if (r.count > 0) lastNonZero = i;
-  });
-  return result.slice(0, lastNonZero + 1);
-}
-
-export interface EmiEditsInput {
-  cardOrBank: string;
-  emiAmount: number;
-  dueDay: number;
-  totalAmount: number;
-  remarks: string;
-  /** The user's current real balance — becomes the new decay anchor, dated
-   * to today (see `withComputed`). */
-  remainingAsOf: number;
-  /** The bank-stated number of months until this loan finishes, given at
-   * EMI-conversion time. Optional and *not* stored as a number — it's
-   * resolved once, relative to `today`, into a literal target date
-   * (`EmiEntry.untilTarget`). Leaving this null/omitted on an edit preserves
-   * whatever target was already on record rather than clearing it; there's
-   * no direct way to blank it out again short of re-adding the entry. */
-  durationMonths?: number | null;
-  /** Annual interest rate as a percentage, or null/omitted to leave it
-   * unset (or clear it, on an edit) — unlike `durationMonths`, this is a
-   * plain overwritable field (like `emiAmount`/`totalAmount`): whatever is
-   * passed here (including omitted, treated the same as null) is exactly
-   * what gets stored, with no "preserve if omitted" behavior. */
-  interestRate?: number | null;
-  /** Early-closure fee as a percentage, or null/omitted to leave/clear it —
-   * same plain-overwritable-field semantics as `interestRate`. */
-  foreclosureCharge?: number | null;
-}
-
-export async function addEmi(input: EmiEditsInput, today: Date = new Date()): Promise<EmiEntryComputed> {
-  const cardOrBank = input.cardOrBank.trim();
-  validateEntry(cardOrBank, input.emiAmount, input.dueDay, input.totalAmount, input.remainingAsOf);
-  validateDurationMonths(input.durationMonths);
-  validateInterestRate(input.interestRate);
-  validateForeclosureCharge(input.foreclosureCharge);
-  const interestRate = input.interestRate ?? null;
-  const foreclosureCharge = input.foreclosureCharge ?? null;
-
-  return withFileLock(emiPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getEmiSheet(workbook);
-    const rowNumber = sheet.rowCount + 1;
-    const asOfDate = formatDate(startOfDay(today));
-    const untilTarget = input.durationMonths ? formatDate(addMonths(startOfDay(today), input.durationMonths)) : null;
-    const row = sheet.getRow(rowNumber);
-    row.getCell(1).value = cardOrBank;
-    row.getCell(2).value = input.emiAmount;
-    row.getCell(3).value = input.dueDay;
-    row.getCell(4).value = input.totalAmount;
-    row.getCell(5).value = input.remarks.trim();
-    row.getCell(6).value = input.remainingAsOf;
-    row.getCell(7).value = asOfDate;
-    row.getCell(8).value = untilTarget;
-    row.getCell(9).value = interestRate;
-    row.getCell(10).value = foreclosureCharge;
-    row.commit();
-
-    await saveWorkbook(workbook, emiPath());
-    const entry: EmiEntry = {
-      row: rowNumber,
-      cardOrBank,
-      emiAmount: input.emiAmount,
-      dueDay: input.dueDay,
-      totalAmount: input.totalAmount,
-      remarks: input.remarks.trim(),
-      remainingAsOf: input.remainingAsOf,
-      asOfDate,
-      untilTarget,
-      interestRate,
-      foreclosureCharge,
-    };
-    return withComputed(entry, today);
-  });
-}
-
-/** The actual update logic, deliberately *not* wrapped in `withFileLock`
- * itself — `updateEmi` (below) and `recordEmiPayment` both need to run this
- * under a lock they hold, and `withFileLock` isn't reentrant: a call made
- * from inside another call already holding the same file's lock would wait
- * on itself and deadlock. `recordEmiPayment` needs its own read (`listEmis`)
- * and this write to happen under one uninterrupted lock acquisition — two
- * separate `withFileLock` calls would let a second payment's read land
- * between the first payment's read and write, silently losing one payment. */
-async function updateEmiUnlocked(
-  rowNumber: number,
-  input: EmiEditsInput,
-  today: Date,
-): Promise<EmiEntryComputed> {
-  const cardOrBank = input.cardOrBank.trim();
-  validateEntry(cardOrBank, input.emiAmount, input.dueDay, input.totalAmount, input.remainingAsOf);
-  validateDurationMonths(input.durationMonths);
-  validateInterestRate(input.interestRate);
-  validateForeclosureCharge(input.foreclosureCharge);
-  const interestRate = input.interestRate ?? null;
-  const foreclosureCharge = input.foreclosureCharge ?? null;
-
-  const workbook = await loadOrCreateWorkbook();
-  const sheet = getEmiSheet(workbook);
-  assertRealEmiRow(sheet, rowNumber);
-
-  const untilTarget = input.durationMonths
-    ? formatDate(addMonths(startOfDay(today), input.durationMonths))
-    : readStoredUntilTarget(sheet, rowNumber);
-
-  const asOfDate = formatDate(startOfDay(today));
-  const row = sheet.getRow(rowNumber);
-  row.getCell(1).value = cardOrBank;
-  row.getCell(2).value = input.emiAmount;
-  row.getCell(3).value = input.dueDay;
-  row.getCell(4).value = input.totalAmount;
-  row.getCell(5).value = input.remarks.trim();
-  row.getCell(6).value = input.remainingAsOf;
-  row.getCell(7).value = asOfDate;
-  row.getCell(8).value = untilTarget;
-  row.getCell(9).value = interestRate;
-  row.getCell(10).value = foreclosureCharge;
-  row.commit();
-
-  await saveWorkbook(workbook, emiPath());
-  const entry: EmiEntry = {
-    row: rowNumber,
-    cardOrBank,
-    emiAmount: input.emiAmount,
-    dueDay: input.dueDay,
-    totalAmount: input.totalAmount,
-    remarks: input.remarks.trim(),
-    remainingAsOf: input.remainingAsOf,
-    asOfDate,
-    untilTarget,
-    interestRate,
-    foreclosureCharge,
-  };
-  return withComputed(entry, today);
-}
-
-export async function updateEmi(
-  rowNumber: number,
-  input: EmiEditsInput,
-  today: Date = new Date(),
-): Promise<EmiEntryComputed> {
-  return withFileLock(emiPath(), () => updateEmiUnlocked(rowNumber, input, today));
-}
-
-/** Records a payment toward an EMI, without risking the double-decay that a
- * naive "just subtract from today's balance" approach would cause: if you pay
- * a few days *before* this month's due date, anchoring the new snapshot to
- * today (rather than to that due date) would leave the due date still
- * "unaccounted for", and once it actually passed, `withComputed`'s automatic
- * decay would subtract *another* installment on top of the one you already
- * recorded.
- *
- * Fix: compute the balance *as of the day before* the due date being settled
- * — i.e. with that due date's own auto-assumed decay deliberately excluded —
- * then subtract the actual amount paid, then anchor the new snapshot to the
- * due date itself. Since the new anchor lands exactly on that due date,
- * `withComputed` will never separately decay for it again (whether the
- * automatic assumption or this explicit payment "wins" doesn't matter — they
- * represent the same real-world event, so they must not stack). Only
- * genuinely later due dates decay the balance further from here. Paying
- * exactly one `emiAmount` *after* the due date has already passed is
- * therefore a no-op — the auto-decay already assumed it — while paying early
- * (or a different amount than usual) changes the balance immediately instead
- * of waiting for the due date to pass.
- *
- * Which due date gets settled: normally this calendar month's (so paying
- * covers however many months have silently gone by, all at once, same as if
- * each had auto-decayed on schedule) — *unless* the stored anchor is already
- * at or past that date, which happens whenever `dueDay` falls earlier in the
- * month than whatever day the entry was last touched on (e.g. added on the
- * 30th with a due day of the 15th — this month's 15th already lies in the
- * past relative to that anchor, even though it hasn't been "settled" by any
- * real payment). Reusing a due date the anchor has already passed would let
- * repeated clicks each subtract another `emiAmount` from the same stuck
- * month — checked here by always advancing to the true next due date after
- * the current anchor in that case, so every call moves strictly forward. */
-export async function recordEmiPayment(
-  rowNumber: number,
-  amountPaid: number,
-  today: Date = new Date(),
-): Promise<EmiEntryComputed> {
-  if (!Number.isFinite(amountPaid) || amountPaid < 0) {
-    throw new LedgerError("Payment amount must be a non-negative number", 400);
-  }
-
-  // The read (listEmis) and the write (updateEmiUnlocked) must happen under
-  // one uninterrupted lock acquisition — see the comment on updateEmiUnlocked
-  // for why two overlapping payments could otherwise both read the same
-  // pre-payment balance and the second write would silently discard the
-  // first payment.
-  return withFileLock(emiPath(), async () => {
-    const entries = await listEmis(today);
-    const entry = entries.find((e) => e.row === rowNumber);
-    if (!entry) throw new LedgerError(`No EMI entry at row ${rowNumber}`, 404);
-
-    const day = startOfDay(today);
-    const currentAsOf = parseDate(entry.asOfDate);
-    const thisMonthsDue = makeDate(day.getFullYear(), day.getMonth() + 1, entry.dueDay);
-    const dueToSettle = thisMonthsDue > currentAsOf ? thisMonthsDue : nextDueDateAfter(currentAsOf, entry.dueDay);
-    const dayBeforeDue = new Date(dueToSettle.getFullYear(), dueToSettle.getMonth(), dueToSettle.getDate() - 1);
-    const remainingBeforeThisDue = withComputed(entry, dayBeforeDue).remaining;
-    const newRemainingAsOf = Math.max(0, round2(remainingBeforeThisDue - amountPaid));
-
-    return updateEmiUnlocked(
-      rowNumber,
-      {
-        cardOrBank: entry.cardOrBank,
-        emiAmount: entry.emiAmount,
-        dueDay: entry.dueDay,
-        totalAmount: entry.totalAmount,
-        remarks: entry.remarks,
-        remainingAsOf: newRemainingAsOf,
-        durationMonths: null, // preserve whatever until-target was already on record
-        interestRate: entry.interestRate, // preserve whatever rate was already on record
-        foreclosureCharge: entry.foreclosureCharge, // preserve whatever charge was already on record
-      },
-      dueToSettle,
-    );
-  });
-}
-
-/** Removes an EMI entry entirely — e.g. after foreclosing a loan early. */
-export async function deleteEmi(rowNumber: number): Promise<void> {
-  await withFileLock(emiPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getEmiSheet(workbook);
-    assertRealEmiRow(sheet, rowNumber);
-
-    sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, emiPath());
-  });
 }

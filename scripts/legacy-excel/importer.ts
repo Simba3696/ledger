@@ -39,10 +39,10 @@ export const IMPORT_TABLES = [
   "subscriptions",
   "card_bills",
 ] as const;
-export type ImportTable = (typeof IMPORT_TABLES)[number];
+type ImportTable = (typeof IMPORT_TABLES)[number];
 
 /** A problem the import found and refused to fix silently. */
-export interface ImportIssue {
+interface ImportIssue {
   /** Where: file, then sheet and row when there is one. */
   where: string;
   reason: string;

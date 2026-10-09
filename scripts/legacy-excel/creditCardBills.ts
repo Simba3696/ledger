@@ -1,9 +1,9 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError } from "./workbookIO.js";
 
-export const EARLIEST_YEAR = 2018;
+const EARLIEST_YEAR = 2018;
 
 function billsPath(): string {
   return path.join(getDbDir(), "CreditCardBills.xlsx");
@@ -11,7 +11,7 @@ function billsPath(): string {
 const SHEET_NAME = "Bills";
 const HEADERS = ["Year", "Month", "Cards"];
 
-export interface CardBill {
+interface CardBill {
   name: string;
   /** Amount due for this card's bill this month. */
   due: number;
@@ -29,22 +29,6 @@ export interface CardBill {
 function validateYearMonth(year: number, month: number) {
   if (!Number.isInteger(year) || year < EARLIEST_YEAR) throw new LedgerError(`Invalid year: ${year}`, 400);
   if (!Number.isInteger(month) || month < 1 || month > 12) throw new LedgerError(`Invalid month: ${month}`, 400);
-}
-
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-function validateCards(cards: CardBill[]) {
-  for (const card of cards) {
-    if (!card.name || !card.name.trim()) throw new LedgerError("Each card needs a name", 400);
-    if (!Number.isFinite(card.due)) throw new LedgerError(`Amount due for "${card.name}" must be a number`, 400);
-    if (!Number.isFinite(card.paid)) throw new LedgerError(`Amount paid for "${card.name}" must be a number`, 400);
-    if (card.dueDate !== null && !DATE_PATTERN.test(card.dueDate)) {
-      throw new LedgerError(`Due date for "${card.name}" must be YYYY-MM-DD or null`, 400);
-    }
-    if (typeof card.settled !== "boolean") {
-      throw new LedgerError(`Settled flag for "${card.name}" must be a boolean`, 400);
-    }
-  }
 }
 
 /** Cards are stored as a JSON array in one cell, the same reasoning as
@@ -148,34 +132,6 @@ export async function listBillsRows(): Promise<{ rows: BillsRow[]; ignored: numb
     rows.push({ row: rowNumber, year: y, month: m, cards: parseCardsCell(row.getCell(3).value), rawCards: row.getCell(3).value });
   });
   return { rows, ignored };
-}
-
-export interface SetMonthBillsInput {
-  year: number;
-  month: number;
-  cards: CardBill[];
-}
-
-export async function setMonthBills(input: SetMonthBillsInput): Promise<MonthBills> {
-  const { year, month, cards } = input;
-  validateYearMonth(year, month);
-  validateCards(cards);
-
-  return withFileLock(billsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getBillsSheet(workbook);
-    let row = findMonthRow(sheet, year, month);
-    if (!row) {
-      row = sheet.getRow(sheet.rowCount + 1);
-      row.getCell(1).value = year;
-      row.getCell(2).value = month;
-    }
-    row.getCell(3).value = cards.length > 0 ? JSON.stringify(cards) : null;
-    row.commit();
-
-    await saveWorkbook(workbook, billsPath());
-    return { year, month, cards };
-  });
 }
 
 export interface MonthBillsSummary extends MonthBills {

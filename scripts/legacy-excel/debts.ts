@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import ExcelJS from "exceljs";
-import { getDbDir, LedgerError, saveWorkbook, withFileLock } from "./workbookIO.js";
+import { getDbDir, LedgerError } from "./workbookIO.js";
 
 function debtsPath(): string {
   return path.join(getDbDir(), "Debts.xlsx");
@@ -26,11 +26,6 @@ function resolveNumber(value: ExcelJS.CellValue): number | null {
   return null;
 }
 
-function validateEntry(name: string, amount: number) {
-  if (!name) throw new LedgerError("Name is required", 400);
-  if (!Number.isFinite(amount)) throw new LedgerError("Amount must be a number", 400);
-}
-
 async function loadOrCreateWorkbook(): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
   if (fs.existsSync(debtsPath())) {
@@ -47,15 +42,6 @@ function getDebtsSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
   return sheet;
 }
 
-/** Throws unless `row` is an existing debt entry (a real name in column A),
- * not the header or a row past the end of the data. */
-function assertRealDebtRow(sheet: ExcelJS.Worksheet, row: number) {
-  const name = row >= 2 ? sheet.getRow(row).getCell(1).value : null;
-  if (typeof name !== "string" || !name.trim()) {
-    throw new LedgerError(`No debt entry at row ${row}`, 404);
-  }
-}
-
 export async function listDebts(): Promise<DebtEntry[]> {
   const workbook = await loadOrCreateWorkbook();
   const sheet = getDebtsSheet(workbook);
@@ -69,63 +55,4 @@ export async function listDebts(): Promise<DebtEntry[]> {
     }
   });
   return entries;
-}
-
-export interface AddDebtInput {
-  name: string;
-  amount: number;
-}
-
-export async function addDebt(input: AddDebtInput): Promise<DebtEntry> {
-  const name = input.name.trim();
-  validateEntry(name, input.amount);
-
-  return withFileLock(debtsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getDebtsSheet(workbook);
-    const rowNumber = sheet.rowCount + 1;
-    const row = sheet.getRow(rowNumber);
-    row.getCell(1).value = name;
-    row.getCell(2).value = input.amount;
-    row.commit();
-
-    await saveWorkbook(workbook, debtsPath());
-    return { row: rowNumber, name, amount: input.amount };
-  });
-}
-
-export interface UpdateDebtInput {
-  row: number;
-  name: string;
-  amount: number;
-}
-
-export async function updateDebt(input: UpdateDebtInput): Promise<DebtEntry> {
-  const name = input.name.trim();
-  validateEntry(name, input.amount);
-
-  return withFileLock(debtsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getDebtsSheet(workbook);
-    assertRealDebtRow(sheet, input.row);
-
-    const row = sheet.getRow(input.row);
-    row.getCell(1).value = name;
-    row.getCell(2).value = input.amount;
-    row.commit();
-
-    await saveWorkbook(workbook, debtsPath());
-    return { row: input.row, name, amount: input.amount };
-  });
-}
-
-export async function deleteDebt(rowNumber: number): Promise<void> {
-  await withFileLock(debtsPath(), async () => {
-    const workbook = await loadOrCreateWorkbook();
-    const sheet = getDebtsSheet(workbook);
-    assertRealDebtRow(sheet, rowNumber);
-
-    sheet.spliceRows(rowNumber, 1);
-    await saveWorkbook(workbook, debtsPath());
-  });
 }
