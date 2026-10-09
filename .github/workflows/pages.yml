@@ -1,0 +1,69 @@
+# The static GitHub storage build (ADR-0007), deployed to GitHub Pages.
+# Every pull request builds both clients and runs the isolation check, which
+# proves the default (Supabase) bundle carries no GitHub-storage code. Pushes
+# to main and manual runs also deploy client/dist-pages. The repo's Pages
+# source must be set to "GitHub Actions" for the deploy (and configure-pages)
+# to work.
+name: Pages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages reads the site's settings to get its base path.
+      pages: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The bundle Netlify publishes, built with no VITE_* values, so the
+      # isolation check has a default build to inspect.
+      - name: Build the default client
+        run: npm run build -w client
+      # /<repo>/ for a project site, empty (so "/") for a custom domain.
+      # Pull requests can't call configure-pages, so they use /<repo-name>/.
+      - name: Read the Pages base path
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Build the GitHub Pages client
+        env:
+          PAGES_BASE: ${{ github.event_name == 'pull_request' && format('/{0}/', github.event.repository.name) || format('{0}/', steps.pages.outputs.base_path) }}
+        run: npm run build:pages -w client -- --base "$PAGES_BASE"
+      - name: Check storage isolation
+        run: npm run check:isolation
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: client/dist-pages
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
