@@ -39,11 +39,27 @@ export default defineConfig(({ mode }) => {
   }
 })
 
+// The GitHub Pages build's Content-Security-Policy. It mirrors the header in
+// netlify.toml, except that connect-src allows GitHub's API instead of
+// Supabase. frame-ancestors is left out: browsers ignore it in a meta tag.
+const PAGES_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self' https://api.github.com",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+].join('; ')
+
 // GitHub mode only. A project Pages site is served under /<repo>/, so the
 // PWA files that name absolute paths must carry the base. Rewrites the
 // manifest copied into the output folder (client/public's copy stays the
 // single source and is never edited), and is the one place GitHub-mode-only
-// tags are added to index.html.
+// tags (the CSP meta) are added to index.html.
 function pagesBaseFiles(): Plugin {
   let base = '/'
   let outDir = ''
@@ -59,10 +75,15 @@ function pagesBaseFiles(): Plugin {
     transformIndexHtml(html) {
       // Vite already prefixes public-file links with base; this covers any
       // it leaves root-relative.
-      return html.replace(
+      const based = html.replace(
         /(href|src)="\/(favicon\.png|apple-touch-icon\.png|manifest\.webmanifest)"/g,
         (_match, attr: string, file: string) => `${attr}="${base}${file}"`,
       )
+      // GitHub Pages can't send response headers, so the CSP is a meta tag,
+      // placed right after the charset so it covers every later tag.
+      const charset = /<meta charset="UTF-8" \/>/i
+      if (!charset.test(based)) throw new Error('index.html has no <meta charset="UTF-8" /> to put the CSP after')
+      return based.replace(charset, (tag) => `${tag}\n    <meta http-equiv="Content-Security-Policy" content="${PAGES_CSP}" />`)
     },
     async writeBundle() {
       const source = JSON.parse(await readFile(path.join(publicDir, 'manifest.webmanifest'), 'utf8')) as {
