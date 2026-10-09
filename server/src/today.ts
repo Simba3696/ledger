@@ -1,7 +1,7 @@
 import { todayInAppZone } from "@ledger/shared/today";
 
 /** The zone "today" is reckoned in when APP_TIMEZONE is unset (LLD §9). */
-const DEFAULT_TIMEZONE = "Asia/Kolkata";
+export const DEFAULT_TIMEZONE = "Asia/Kolkata";
 
 /** The current calendar day in APP_TIMEZONE (falling back to
  * DEFAULT_TIMEZONE), as a local-midnight Date. The shared

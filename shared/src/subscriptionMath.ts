@@ -1,9 +1,9 @@
 import { addMonths, addYears, formatDate, parseDate, startOfDay } from "./dateMath.js";
-import { todayInAppZone } from "./today.js";
 
 // Pure renewal-cycle maths for subscriptions (no I/O), moved verbatim from
-// the Excel edition's excel/subscriptions.ts (LLD §3). The only change is the
-// default "today": todayInAppZone() instead of a bare new Date() (ADR-0005).
+// the Excel edition's excel/subscriptions.ts (LLD §3). The only change is
+// "today": a required argument instead of a bare new Date() (ADR-0005; the
+// server passes appToday(), server/src/today.ts).
 
 export type Duration = "Monthly" | "Yearly";
 
@@ -38,7 +38,7 @@ function advanceToOnOrAfter(anchor: Date, duration: Duration, today: Date): Date
   return date;
 }
 
-export function withComputed(entry: SubscriptionEntry, today: Date = todayInAppZone()): SubscriptionEntryComputed {
+export function withComputed(entry: SubscriptionEntry, today: Date): SubscriptionEntryComputed {
   const nextExpiry = formatDate(advanceToOnOrAfter(parseDate(entry.expiryAnchor), entry.duration, startOfDay(today)));
   return { ...entry, nextExpiry };
 }

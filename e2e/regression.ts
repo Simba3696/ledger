@@ -56,6 +56,7 @@ async function main() {
   const { addMonths, startOfDay, formatDate } = await import("../shared/src/dateMath.js");
   const { dueDateOnOrAfter } = await import("../shared/src/emiMath.js");
   const { todayInAppZone } = await import("../shared/src/today.js");
+  const { DEFAULT_TIMEZONE } = await import("../server/src/today.js");
 
   // Seed a custom 5th category alongside the defaults — proves the
   // categories table actually drives the running app end to end, not just
@@ -75,7 +76,7 @@ async function main() {
   // this machine's timezone — otherwise a run near midnight on a machine in
   // another zone would seed and assert against a different month than the
   // server treats as current.
-  const now = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined);
+  const now = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || DEFAULT_TIMEZONE);
   const year = now.getFullYear();
   const monthIndex = now.getMonth(); // 0-11, matches the dashboard chart's tick order
   const monthName = now.toLocaleString("en-US", { month: "long" });

@@ -1,14 +1,14 @@
 import { addMonths, makeDate, parseDate, formatDate, startOfDay } from "./dateMath.js";
-import { todayInAppZone } from "./today.js";
 
 // Pure EMI maths (no I/O), moved verbatim from the Excel edition's
 // excel/emi.ts (LLD §3): due-date walking, balance decay, payoff estimates,
 // foreclosure payoff, the payment-settlement rule behind recordEmiPayment and
 // the monthly projection simulation behind emiMonthlyProjection. The store
 // (store/emi.ts) loads and saves rows; everything here works on plain values.
-// The only changes: the default "today" is todayInAppZone() instead of a bare
-// new Date() (ADR-0005), and the projection and settlement steps are split
-// out of their old load-and-write functions as pure functions.
+// The only changes: "today" is a required argument instead of a bare
+// new Date() (ADR-0005; the server passes appToday(), server/src/today.ts),
+// and the projection and settlement steps are split out of their old
+// load-and-write functions as pure functions.
 
 /** A loan/EMI plan, tracked flat (not month-indexed) like Debts — there's no
  * fixed count of active loans, so adding one or foreclosing one is just
@@ -202,7 +202,7 @@ function nthFutureDueDate(dueDay: number, n: number, today: Date): Date | null {
   return null;
 }
 
-export function withComputed(entry: EmiEntry, today: Date = todayInAppZone()): EmiEntryComputed {
+export function withComputed(entry: EmiEntry, today: Date): EmiEntryComputed {
   const asOf = parseDate(entry.asOfDate);
   const passed = countDueDatesPassed(asOf, entry.dueDay, startOfDay(today));
   const remaining = Math.max(0, round2(entry.remainingAsOf - passed * entry.emiAmount));
@@ -298,7 +298,7 @@ export interface EmiMonthlyProjection {
 export function projectEmiMonthly(
   emis: EmiEntryComputed[],
   months: number | "auto" = EMI_PROJECTION_MONTHS,
-  today: Date = todayInAppZone(),
+  today: Date,
 ): EmiMonthlyProjection[] {
   const day = startOfDay(today);
   const firstOfThisMonth = makeDate(day.getFullYear(), day.getMonth() + 1, 1);

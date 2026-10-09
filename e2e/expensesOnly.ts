@@ -36,7 +36,8 @@ async function main() {
   // about. Nothing is seeded: the first expense goes in through the UI, as
   // on a brand-new deployment.
   const { todayInAppZone } = await import("../shared/src/today.js");
-  const year = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || undefined).getFullYear();
+  const { DEFAULT_TIMEZONE } = await import("../server/src/today.js");
+  const year = todayInAppZone(new Date(), serverEnv.APP_TIMEZONE || DEFAULT_TIMEZONE).getFullYear();
 
   console.log("Starting dev server with ENABLED_MODULES=expenses...");
   const consoleErrors: string[] = [];
