@@ -22,12 +22,16 @@ server/
       categories.ts  ledger.ts  finances.ts  debts.ts  emi.ts
       subscriptions.ts  creditCardBills.ts  overview.ts
       validate.ts            shared input checks (assertText, assertMoney, isRealDate, isPossibleId)
-    domain/                  pure calculations, no I/O (moved verbatim from the Excel edition's excel/*)
-      dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
-      today.ts               "today" in APP_TIMEZONE
-    errors.ts                LedgerError
+    today.ts                 appToday(): "today" in APP_TIMEZONE (DEFAULT_TIMEZONE when unset)
     dbErrors.ts              SQLSTATE → 400/409 mapping (§11)
-  test/                      vitest, against the local Supabase Postgres (api.test.ts: supertest on createApp)
+  test/                      vitest, against the local Supabase Postgres (api.test.ts: supertest on createApp);
+                             also runs shared/'s unit tests
+shared/                      @ledger/shared workspace: exports its .ts source, no build step; browser-safe
+  src/                       pure calculations, no I/O (moved verbatim from the Excel edition's excel/*)
+    dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
+    today.ts                 todayInAppZone(now, timeZone): "today" in an explicit zone
+    errors.ts                LedgerError
+  tsconfig.json              browser-safety typecheck (no DOM, no Node types), run under both TypeScripts
 netlify/
   functions/api.ts           serverless-http(createApp(...))
   tsconfig.json              typecheck-only (Bundler resolution, like Netlify's esbuild)
@@ -43,7 +47,7 @@ scripts/
 netlify.toml
 ```
 
-The rule the port followed, and new store code keeps: **store modules kept the Excel modules' exported names and return shapes**, so `routes.ts`, `overview.ts` and the client didn't change. Code that only computes moved into `domain/` untouched.
+The rule the port followed, and new store code keeps: **store modules kept the Excel modules' exported names and return shapes**, so `routes.ts`, `overview.ts` and the client didn't change. Code that only computes moved into `domain/` untouched (since moved again, to `shared/src/`, so the browser can run it too).
 
 ## 2. Data model
 
@@ -186,7 +190,7 @@ alter default privileges in schema public revoke all on tables from anon, authen
 
 ## 3. Domain layer (unchanged behaviour)
 
-These pure functions moved from the Excel edition's `excel/*` to `domain/*` with no logic changes:
+These pure functions moved from the Excel edition's `excel/*` to `domain/*` with no logic changes, and from there to `shared/src/*` (the `@ledger/shared` workspace, which the server imports by package name: `@ledger/shared/emiMath`). `shared/src/errors.ts` holds `LedgerError`. Nothing under `shared/src` may use `process`, Node modules or the DOM; `shared/tsconfig.json` enforces that.
 
 - `dateMath.ts`: `daysInMonth`, `clampDay`, `makeDate`, `addMonths`, `addYears`, `formatDate`, `parseDate`, `startOfDay`
 - `emiMath.ts`: `withComputed`, `countDueDatesPassed`, `nextDueDateAfter`, `dueDateOnOrAfter`, `nthFutureDueDate`, `computeOutstandingPrincipal`, `computeForeclosurePayoff`, plus the projection simulation behind `emiMonthlyProjection`, `resolveUntilTarget`, `settleEmiPayment` (the recordEmiPayment rule), `projectEmiMonthly`, `round2`
@@ -195,17 +199,24 @@ These pure functions moved from the Excel edition's `excel/*` to `domain/*` with
 - `creditCardMath.ts`: `summarize` (per-month due/paid/outstanding totals)
 - `categoryColors.ts`: `deriveForegroundColor`, `DEFAULT_CATEGORIES` (seed data)
 
-`today.ts` replaces every bare `new Date()` used as "today" ([ADR-0005](../adr/0005-explicit-app-timezone.md)):
+"Today" replaces every bare `new Date()` used as "today" ([ADR-0005](../adr/0005-explicit-app-timezone.md)). The shared function takes the zone explicitly; the server's `server/src/today.ts` supplies `APP_TIMEZONE`:
 
 ```ts
-export function todayInAppZone(now = new Date(), tz = process.env.APP_TIMEZONE || "Asia/Kolkata"): Date {
-  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
-    .format(now).split("-").map(Number);
-  return new Date(y, m - 1, d); // local-midnight Date for that calendar day, matching dateMath's conventions
+// shared/src/today.ts: both arguments required, no default zone
+export function todayInAppZone(now: Date, timeZone: string): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  return new Date(get("year"), get("month") - 1, get("day")); // local-midnight Date for that calendar day, matching dateMath's conventions
+}
+
+// server/src/today.ts
+export const DEFAULT_TIMEZONE = "Asia/Kolkata";
+export function appToday(now: Date = new Date()): Date {
+  return todayInAppZone(now, process.env.APP_TIMEZONE || DEFAULT_TIMEZONE);
 }
 ```
 
-Functions that already accept an injectable `today` parameter keep it, so tests stay deterministic.
+The store functions default their `today` parameter to `appToday()`, so tests can inject a fixed day. The shared domain functions (`emiMath`'s `withComputed` and `projectEmiMonthly`, `subscriptionMath`'s `withComputed`) take `today` as a required argument, so shared code never falls back to a server-only zone.
 
 ## 4. Data access
 

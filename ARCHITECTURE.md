@@ -69,8 +69,8 @@ serving the client.
    matching `server/src/store/*.ts` function. It has no business logic.
 5. The store module validates input (`store/validate.ts`), runs its SQL,
    and for any multi-statement write wraps it in `withTransaction`
-   (`db/tx.ts`). Calculations come from the pure `server/src/domain/*`
-   functions.
+   (`db/tx.ts`). Calculations come from the pure `shared/src/*` functions
+   (`@ledger/shared`).
 6. The response is plain JSON. Errors are a `LedgerError(message, status)`
    thrown from anywhere below the routes, turned into `{ error }` by one
    error handler in `app.ts`. Database refusals that slip past validation
@@ -91,7 +91,8 @@ loudly instead of per request.
 | `routes.ts` | The route table ([LLD §5](docs/architecture/LLD.md#5-api-contract)), input coercion only. |
 | `auth.ts` | `readAuthConfig` (startup checks) and `requireOwner` (bearer JWT, `ES256`/`RS256`/`EdDSA` only, `iss`/`aud`/`exp` checks, owner email). |
 | `modules.ts` | `ENABLED_MODULES` parsing, the route → module map, the disabled-module 404. |
-| `errors.ts`, `dbErrors.ts` | `LedgerError`; SQLSTATE → client error mapping. |
+| `dbErrors.ts` | SQLSTATE → client error mapping (as a `LedgerError`, from `@ledger/shared/errors`). |
+| `today.ts` | `appToday()`: the current day in `APP_TIMEZONE` (`DEFAULT_TIMEZONE`, `Asia/Kolkata`, when unset), through the shared `todayInAppZone`. The server's only `APP_TIMEZONE` read. |
 | `db/client.ts` | The postgres.js client: lazy, one connection per process or function instance, `prepare: false` for the transaction pooler, and type parsers keeping `date` as `YYYY-MM-DD` strings and `numeric`/`int8` as numbers. |
 | `db/tx.ts` | `withTransaction(fn)`. |
 | `store/ledger.ts` | Expenses: `listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`, `yearSummary` (category totals per month), `isMonthLocked`/`setMonthLocked`. Every write checks the month lock inside its transaction under a per-month advisory lock. |
@@ -103,7 +104,23 @@ loudly instead of per request.
 | `store/subscriptions.ts` | Recurring subscriptions. |
 | `store/overview.ts` | Read-only aggregation for the Dashboard (Net Worth, Upcoming, EMI-free date), reading only enabled modules' stores. Never writes. |
 | `store/validate.ts` | Shared input checks matching the schema's bounds. |
-| `domain/*.ts` | Pure calculations, no I/O: `dateMath`, `emiMath`, `subscriptionMath`, `financeMath`, `creditCardMath`, `categoryColors`, and `today.ts` (`todayInAppZone`). |
+
+## Shared domain package (`shared/src/`, `@ledger/shared`)
+
+A workspace package with no build step: it exports its TypeScript source
+(`"./*": "./src/*.ts"`), which `tsx`, vitest and Netlify's esbuild load
+directly (the compiled server starts with `node --import tsx` for the same
+reason). Server code imports it by package name only
+(`@ledger/shared/emiMath`), so every runtime loads one `LedgerError` class.
+It is browser-safe, checked by `shared/tsconfig.json` (no DOM, no Node
+types, the client's strict flags) under both the client's and the server's
+TypeScript.
+
+| Module | Responsibility |
+|---|---|
+| `dateMath`, `emiMath`, `subscriptionMath`, `financeMath`, `creditCardMath`, `categoryColors` | Pure calculations, no I/O. Every function that needs "today" takes it as a required argument. |
+| `today.ts` | `todayInAppZone(now, timeZone)`: the calendar day in an explicit zone. No default zone and no `process.env`. |
+| `errors.ts` | `LedgerError(message, status)`. |
 
 ## Design principles
 
@@ -113,9 +130,9 @@ These shaped nearly every feature, and new code should follow them.
 
 Everything that computes (EMI decay, payoff and foreclosure math, renewal
 advance, finance series, card totals, the overview's rules) lives in
-`server/src/domain/` as pure functions over plain values, with "today"
-passed in. SQL and I/O live only in `server/src/store/`. That kept behaviour
-identical through the move from Excel to Postgres (the domain code moved
+`shared/src/` (`@ledger/shared`) as pure functions over plain values, with
+"today" passed in. SQL and I/O live only in `server/src/store/`. That kept
+behaviour identical through the move from Excel to Postgres (the domain code moved
 unchanged and the existing tests became the parity contract), and it's what
 still lets calculation and UI changes cherry-pick between this edition and
 the `personal` (Excel) edition.
@@ -153,8 +170,9 @@ The numbers can never be stale, because there's no stale copy.
 
 ### 5. "Today" is explicit
 
-The function runs in UTC, so every "today" comes from `todayInAppZone()`
-(`APP_TIMEZONE`, default `Asia/Kolkata`) or an injected `today` parameter,
+The function runs in UTC, so every "today" comes from `appToday()`
+(`server/src/today.ts`: `APP_TIMEZONE`, default `Asia/Kolkata`, passed to
+the shared `todayInAppZone(now, timeZone)`) or an injected `today` parameter,
 never a bare `new Date()`
 ([ADR-0005](docs/adr/0005-explicit-app-timezone.md)). Calendar dates are
 `date` columns read back as `YYYY-MM-DD` strings, never JS `Date`s built at
@@ -319,11 +337,13 @@ client/
     format.ts, id.ts, constants.ts   Small shared utilities
 server/
   src/
-    app.ts, index.ts, routes.ts, auth.ts, modules.ts, errors.ts, dbErrors.ts
+    app.ts, index.ts, routes.ts, auth.ts, modules.ts, dbErrors.ts, today.ts
     db/               client.ts, tx.ts
     store/            One module per concern (SQL), plus validate.ts
-    domain/           Pure calculations
-  test/               vitest suites + dbHelpers.ts / ledgerSeed.ts
+  test/               vitest suites (including shared/'s) + dbHelpers.ts / ledgerSeed.ts
+shared/
+  src/                @ledger/shared: pure calculations, todayInAppZone, LedgerError (browser-safe)
+  tsconfig.json       Browser-safety typecheck (no DOM, no Node types)
 netlify/
   functions/api.ts    The API as one Netlify Function
   tsconfig.json       Typecheck-only config for the function
