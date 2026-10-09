@@ -197,6 +197,40 @@ describe("contents client", () => {
     }
   });
 
+  it("types a failure while reading the response body as GitHubNetworkError", async () => {
+    // fetch resolves at the headers; the body stream then fails, as it does
+    // when the 30 s timeout fires mid-download or the connection drops.
+    const failingBody = (err: Error) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"lo'));
+          controller.error(err);
+        },
+      });
+    const breakBody = (pattern: RegExp, err: Error): typeof fetch =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const res = await fake.fetch(input, init);
+        if (!pattern.test(String(input))) return res;
+        return new Response(failingBody(err), { status: res.status, headers: res.headers });
+      }) as typeof fetch;
+
+    const dropped = breakBody(/\/user$/, new TypeError("network error"));
+    const lost = await rejection(getLogin({ token: WRITE, fetch: dropped }));
+    expect(lost).toBeInstanceOf(GitHubNetworkError);
+    expect((lost as GitHubNetworkError).message).toBe("Could not reach GitHub.");
+
+    const sha = await fake.seedFile(REPO, "ledger.json.enc", "x".repeat(1_100_000));
+    const slow = breakBody(new RegExp(`/git/blobs/${sha}$`), new DOMException("The operation timed out.", "TimeoutError"));
+    const timedOut = await rejection(client({ fetch: slow }).readFile());
+    expect(timedOut).toBeInstanceOf(GitHubNetworkError);
+    expect((timedOut as GitHubNetworkError).message).toBe("GitHub did not answer in time.");
+
+    const notJson: typeof fetch = async () => new Response("<html>", { status: 200 });
+    const garbled = await rejection(getLogin({ token: WRITE, fetch: notJson }));
+    expect(garbled).toBeInstanceOf(GitHubError);
+    expect(garbled).not.toBeInstanceOf(GitHubNetworkError);
+  });
+
   it("retries a 401 once with a fresh token when onUnauthorized resolves true", async () => {
     const tokens = ["github_pat_expired", WRITE];
     const tokenSource = vi.fn(async () => tokens.shift() ?? "github_pat_never");

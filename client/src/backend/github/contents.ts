@@ -172,6 +172,25 @@ async function toError(res: Response): Promise<GitHubError> {
   return new GitHubError(res.status, message);
 }
 
+function networkError(err: unknown): GitHubNetworkError {
+  const timedOut = err instanceof Error && err.name === "TimeoutError";
+  return new GitHubNetworkError(timedOut ? "GitHub did not answer in time." : "Could not reach GitHub.");
+}
+
+/** Reads a response body with its failures typed. fetch resolves once the
+ * headers arrive, and the request's timeout signal also aborts the body,
+ * so a timeout or a dropped connection mid-download rejects here rather
+ * than in fetch: it is still GitHubNetworkError. A body that isn't JSON is
+ * a plain GitHubError. */
+async function readBody<T>(res: Response, read: (res: Response) => Promise<T>): Promise<T> {
+  try {
+    return await read(res);
+  } catch (err) {
+    if (err instanceof SyntaxError) throw new GitHubError(res.status, "GitHub sent a response that isn't valid JSON.");
+    throw networkError(err);
+  }
+}
+
 function createTransport({ token, apiBase = DEFAULT_API_BASE, fetch: fetchFn = globalThis.fetch, onUnauthorized }: TransportOptions) {
   const tokenSource = typeof token === "string" ? () => Promise.resolve(token) : token;
   const base = apiBase.replace(/\/+$/, "");
@@ -196,8 +215,7 @@ function createTransport({ token, apiBase = DEFAULT_API_BASE, fetch: fetchFn = g
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (err) {
-      const timedOut = err instanceof Error && err.name === "TimeoutError";
-      throw new GitHubNetworkError(timedOut ? "GitHub did not answer in time." : "Could not reach GitHub.");
+      throw networkError(err);
     }
     const expiration = res.headers.get("github-authentication-token-expiration");
     if (expiration) state.tokenExpiresAt = parseExpiration(expiration);
@@ -221,7 +239,7 @@ function createTransport({ token, apiBase = DEFAULT_API_BASE, fetch: fetchFn = g
  * JSON body of a successful one. */
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) throw await toError(res);
-  return (await res.json()) as T;
+  return readBody(res, (r) => r.json() as Promise<T>);
 }
 
 // --- API ----------------------------------------------------------------------
@@ -275,7 +293,7 @@ export function createGitHubClient({ owner, repo, path = DEFAULT_PATH, ...transp
   async function readBlob(sha: string): Promise<string> {
     const res = await send("GET", `${repoPath}/git/blobs/${encodeURIComponent(sha)}`, { accept: RAW_ACCEPT });
     if (!res.ok) throw await toError(res);
-    return new TextDecoder().decode(await res.arrayBuffer());
+    return new TextDecoder().decode(await readBody(res, (r) => r.arrayBuffer()));
   }
 
   return {
