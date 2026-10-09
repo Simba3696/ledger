@@ -60,7 +60,7 @@ async function populate(backend: LedgerBackend) {
   const b = await backend.addEntry(entry("Bus", 1.005));
   await backend.setMonthIncome(2026, 5, { salary: 50000.555, otherIncome: -0.5, savings: [{ name: "Fund A", amount: 1000.1 }] });
   const debt = await backend.addDebt({ name: "Alex", amount: -1.005 });
-  const emi = await backend.addEmi({ ...emiEdits, interestRate: 12.0005 });
+  const emi = await backend.addEmi({ ...emiEdits, interestRate: 12.0005, foreclosureCharge: 99.9995 });
   const sub = await backend.addSubscription(subscription);
   await backend.setMonthBills(2026, 5, [{ name: "Card A", due: 900.999, paid: 0.1, dueDate: "2026-05-25", settled: false }]);
   return { a, b, debt, emi, sub };
@@ -192,10 +192,13 @@ describe("DocumentBackend writes", () => {
       ...Object.values(doc.financeMonths).flatMap((m) => [m.salary, m.otherIncome, ...m.savings.map((s) => s.amount)]),
     ];
     for (const value of money) expect(value).toMatch(/^-?\d+\.\d{2}$/);
-    for (const r of doc.emis) expect(r.interestRate).toMatch(/^\d+\.\d{3}$/);
+    const rates = doc.emis.flatMap((r) => [r.interestRate, r.foreclosureCharge]).filter((value) => value !== null);
+    expect(rates).toHaveLength(2);
+    for (const value of rates) expect(value).toMatch(/^\d+\.\d{3}$/);
     expect(doc.expenses[monthKey(2026, 5)][1].amount).toBe("1.01");
     expect(doc.debts[0].amount).toBe("-1.01");
     expect(doc.emis[0].interestRate).toBe("12.001");
+    expect(doc.emis[0].foreclosureCharge).toBe("100.000");
     expect(doc.financeMonths[monthKey(2026, 5)]).toEqual({ salary: "50000.56", otherIncome: "-0.50", savings: [{ name: "Fund A", amount: "1000.10" }] });
     expect(doc.cardBills[monthKey(2026, 5)][0].due).toBe("901.00");
   });
