@@ -1,0 +1,24 @@
+{
+  // Typechecks the backend parity suite, which reaches both the server
+  // (createApp, dbHelpers) and the client's DocumentBackend, whose type graph
+  // includes client/src/api.ts. So it resolves like the client (bundler, DOM,
+  // vite/client) instead of server/tsconfig.json's NodeNext, which excludes
+  // this folder. Run with the client's TypeScript:
+  // `cd client && npx tsc -p ../server/test/parity/tsconfig.json`.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node", "vite/client"],
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["."]
+}
