@@ -261,17 +261,30 @@ describe("contents client", () => {
     await expect(getLogin({ token: "github_pat_expired", fetch: fake.fetch })).rejects.toBeInstanceOf(GitHubAuthError);
   });
 
-  it("getLogin needs only a token, and reports the token expiry", async () => {
-    expect(await getLogin({ token: WRITE, fetch: fake.fetch })).toEqual({ login: "alex", tokenExpiresAt: EXPIRES });
-    expect(await getLogin({ token: NO_EXPIRY, fetch: fake.fetch })).toEqual({ login: "alex", tokenExpiresAt: null });
-    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /user", "GET /user"]);
+  it("getLogin needs only a token; the token expiry is null in a browser", async () => {
+    // As a browser sees api.github.com: CORS hides the expiration header.
+    expect(await getLogin({ token: WRITE, fetch: fake.fetch })).toEqual({ login: "alex", tokenExpiresAt: null });
+    expect(fake.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /user"]);
     await expect(getLogin({ token: "github_pat_unknown", fetch: fake.fetch })).rejects.toBeInstanceOf(GitHubAuthError);
-
     const gh = client();
-    expect(gh.tokenExpiresAt).toBeNull();
     await gh.verifyRepo();
-    expect(gh.tokenExpiresAt).toBe(EXPIRES);
-    expect(client({ token: NO_EXPIRY }).tokenExpiresAt).toBeNull();
+    expect(gh.tokenExpiresAt).toBeNull();
+
+    // Outside a browser the header is readable, and parsed.
+    const direct = createFakeGitHub({
+      cors: false,
+      repos: [{ owner: "alex", name: "ledger-data", private: true }],
+      tokens: {
+        [WRITE]: { login: "alex", repos: [REPO], permission: "write", expiresAt: EXPIRES },
+        [NO_EXPIRY]: { login: "alex", repos: [REPO], permission: "write" },
+      },
+    });
+    expect(await getLogin({ token: WRITE, fetch: direct.fetch })).toEqual({ login: "alex", tokenExpiresAt: EXPIRES });
+    expect(await getLogin({ token: NO_EXPIRY, fetch: direct.fetch })).toEqual({ login: "alex", tokenExpiresAt: null });
+    const directClient = client({ fetch: direct.fetch });
+    expect(directClient.tokenExpiresAt).toBeNull();
+    await directClient.verifyRepo();
+    expect(directClient.tokenExpiresAt).toBe(EXPIRES);
   });
 
   it("reads a file a wrong passphrase can't decrypt without writing anything", async () => {

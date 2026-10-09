@@ -11,6 +11,12 @@ import { base64ToBytes, bytesToBase64 } from "../base64";
 // and any request it doesn't model fails with 501 and is recorded in
 // `unhandled`. Tokens are an allow-list. Shas are real git blob SHA-1s, and
 // contents come back as base64 with a newline every 60 characters.
+//
+// By default responses carry only the headers a browser on another origin
+// can read: the CORS-safelisted ones plus GitHub's
+// Access-Control-Expose-Headers list, so code under test can't come to
+// depend on a header the browser would hide. `cors: false` shows every
+// header, as outside a browser.
 
 export interface FakeRepo {
   owner: string;
@@ -24,7 +30,8 @@ export interface FakeToken {
   repos: string[];
   permission: "read" | "write";
   /** ISO time the token expires. Sent as GitHub's
-   * github-authentication-token-expiration header; after it, 401. */
+   * github-authentication-token-expiration header (which CORS hides from a
+   * browser); after it, 401. */
   expiresAt?: string;
 }
 
@@ -70,6 +77,49 @@ export interface FakeGitHub {
   /** The file as stored now, or null. */
   file(repo: string, path: string): { text: string; sha: string } | null;
   failNext(failure: FakeFailure): void;
+}
+
+/** Response headers a cross-origin page can read from api.github.com: the
+ * CORS-safelisted response headers, plus GitHub's
+ * Access-Control-Expose-Headers as api.github.com sent it in October 2026. */
+const BROWSER_VISIBLE_HEADERS = new Set(
+  [
+    "Cache-Control",
+    "Content-Language",
+    "Content-Length",
+    "Content-Type",
+    "Expires",
+    "Last-Modified",
+    "Pragma",
+    "ETag",
+    "Link",
+    "Location",
+    "Retry-After",
+    "X-GitHub-OTP",
+    "X-RateLimit-Limit",
+    "X-RateLimit-Remaining",
+    "X-RateLimit-Used",
+    "X-RateLimit-Resource",
+    "X-RateLimit-Reset",
+    "X-OAuth-Scopes",
+    "X-Accepted-OAuth-Scopes",
+    "X-Poll-Interval",
+    "X-GitHub-Media-Type",
+    "X-GitHub-SSO",
+    "X-GitHub-Request-Id",
+    "Deprecation",
+    "Sunset",
+    "Warning",
+  ].map((name) => name.toLowerCase()),
+);
+
+/** The response as a browser's fetch shows it across origins. */
+function asBrowserSeesIt(res: Response): Response {
+  const headers = new Headers();
+  res.headers.forEach((value, name) => {
+    if (BROWSER_VISIBLE_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+  });
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
 /** GitHub's contents API stops inlining file content above 1 MB. */
@@ -138,7 +188,8 @@ export function createFakeGitHub({
   apiBase = "https://api.github.com",
   repos = [],
   tokens = {},
-}: { apiBase?: string; repos?: FakeRepo[]; tokens?: Record<string, FakeToken> } = {}): FakeGitHub {
+  cors = true,
+}: { apiBase?: string; repos?: FakeRepo[]; tokens?: Record<string, FakeToken>; cors?: boolean } = {}): FakeGitHub {
   const base = apiBase.replace(/\/+$/, "");
   const repoStates = new Map<string, RepoState>();
   const grants = new Map<string, FakeToken>();
@@ -349,8 +400,8 @@ export function createFakeGitHub({
     const request = await record(input, init);
     const failure = takeFailure(request.method);
     if (failure && "network" in failure) throw new TypeError("Failed to fetch");
-    if (failure) return failureResponse(failure);
-    return handle(request);
+    const res = failure ? failureResponse(failure) : await handle(request);
+    return cors ? asBrowserSeesIt(res) : res;
   };
 
   return {

@@ -129,7 +129,12 @@ interface TransportOptions {
 }
 
 /** GitHub's `github-authentication-token-expiration` header, for example
- * `2026-11-01 12:00:00 UTC` or `2026-11-01 12:00:00 +0200`, as ISO. */
+ * `2026-11-01 12:00:00 UTC` or `2026-11-01 12:00:00 +0200`, as ISO.
+ *
+ * Best-effort only. api.github.com is cross-origin to the app, and GitHub's
+ * Access-Control-Expose-Headers list doesn't include this header, so a
+ * browser hides it and the expiry stays null there. It is read anyway for
+ * callers outside a browser, and in case GitHub ever exposes it. */
 function parseExpiration(value: string | null): string | null {
   if (!value) return null;
   const m = value.trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})\s*(UTC|Z|[+-]\d{2}:?\d{2})?$/);
@@ -245,8 +250,10 @@ async function json<T>(res: Response): Promise<T> {
 // --- API ----------------------------------------------------------------------
 
 /** Who the token belongs to, before the owner and repo are known. `login`
- * is later written as `updatedBy`; `tokenExpiresAt` is the token's expiry
- * (ISO), or null when it has none. */
+ * is later written as `updatedBy`. `tokenExpiresAt` is the token's expiry
+ * (ISO) when GitHub's expiration header could be read, else null: always
+ * null in a browser, which CORS keeps from seeing that header. Null does
+ * not mean the token never expires. */
 export async function getLogin(options: {
   token: TokenSource;
   apiBase?: string;
@@ -265,7 +272,9 @@ export interface GitHubClientOptions extends TransportOptions {
 }
 
 export interface GitHubClient {
-  /** The last token expiry GitHub reported (ISO), or null when it sent none. */
+  /** The last token expiry read from GitHub's expiration header (ISO), or
+   * null when none could be read. Best-effort: always null in a browser,
+   * because GitHub's CORS policy doesn't expose that header. */
   readonly tokenExpiresAt: string | null;
   /** Checks the repo exists, the token reaches it, and it is private. */
   verifyRepo(): Promise<void>;

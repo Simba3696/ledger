@@ -22,8 +22,10 @@ export interface StoredKey {
 }
 
 /** How this device reaches the data file. `kind: "pat"` is a pasted
- * fine-grained token (`expiresAt` from GitHub's token-expiration header);
- * `kind: "app"` is a GitHub App user token with its refresh fields. */
+ * fine-grained token; `kind: "app"` is a GitHub App user token with its
+ * refresh fields. `expiresAt` is optional: a browser can't read GitHub's
+ * token-expiration header (CORS doesn't expose it), so it is set only when
+ * the expiry is known another way, such as an App token's `expires_in`. */
 export interface Connection {
   kind: "pat" | "app";
   token: string;
