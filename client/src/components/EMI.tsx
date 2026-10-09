@@ -3,7 +3,7 @@ import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../ap
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
 import { LoadingOverlay } from "./LoadingOverlay";
-import { confirmDialog, promptDialog } from "./Dialog";
+import { confirmDialog, promptDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./EMI.css";
 

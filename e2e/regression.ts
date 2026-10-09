@@ -945,11 +945,11 @@ async function main() {
       (await page.locator(".emi-row", { hasText: "E2E Coral" }).locator(".emi-progress-label").innerText()) === "83% paid",
     );
 
-    // The dialog's input opens pre-filled with the EMI amount (Dialog.tsx's
-    // defaultValue) — explicitly clearing it before confirming exercises a
-    // real bug found via this exact test: Number("") is 0, so without an
-    // explicit blank-input guard, this would have silently recorded a
-    // "paid ₹0" instead of a no-op.
+    // The dialog's input opens pre-filled with the EMI amount (promptDialog's
+    // defaultValue, in dialogs.ts) — explicitly clearing it before
+    // confirming exercises a real bug found via this exact test: Number("")
+    // is 0, so without an explicit blank-input guard, this would have
+    // silently recorded a "paid ₹0" instead of a no-op.
     await clickMenuItem(page.locator(".emi-row", { hasText: "E2E Coral" }), "Record payment");
     await fillAndAcceptPrompt("");
     await page.waitForTimeout(400);

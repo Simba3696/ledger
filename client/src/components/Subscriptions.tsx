@@ -3,7 +3,7 @@ import { addSubscription, deleteSubscription, getSubscriptions, type Subscriptio
 import { SubscriptionRow } from "./SubscriptionRow";
 import { EditSubscriptionRow } from "./EditSubscriptionRow";
 import { LoadingOverlay } from "./LoadingOverlay";
-import { confirmDialog } from "./Dialog";
+import { confirmDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./Subscriptions.css";
 
