@@ -4,7 +4,7 @@ import { addEntry, deleteEntry, moveEntry } from "../api";
 import { EditEntryRow } from "./EditEntryRow";
 import { EntryRow } from "./EntryRow";
 import { LoadingOverlay } from "./LoadingOverlay";
-import { confirmDialog } from "./Dialog";
+import { confirmDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./RecentEntries.css";
 

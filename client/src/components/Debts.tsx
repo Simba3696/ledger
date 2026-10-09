@@ -4,7 +4,7 @@ import { DebtRow } from "./DebtRow";
 import { EditDebtRow } from "./EditDebtRow";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { SignedAmountInput } from "./SignedAmountInput";
-import { confirmDialog } from "./Dialog";
+import { confirmDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./Debts.css";
 
