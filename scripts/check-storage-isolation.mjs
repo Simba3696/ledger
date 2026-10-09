@@ -24,6 +24,8 @@ const FORBIDDEN_IN_DEFAULT = [
   'AES-GCM',
   'ledger.json.enc',
   'DocumentBackend',
+  'PBKDF2',
+  'ledger:github',
 ]
 
 // No file in the default build may have these in its name.
@@ -31,7 +33,7 @@ const FORBIDDEN_IN_DEFAULT_FILE_NAMES = ['github', 'DocumentBackend']
 
 // Literals the GitHub build must contain (client/src/backend/github), behind
 // the dynamic import: present in a non-entry chunk, absent from the entry.
-const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com']
+const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com', 'PBKDF2', 'ledger:github']
 
 // The one file allowed to import() GitHub-mode code.
 const MOUNT_FILE = 'main.tsx'
