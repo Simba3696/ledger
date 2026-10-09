@@ -516,7 +516,8 @@ describe("document parity: emi", () => {
 
   parity("clamps the projection's month count as routes.ts does", { emis: [coral] }, async (b, { at }) => {
     at("2026-01-01");
-    for (const count of [0, -5, 1000, 2.5, Number.NaN]) await b.getEmiMonthlyProjection(months(count));
+    // 1e21 stringifies as "1e+21"; the query parser reads its "+" as a space.
+    for (const count of [0, -5, 1000, 2.5, Number.NaN, 1e21]) await b.getEmiMonthlyProjection(months(count));
     await b.getEmiMonthlyProjection("abc" as unknown as EmiProjectionScale);
     await b.getEmiMonthlyProjection(12);
   });

@@ -100,9 +100,11 @@ export function paymentAmount(body: Record<string, unknown>): number {
 }
 
 // routes.ts:352-358: the `months` query string, "auto" or a count clamped to
-// 1-600 the way a stored Duration is.
+// 1-600 the way a stored Duration is. HttpBackend sends `?months=${months}`
+// unencoded and Express's query parser decodes "+" as a space, so an
+// exponent form such as "1e+21" reaches the route as "1e 21" (NaN, so 1).
 export function projectionMonths(months: unknown): number | "auto" {
-  const raw = String(months);
+  const raw = String(months).replace(/\+/g, " ");
   return raw === "auto" ? "auto" : Math.min(600, Math.max(1, Number(raw) || 1));
 }
 
