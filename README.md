@@ -588,6 +588,7 @@ Typechecks:
 (cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy readers
 (cd client && npx tsc -p ../shared/tsconfig.json)        # shared/ is browser-safe (client's TypeScript)
 (cd server && npx tsc -p ../shared/tsconfig.json)        # ...and under the server's
+(cd client && npx tsc -p ../server/test/parity/tsconfig.json)  # the backend parity suite
 ```
 
 Run the server checks from `server/` so they use the server's own

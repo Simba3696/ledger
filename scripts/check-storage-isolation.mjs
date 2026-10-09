@@ -26,6 +26,7 @@ const FORBIDDEN_IN_DEFAULT = [
   'DocumentBackend',
   'PBKDF2',
   'ledger:github',
+  'ledger:document-backend',
 ]
 
 // No file in the default build may have these in its name.
@@ -33,7 +34,7 @@ const FORBIDDEN_IN_DEFAULT_FILE_NAMES = ['github', 'DocumentBackend']
 
 // Literals the GitHub build must contain (client/src/backend/github), behind
 // the dynamic import: present in a non-entry chunk, absent from the entry.
-const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com', 'PBKDF2', 'ledger:github']
+const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com', 'PBKDF2', 'ledger:github', 'ledger:document-backend']
 
 // GitHub Pages can't send headers, so the GitHub build carries its
 // Content-Security-Policy as a meta tag (client/vite.config.ts). The default

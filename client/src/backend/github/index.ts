@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import * as encryption from '../crypto'
 import * as contents from './contents'
 import * as deviceStore from './deviceStore'
+import { createEmptyDocument } from '../document/createDocument'
+import { DocumentBackend } from '../document/DocumentBackend'
 
 // Entry point of the GitHub storage build (ADR-0007), reached only through
 // the dynamic import in main.tsx. Everything GitHub-mode-only hangs off
@@ -25,6 +27,10 @@ export const DEFAULT_REPO_NAME = 'ledger-data'
 // control that GitHub-mode code is present here and absent from the default
 // build.
 export function startGithubStorage(rootEl: HTMLElement): void {
+  // The document store the sync host (#7) will put behind api.ts, named here
+  // like the modules above so it ships in this lazy chunk, with the
+  // ledger:document-backend tag check:isolation looks for.
+  const documentStorage = { DocumentBackend, createEmptyDocument }
   document.documentElement.dataset.storage = 'github'
   createRoot(rootEl).render(
     createElement(
@@ -36,7 +42,7 @@ export function startGithubStorage(rootEl: HTMLElement): void {
           'data-api': GITHUB_API_BASE,
           'data-repo': DEFAULT_REPO_NAME,
           'data-file': DATA_FILE_NAME,
-          'data-modules': Object.keys(githubStorageModules).join(' '),
+          'data-modules': [...Object.keys(githubStorageModules), ...Object.keys(documentStorage)].join(' '),
         },
         'GitHub storage mode is not set up yet',
       ),

@@ -11,5 +11,6 @@
     "outDir": "dist",
     "resolveJsonModule": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "exclude": ["test/parity"]
 }

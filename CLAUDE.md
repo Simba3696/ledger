@@ -71,6 +71,7 @@ npx supabase migration new <name>                       # new schema change (nev
 (cd server && npx tsc -p ../scripts/legacy-excel/tsconfig.json)  # the importer + legacy Excel readers
 (cd client && npx tsc -p ../shared/tsconfig.json)       # shared/ is browser-safe, under the client's TypeScript
 (cd server && npx tsc -p ../shared/tsconfig.json)       # ...and under the server's
+(cd client && npx tsc -p ../server/test/parity/tsconfig.json)  # the backend parity suite (client + server sources)
 npm run lint                                            # oxlint on client/, server/ and shared/
 npm run knip                                            # unused files, exports and dependencies
 ```
