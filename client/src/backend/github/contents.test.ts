@@ -22,7 +22,10 @@ const REPO = "alex/ledger-data";
 const WRITE = "github_pat_write";
 const READ = "github_pat_read";
 const NO_EXPIRY = "github_pat_noexpiry";
-const EXPIRES = "2026-12-31T23:59:00.000Z";
+// A year from now, in whole seconds so it survives GitHub's header format.
+// A fixed date would turn every test using these tokens into a 401 once it
+// passed.
+const EXPIRES = new Date(Math.floor(Date.now() / 1000 + 365 * 86_400) * 1000).toISOString();
 
 let fake: FakeGitHub;
 
@@ -196,6 +199,12 @@ describe("contents client", () => {
     await expect(declined.readFile()).rejects.toBeInstanceOf(GitHubAuthError);
     await expect(client({ token: "github_pat_revoked" }).readFile()).rejects.toBeInstanceOf(GitHubAuthError);
     expect(fake.requests).toHaveLength(2);
+  });
+
+  it("answers 401 for a token past its expiry", async () => {
+    fake.setToken("github_pat_expired", { login: "alex", repos: [REPO], permission: "write", expiresAt: "2020-01-01T00:00:00.000Z" });
+    await expect(client({ token: "github_pat_expired" }).readFile()).rejects.toBeInstanceOf(GitHubAuthError);
+    await expect(getLogin({ token: "github_pat_expired", fetch: fake.fetch })).rejects.toBeInstanceOf(GitHubAuthError);
   });
 
   it("getLogin needs only a token, and reports the token expiry", async () => {
