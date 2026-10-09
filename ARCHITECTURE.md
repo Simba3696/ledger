@@ -53,8 +53,10 @@ serving the client.
 ## Request lifecycle
 
 1. A component calls a typed function from `client/src/api.ts` (e.g.
-   `getEmis()`, `setMonthBills(...)`). This is the *only* place the client
-   knows about HTTP. Its shared `request()` reads the current Supabase
+   `getEmis()`, `setMonthBills(...)`), which delegates to a `LedgerBackend`
+   (`client/src/backend/LedgerBackend.ts`). The Supabase build's only
+   backend is `httpBackend` (`backend/HttpBackend.ts`), the *only* place the
+   client knows about HTTP. Its shared `request()` reads the current Supabase
    session on every call (refreshing the access token near expiry) and adds
    `Authorization: Bearer <access_token>`.
 2. Netlify rewrites `/api/*` to the `api` function (`netlify.toml`), which is
@@ -233,9 +235,14 @@ has the full table. The differences:
   month/year-scoped (Expenses, Finances, Credit Cards: `year`/`month` live in
   `App.tsx` and are passed down, since `MonthYearPicker` drives all three).
 - **`api.ts`** is the single boundary to the backend: every exported
-  function makes one request and returns a typed result. A non-2xx response
-  throws an `ApiError` carrying its `status`. Components never build a URL
-  or call `fetch` themselves.
+  function makes one call and returns a typed result. Each is a one-line
+  delegate to a `LedgerBackend` (`backend/LedgerBackend.ts`, one method per
+  export, same signatures; defaults such as `getEmiMonthlyProjection`'s
+  `months = 12` stay in `api.ts`). The only backend today is `httpBackend`
+  (`backend/HttpBackend.ts`), which holds the URLs and `request()`, the one
+  `fetch` call. A failed call throws an `ApiError` (`backend/ApiError.ts`,
+  re-exported by `api.ts`) carrying its `status`. Components never build a
+  URL or call `fetch` themselves.
 - **Component shape**: most tabs follow the same pattern: `<Tab>.tsx`
   (fetch + state + form), `<Item>Row.tsx` (display), `Edit<Item>Row.tsx`
   (inline edit, swapped in for the row being edited). Row actions go through
@@ -278,8 +285,8 @@ has the full table. The differences:
 
 ## Testing
 
-All of it runs against the local Supabase stack in Docker; nothing touches
-a hosted project. [LLD §10](docs/architecture/LLD.md#10-testing) has the
+The server and e2e suites run against the local Supabase stack in Docker;
+nothing touches a hosted project. The client unit tests need neither. [LLD §10](docs/architecture/LLD.md#10-testing) has the
 full coverage list, and README's **Testing** section the commands.
 
 - **`server/test/*.test.ts` (vitest)**: domain unit tests with no database;
@@ -288,6 +295,11 @@ full coverage list, and README's **Testing** section the commands.
   `dbHelpers.ts` refuses any non-local host); schema constraint tests;
   `api.test.ts` with supertest on `createApp()` and a test-generated ES256
   key pair injected as the JWKS.
+- **`client/src/**/*.test.ts` (vitest, `npm run test:client`)**: client
+  unit tests in a node environment, no database or browser.
+  `backend/HttpBackend.test.ts` stubs `fetch` and pins the exact request
+  every `api.ts` function sends, plus `request()`'s auth and error paths.
+  The root `npm test` stays the server suite.
 - **`e2e/regression.ts` and `e2e/expensesOnly.ts` (Playwright, plain
   scripts)**: reset the local database (`e2e/localDb.ts`, local hosts only),
   start the dev server on this checkout's ports (`e2e/devServer.ts`), sign
@@ -330,7 +342,9 @@ unaware second checkout would otherwise kill the first one's server. Both
 ```
 client/
   src/
-    api.ts            Every backend call, typed, with the bearer token: the only fetch() boundary
+    api.ts            Every backend call, typed; delegates to a LedgerBackend
+    backend/          LedgerBackend.ts (the interface), HttpBackend.ts (REST API + bearer token:
+                      the only fetch() boundary), ApiError.ts; github/ is GitHub storage mode (ADR-0007)
     App.tsx           Session gate, config load, tab state, top-level layout
     auth/             supabase.ts, session.ts, SignIn.tsx, SignOutButton.tsx
     components/       One flat set of .tsx + co-located .css
