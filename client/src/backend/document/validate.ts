@@ -217,6 +217,18 @@ export function validateEmiPayment(amountPaid: number): void {
   }
 }
 
+/** The balance a payment is about to store, held to the bound every local
+ * amount passes (numeric(14,2)). The payment computes it from stored
+ * values, and a remote op may store any 15-digit amount, of either sign (a
+ * negative EMI amount is added back for each passed due date): a balance
+ * past the bound is refused with a 400 and the document untouched, instead
+ * of a 500 from the diff. Editing the EMI fixes it. */
+export function validateEmiBalance(remaining: number): void {
+  if (!Number.isFinite(remaining) || Math.round(Math.abs(remaining) * 100) >= MONEY_LIMIT_CENTS) {
+    throw new LedgerError("Remaining after this payment is too large; edit the EMI", 400);
+  }
+}
+
 /** `date` as the EMI write path stores it. A payment settles the first due
  * date after the stored asOfDate, so an asOfDate late in 9999 (which a remote
  * op may set) would move to year 10000, which no stored date can hold: that
