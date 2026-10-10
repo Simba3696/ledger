@@ -102,7 +102,17 @@ export function createOrderKey(L: number, device: string): string {
  * index, or "1.", a 16-digit L and a device id. Other text could sort
  * after the key the next local create gets, and the diff, which lists a new
  * record last as push() does, would then refuse every later add to that
- * list. */
+ * list. The shape alone is not enough: see orderKeyNames. */
 export function isOrderKey(value: unknown): value is string {
   return typeof value === "string" && (/^0\.[0-9a-z]{6,57}$/.test(value) || /^1\.\d{16}\.d[0-9a-f]{16}$/.test(value));
+}
+
+/** Whether order key `key` (one isOrderKey accepts) may be set by a write
+ * at `L`: a genesis index always, a create's key only if it names that L.
+ * A key naming a greater L (or one past 2^50) would sort after the key the
+ * next local create gets, as above. The device is not bound, because a
+ * rehome re-issues a create under a new device id with its original L
+ * (design section 10.3). */
+export function orderKeyNames(key: string, L: number): boolean {
+  return !key.startsWith("1.") || key.slice(2, 18) === String(L).padStart(16, "0");
 }

@@ -12,7 +12,7 @@ import {
 } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { isEpochKey, parseRepoFileName, type RepoFile } from "./epoch";
-import { CREATE, FIELDS, STAMP, TOGETHER, isOrderKey, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
+import { CREATE, FIELDS, STAMP, TOGETHER, isOrderKey, orderKeyNames, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
 import { emptyState, type Op, type Register, type SyncState } from "./state";
 import { compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
 
@@ -59,14 +59,16 @@ const FIELD_CHECKS: { readonly [C in Coll]: Record<string, Check> } = {
   sub: RECORD_FIELDS.subscriptions,
 };
 
-/** Whether `value` may be held by the register `key` names. */
-function isRegisterValue(key: RegisterKey, value: unknown): boolean {
+/** Whether `value` may be held by the register `key` names, when a write
+ * at `L` set it (a create's order key must name that L). */
+function isRegisterValue(key: RegisterKey, value: unknown, L: number): boolean {
   switch (key.kind) {
     case "field": {
       if (!isPlainObject(value) && (key.field === CREATE || key.field === STAMP)) return false;
       const object = value as Record<string, unknown>;
       if (key.field === CREATE) {
-        return key.coll === "e" ? hasKeys(object, ["m"]) && isMonthKey(object.m) : hasKeys(object, ["o"]) && isOrderKey(object.o);
+        if (key.coll === "e") return hasKeys(object, ["m"]) && isMonthKey(object.m);
+        return hasKeys(object, ["o"]) && isOrderKey(object.o) && orderKeyNames(object.o, L);
       }
       if (key.field === STAMP) return hasKeys(object, ["at", "by"]) && isRecordStamp(object.at, object.by);
       return FIELD_CHECKS[key.coll][key.field](value);
@@ -127,7 +129,7 @@ export function opProblem(value: unknown): string | null {
     const parsed = parseRegisterKey(key);
     if (!parsed) return `op sets an unknown register: ${key}`;
     if (parsed.kind === "categories") return "op sets the categories, which only a genesis sets";
-    if (!isRegisterValue(parsed, v)) return `op sets a malformed value for ${key}`;
+    if (!isRegisterValue(parsed, v, value.L as number)) return `op sets a malformed value for ${key}`;
     if (keys.has(key)) return `op sets ${key} twice`;
     keys.add(key);
     if (parsed.kind === "field") {
@@ -234,8 +236,9 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
       const regs = new Map<string, Register>();
       for (const [field, fieldValue] of Object.entries(v)) {
         const parsed = parseRegisterKey(`${key}/${field}`);
-        if (!parsed || !isRegisterValue(parsed, fieldValue)) return `state holds a malformed ${key}/${field}`;
-        regs.set(field, { v: fieldValue, t: tagged((t?.[field] as Tag | undefined) ?? c) });
+        const tag = (t?.[field] as Tag | undefined) ?? c;
+        if (!parsed || !isRegisterValue(parsed, fieldValue, tag[0])) return `state holds a malformed ${key}/${field}`;
+        regs.set(field, { v: fieldValue, t: tagged(tag) });
       }
       if (regs.size === 0) return `state holds ${key} with no registers`;
       if (!createsAreWhole(new Map([[key, new Set(regs.keys())]]))) return `state holds ${key} without all its fields`;
@@ -249,7 +252,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     if (!Array.isArray(entry) || entry.length !== 3 || !isString(entry[0]) || !isTag(entry[2])) return "state unit entry is malformed";
     const [key, unitValue, t] = entry as [string, unknown, Tag];
     const parsed = parseRegisterKey(key);
-    if (!parsed || parsed.kind === "field" || !isRegisterValue(parsed, unitValue)) return `state holds a malformed ${key}`;
+    if (!parsed || parsed.kind === "field" || !isRegisterValue(parsed, unitValue, t[0])) return `state holds a malformed ${key}`;
     if (state.unit.has(key)) return `state holds ${key} twice`;
     state.unit.set(key, { v: unitValue, t: tagged(t) });
   }
