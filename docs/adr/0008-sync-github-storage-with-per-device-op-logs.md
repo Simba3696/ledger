@@ -26,6 +26,7 @@ Format details settled while building the core (stage 1):
 - The structural validator is versioned by the per-file format version `fv`. Within one `fv` it may only be loosened, never tightened.
 - A restore genesis's `basedOn.seen` is the section 9.2 cut exactly as built, `R.seen ∪ {R: R.ownMaxL}`, so an entry may be 0 (a restorer that wrote no op in its epoch). A 0 entry cuts nothing, the same as an absent one. Every other version vector (`vv`, a snap's `seen`) still needs each L ≥ 1.
 - A tag naming the genesis pseudo-device `g` is valid only as `[1, "g"]`. A snap holding `[L, "g"]` with any other L is malformed.
+- Every name in a snap's `joined` map must be a repo file name (`<epochKey>.genesis.enc` or `<epochKey>.<deviceId>.<log|snap>.enc`), with no folder.
 - `DocumentBackend`, `LedgerBackend` and `DocumentHost` do not change. A write that the diff can't represent as an op fails closed, with a 500 and the document untouched, instead of being dropped.
 
 ## Alternatives considered

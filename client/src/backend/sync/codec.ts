@@ -11,7 +11,7 @@ import {
   isWritableDocument,
 } from "../document/validate";
 import { canonicalJson } from "./canonical";
-import { isEpochKey, type RepoFile } from "./epoch";
+import { isEpochKey, parseRepoFileName, type RepoFile } from "./epoch";
 import { CREATE, FIELDS, STAMP, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
 import { emptyState, type Op, type Register, type SyncState } from "./state";
 import { compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
@@ -370,7 +370,9 @@ export function checkRepoFile(name: RepoFile, value: unknown): FileCheck {
   }
   if (!isLamportOrZero(value.through) || !isChain(value.chain)) return malformed("snap header is malformed");
   if (!isVersionVector(value.seen) || !isLamportOrZero(value.maxL)) return malformed("snap seen or maxL is malformed");
-  if (!isPlainObject(value.joined) || !Object.values(value.joined).every(isBlobSha)) return malformed("snap joined is malformed");
+  if (!isPlainObject(value.joined) || !Object.entries(value.joined).every(([file, sha]) => parseRepoFileName(file) !== null && isBlobSha(sha))) {
+    return malformed("snap joined is malformed");
+  }
   const state = decodeState(value.state, value.seen, value.maxL as number);
   if (typeof state === "string") return malformed(state);
   return { ok: true, file: value as unknown as SnapFile, state };
