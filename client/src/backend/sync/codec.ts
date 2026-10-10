@@ -8,6 +8,7 @@ import {
   isMonthKey,
   isRecordId,
   isRecordStamp,
+  isTimeZoneName,
   isWritableDocument,
 } from "../document/validate";
 import { canonicalJson } from "./canonical";
@@ -77,7 +78,7 @@ function isRegisterValue(key: RegisterKey, value: unknown, L: number): boolean {
       if (key.family === "lk") return typeof value === "boolean";
       return value === null || (key.family === "fm" ? isFinanceMonth(value) : isCardBillList(value));
     case "setting":
-      return key.name === "modules" ? isModuleList(value) : isString(value);
+      return key.name === "modules" ? isModuleList(value) : isTimeZoneName(value);
     case "categories":
       return isCategoryList(value);
   }

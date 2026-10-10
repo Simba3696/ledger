@@ -261,6 +261,14 @@ const isDueDay: Check = (value) => Number.isInteger(value) && (value as number) 
 /** monthKey()'s output: the year unpadded, the month zero-padded. */
 export const isMonthKey = matches(/^[1-9]\d{0,9}-(0[1-9]|1[0-2])$/);
 
+/** An IANA time zone name's shape: "UTC", "EST5EDT", "Asia/Kolkata",
+ * "America/Argentina/Buenos_Aires", "Etc/GMT+5". Only the shape, never
+ * whether this runtime's Intl knows the zone: zone lists differ between
+ * builds, and every build must agree on what is valid (ADR-0008). A
+ * well-shaped zone this runtime doesn't know counts as UTC
+ * (DocumentBackend's today). */
+export const isTimeZoneName = matches(/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z][A-Za-z0-9_+-]*){0,2}$/);
+
 /** A record id: crypto.randomUUID()'s form. */
 export const isRecordId = matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
@@ -372,7 +380,7 @@ export function isWritableDocument(value: unknown): value is LedgerDocument {
   const expenseIds = new Set<string>();
   return isShape(value, {
     version: () => true,
-    settings: (settings) => isShape(settings, { modules: isModuleList, timeZone: isString }),
+    settings: (settings) => isShape(settings, { modules: isModuleList, timeZone: isTimeZoneName }),
     categories: isCategoryList,
     expenses: (months) => isMonthMap(months, (list) => isRecordList(list, RECORD_FIELDS.expenses, expenseIds)),
     monthLocks: (locks) => isMonthMap(locks, (locked) => locked === true),
