@@ -208,6 +208,46 @@ describe("values a remote op may set", () => {
     expect(auto).toHaveLength(1);
   });
 
+  // Every L a file may carry is below 2^50, so one valid op, or a snap's
+  // seen, can take a joiner's maxL to 2^50 - 1, past which no L can be
+  // allocated. No bound on files prevents that: a device that joined a file
+  // at the bound would have to write above it. So the host recovers: at
+  // exhaustion it restores its current document as a new epoch (section
+  // 9.2), where L starts again, and the write commits there (ADR-0008).
+  it("an op at the last L: later local writes still commit, in a new epoch", async () => {
+    const v = new Replica(D, emptyDocument());
+    const from = v.epoch;
+    const op = remote(MAX_L - 1, [["lk/2026-07", true]]);
+    expect(opProblem(op)).toBeNull();
+    expect(check(`${EPOCH}.${X}.log.enc`, { ...logFile([op]), device: X }).ok).toBe(true);
+    v.receive(X, op);
+    await expect(v.backend.addDebt({ name: "Sam", amount: 5 })).resolves.toMatchObject({ name: "Sam" });
+    await expect(v.backend.setMonthLock(2026, 5, true)).resolves.toBeDefined();
+    expect(v.doc.debts.map((d) => d.name)).toEqual(["Sam"]);
+    expect(Object.keys(v.doc.monthLocks).sort()).toEqual(["2026-05", "2026-07"]);
+    expect(v.epoch).not.toBe(from);
+    expect(v.ops.map((o) => o.L)).toEqual([2, 3]);
+
+    // The restore genesis it wrote is one every device accepts: the
+    // document as it was, and the cut of everything it had seen.
+    expect(v.geneses).toHaveLength(1);
+    const genesis = v.geneses[0];
+    expect(check(`${v.epoch}.genesis.enc`, genesis).ok).toBe(true);
+    expect(genesis).toMatchObject({ reason: "restore", basedOn: { epoch: from, seen: { [X]: MAX_L - 1 } } });
+  });
+
+  it("a snap whose seen names the last L: later local writes still commit, in a new epoch", async () => {
+    const snap = { fv: 1, kind: "snap", epoch: EPOCH, device: X, through: 0, chain: CHAIN_START, seen: { [deviceId(3)]: MAX_L - 1 }, maxL: MAX_L - 1, joined: {}, state: encodeState(genesisState(emptyDocument())) };
+    const result = check(`${EPOCH}.${X}.snap.enc`, snap);
+    expect(result.ok).toBe(true);
+    const v = new Replica(D, emptyDocument());
+    v.receiveState(result.state!);
+    expect(() => v.amend((doc) => (doc.monthLocks["2026-05"] = true))).not.toThrow();
+    expect(v.doc.monthLocks).toEqual({ "2026-05": true });
+    await expect(v.backend.addEntry({ year: 2026, month: 5, amount: 1, remarks: "Tea", category: "food", isCard: false })).rejects.toMatchObject({ status: 400 });
+    await expect(v.backend.addEntry({ year: 2026, month: 6, amount: 1, remarks: "Tea", category: "food", isCard: false })).resolves.toBeDefined();
+  });
+
   // "A" + 25 zeros + "1" is the integer just above the smallest one, which
   // no key may be. A move to the top of its month must not build that key.
   it("an expense keyed just above the smallest integer: moving another entry above it still works", async () => {
