@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf, type FileCheck } from "./codec";
 import { parseRepoFileName } from "./epoch";
+import { createOrderKey, genesisOrderKey } from "./keys";
 import type { Op } from "./state";
+import { MAX_L } from "./tags";
 import { Replica, deviceId, emptyDocument, fingerprint } from "./testkit";
 
 // The structural validator and file formats (design sections 3.1, 3.6, 6
@@ -102,6 +104,43 @@ async function snapFile() {
   await r.backend.setMonthIncome(2026, 5, { salary: 1, otherIncome: null, savings: [] });
   return { replica: r, file: { fv: 1, kind: "snap", epoch: EPOCH, device: D, through: r.state.maxL, chain: CHAIN_START, seen: vectorOf(r.state.seen), maxL: r.state.maxL, joined: { [GENESIS]: SHA }, state: encodeState(r.state) } };
 }
+
+describe("order keys", () => {
+  const withKey = (o: string) => withSet(createOp(), createOp().set.map(([key, value]): [string, unknown] => (key.endsWith("/_c") ? [key, { o }] : [key, value])));
+
+  /** A valid snap holding one more debt, with order key `o`. */
+  const snapWithKey = async (o: string) => {
+    const snap = JSON.parse(JSON.stringify((await snapFile()).file));
+    snap.state.rec.debt.push({ id: ID, c: [2, D], v: { _c: { o }, _s: { at: 1, by: "alex" }, name: "Sam", amount: "1.00" } });
+    return snap;
+  };
+
+  it("accept exactly the shapes keys.ts makes: a genesis index, or 1.<L>.<device>", async () => {
+    for (const o of [genesisOrderKey(0), genesisOrderKey(35), genesisOrderKey(36 ** 6), createOrderKey(2, D), createOrderKey(MAX_L - 1, OTHER)]) {
+      expect(opProblem(withKey(o)), o).toBeNull();
+      expect(check(SNAP, await snapWithKey(o)).ok, o).toBe(true);
+    }
+  });
+
+  // Any other text could sort after the key the next local create gets,
+  // and the diff, which lists a new record last as push() does, would then
+  // refuse every later add to that list on every device.
+  for (const o of ["2", "9", "z", "1.2", "1.0000000000000002", "1.0000000000000002.dX", "1.0000000000000002.d000000000000000D", "1.000000000000002.d000000000000000d", "1.00000000000000002.d000000000000000d", "0.", "0.00000", "0.00000A", ""]) {
+    it(`refuse ${JSON.stringify(o)}, in an op and in a snap`, async () => {
+      expect(opProblem(withKey(o))).not.toBeNull();
+      expect(check(SNAP, await snapWithKey(o))).toMatchObject({ ok: false, problem: "malformed" });
+    });
+  }
+
+  it("a remote create the validator accepts never blocks a later local add to that list", async () => {
+    const r = new Replica(D, emptyDocument());
+    const odd = withKey(createOrderKey(2, OTHER));
+    expect(opProblem(odd)).toBeNull();
+    r.receive(OTHER, odd);
+    await r.backend.addDebt({ name: "Alex", amount: 5 });
+    expect((await r.backend.getDebts()).map((d) => d.name)).toEqual(["Sam", "Alex"]);
+  });
+});
 
 describe("files", () => {
   it("accept a log, a snap (decoded to the same state) and a genesis", async () => {
