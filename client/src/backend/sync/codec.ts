@@ -12,7 +12,7 @@ import {
 } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { isEpochKey, parseRepoFileName, type RepoFile } from "./epoch";
-import { CREATE, FIELDS, STAMP, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
+import { CREATE, FIELDS, STAMP, TOGETHER, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
 import { emptyState, type Op, type Register, type SyncState } from "./state";
 import { compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
 
@@ -94,6 +94,25 @@ function createsAreWhole(fields: Map<string, Set<string>>): boolean {
   return true;
 }
 
+/** Every record in `fields` sets each TOGETHER group whole or not at all. */
+function groupsAreWhole(fields: Map<string, Set<string>>): boolean {
+  for (const [key, set] of fields) {
+    const coll = key.slice(0, key.indexOf("/")) as Coll;
+    for (const group of TOGETHER[coll]) if (group.some((field) => set.has(field)) && !group.every((field) => set.has(field))) return false;
+  }
+  return true;
+}
+
+/** A record's TOGETHER groups are each wholly absent, or wholly present
+ * under one tag: what every join of whole-group ops holds. */
+function groupsShareTags(coll: Coll, regs: ReadonlyMap<string, Register>): boolean {
+  return TOGETHER[coll].every((group) => {
+    const tags = group.map((field) => regs.get(field)?.t);
+    if (tags.every((t) => t === undefined)) return true;
+    return tags.every((t) => t !== undefined && compareTags(t, tags[0]!) === 0);
+  });
+}
+
 /** Why `value` is not a valid op, or null if it is one. */
 export function opProblem(value: unknown): string | null {
   if (!isPlainObject(value) || !hasKeys(value, ["L", "at", "by", "vv", "set", "del"], ["ra"])) return "op has the wrong keys";
@@ -121,6 +140,7 @@ export function opProblem(value: unknown): string | null {
     }
   }
   if (!createsAreWhole(fields)) return "op creates a record without all its fields";
+  if (!groupsAreWhole(fields)) return "op sets part of a field group (an EMI's balance pair)";
 
   const deleted = new Set<string>();
   for (const key of value.del as unknown[]) {
@@ -221,6 +241,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
       }
       if (regs.size === 0) return `state holds ${key} with no registers`;
       if (!createsAreWhole(new Map([[key, new Set(regs.keys())]]))) return `state holds ${key} without all its fields`;
+      if (!groupsShareTags(coll, regs)) return `state holds ${key} with a field group split across tags`;
       state.rec.set(key, regs);
     }
   }

@@ -27,7 +27,7 @@ Format details settled while building the core (stage 1):
 - A restore genesis's `basedOn.seen` is the section 9.2 cut exactly as built, `R.seen ∪ {R: R.ownMaxL}`, so an entry may be 0 (a restorer that wrote no op in its epoch). A 0 entry cuts nothing, the same as an absent one. Every other version vector (`vv`, a snap's `seen`) still needs each L ≥ 1.
 - A tag naming the genesis pseudo-device `g` is valid only as `[1, "g"]`. A snap holding `[L, "g"]` with any other L is malformed.
 - Every name in a snap's `joined` map must be a repo file name (`<epochKey>.genesis.enc` or `<epochKey>.<deviceId>.<log|snap>.enc`), with no folder.
-- An EMI's balance, `remainingAsOf` with `asOfDate`, is written as a pair: an op that changes either sets both, so the two registers always share a tag and one op's balance wins whole. Per-field registers would otherwise merge one device's amount with another's date and count a payment twice. This amends the spec's section 3.2 row for `updateEmi`/`payEmi` ("changed fields").
+- An EMI's balance, `remainingAsOf` with `asOfDate`, is written as a pair: an op that changes either sets both, so the two registers always share a tag and one op's balance wins whole. Per-field registers would otherwise merge one device's amount with another's date and count a payment twice. The validator refuses an op that sets only one of the pair and a snap that holds them under different tags. This amends the spec's section 3.2 row for `updateEmi`/`payEmi` ("changed fields").
 - `DocumentBackend`, `LedgerBackend` and `DocumentHost` do not change. A write that the diff can't represent as an op fails closed, with a 500 and the document untouched, instead of being dropped.
 
 ## Alternatives considered

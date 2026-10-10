@@ -6,7 +6,7 @@ import { isWritableDocument } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { encodeState, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
-import { FIELDS, type Coll } from "./keys";
+import { FIELDS, TOGETHER, type Coll } from "./keys";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { applyOp, cloneState, genesisState, joinInto, type Op, type SyncState } from "./state";
 import { nextLamport } from "./tags";
@@ -248,7 +248,11 @@ export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
     } else if (kind < 6) {
       const rk = rng.pick(pool);
       const coll = rk.slice(0, rk.indexOf("/"));
-      for (const field of rng.shuffle(FIELDS[coll as Coll]).slice(0, 1 + rng.int(2))) put(`${rk}/${field}`, fieldValue(rng, coll, field));
+      for (const picked of rng.shuffle(FIELDS[coll as Coll]).slice(0, 1 + rng.int(2))) {
+        // A field group is set whole, as the diff writes it.
+        const group = TOGETHER[coll as Coll].find((g) => g.includes(picked)) ?? [picked];
+        for (const field of group) put(`${rk}/${field}`, fieldValue(rng, coll, field));
+      }
       if (rng.chance(0.8)) put(`${rk}/_s`, { at: rng.int(1000), by: rng.pick(NAMES) });
     } else if (kind < 7) {
       const rk = rng.pick(pool);
