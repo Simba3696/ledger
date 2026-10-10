@@ -3,7 +3,7 @@ import type { LedgerDocument } from "../document/types";
 import { isWritableDocument } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { decodeState, encodeState, vectorOf } from "./codec";
-import { FIELDS, parseRegisterKey, type Coll } from "./keys";
+import { FIELDS, TOGETHER, parseRegisterKey, type Coll } from "./keys";
 import { materialize } from "./materialize";
 import { applyOp, cloneState, emptyState, genesisState, join, joinInto, opState, type Op, type SyncState } from "./state";
 import { Replica, Rng, deviceId, docText, emptyDocument, fingerprint, forEachSeed, randomOp, testEnv, type RecordPool } from "./testkit";
@@ -118,6 +118,66 @@ describe("join: unit rules", () => {
     join(a, b);
     expect([fingerprint(a), fingerprint(b)]).toEqual([fa, fb]);
   });
+});
+
+describe("join: an equal tag (a fork) on a field group", () => {
+  const EMI = "00000000-0000-4000-8000-0000000000e1";
+  const genesis = () => {
+    const doc = emptyDocument();
+    doc.emis = [{ id: EMI, updatedAt: 1, updatedBy: "alex", cardOrBank: "Car Loan", emiAmount: "1000.00", dueDay: 5, totalAmount: "12000.00", remarks: "", remainingAsOf: "10000.00", asOfDate: "2026-04-05", untilTarget: null, interestRate: null, foreclosureCharge: null }];
+    return genesisState(doc);
+  };
+  /** A payEmi-shaped op at L 5: the balance pair, set whole. */
+  const pay = (remainingAsOf: string, asOfDate: string): Op => ({
+    L: 5,
+    at: 0,
+    by: "x",
+    vv: {},
+    set: [[`emi/${EMI}/remainingAsOf`, remainingAsOf], [`emi/${EMI}/asOfDate`, asOfDate], [`emi/${EMI}/_s`, { at: 0, by: "x" }]],
+    del: [],
+  });
+  const pairOf = (state: SyncState) => {
+    const emi = materialize(state).emis[0];
+    return [emi.remainingAsOf, emi.asOfDate];
+  };
+
+  it("takes one op's balance pair whole, never one field from each, in every order", () => {
+    // Crossed value orders: by value alone, remainingAsOf would come from
+    // the first op and asOfDate from the second.
+    const first = pay("9000.00", "2026-05-05");
+    const second = pay("8000.00", "2026-06-05");
+    const written = [["9000.00", "2026-05-05"], ["8000.00", "2026-06-05"]];
+    const one = genesis();
+    applyOp(one, DEVICES[0], first);
+    applyOp(one, DEVICES[0], second);
+    const other = genesis();
+    applyOp(other, DEVICES[0], second);
+    applyOp(other, DEVICES[0], first);
+    const a = join(genesis(), opState(DEVICES[0], first));
+    const b = join(genesis(), opState(DEVICES[0], second));
+    for (const state of [one, other, join(a, b), join(b, a)]) expect(written).toContainEqual(pairOf(state));
+    expect(fingerprint(one)).toBe(fingerprint(other));
+    expect(fingerprint(join(a, b))).toBe(fingerprint(join(b, a)));
+  });
+
+  it(`keeps every group whole over ${ORDER_SEEDS} random op sets with forks: its values all come from one op`, async () => {
+    await forEachSeed(ORDER_SEEDS, (seed) => {
+      const rng = new Rng(seed);
+      const pool: RecordPool = [];
+      const { state: genesisOfRun } = genesisFor(rng, pool);
+      const ops = randomOps(rng, pool, 10 + rng.int(30));
+      const state = stateOf(ops, genesisOfRun);
+      for (const [rk, regs] of state.rec) {
+        const coll = rk.slice(0, rk.indexOf("/")) as Coll;
+        for (const group of TOGETHER[coll]) {
+          if (!regs.has(group[0])) continue;
+          const sources = [genesisOfRun.rec.get(rk), ...ops.map(({ device, op }) => opState(device, op).rec.get(rk))];
+          const written = sources.filter((regsOf) => regsOf?.has(group[0])).map((regsOf) => group.map((field) => regsOf!.get(field)!.v));
+          expect(written, `${rk} ${group.join("+")}`).toContainEqual(group.map((field) => regs.get(field)!.v));
+        }
+      }
+    });
+  }, 120_000);
 });
 
 describe("genesis", () => {
