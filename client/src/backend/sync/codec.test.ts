@@ -3,7 +3,7 @@ import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf, type FileCheck } from "./codec";
 import { parseRepoFileName } from "./epoch";
 import { createOrderKey, genesisOrderKey } from "./keys";
-import { genesisState, type Op } from "./state";
+import { genesisState, type Op, type SyncState } from "./state";
 import { MAX_L } from "./tags";
 import { Replica, deviceId, emptyDocument, fingerprint } from "./testkit";
 
@@ -88,8 +88,10 @@ function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
   return { fv: 1, kind: "log", epoch: EPOCH, device: D, snapThrough: 0, chain: CHAIN_START, ops, ...extra };
 }
 
-function check(name: string, value: unknown): FileCheck {
-  return checkRepoFile(parseRepoFileName(name)!, JSON.parse(JSON.stringify(value)));
+/** Checks `value` as the file `name`, a snap against `genesis` (its epoch's
+ * genesis state, which the engine always reads first: section 8.3). */
+function check(name: string, value: unknown, genesis: SyncState = genesisState(emptyDocument())): FileCheck {
+  return checkRepoFile(parseRepoFileName(name)!, JSON.parse(JSON.stringify(value)), genesis);
 }
 
 const LOG = `${EPOCH}.${D}.log.enc`;
@@ -325,6 +327,55 @@ describe("files", () => {
       copy.state.unit = copy.state.unit.map((entry: unknown[]) => (entry[0] === "cat" ? ["cat", only, tag] : entry));
       expect(check(SNAP, copy), JSON.stringify(tag)).toMatchObject({ ok: false, problem: "malformed" });
     }
+  });
+
+  // A register tagged [1, "g"] in a snap ties with the genesis's own on
+  // join, and an equal tag goes to the greater value. So a snap that holds
+  // [1, "g"] with a value the genesis never set, or at a key it never set,
+  // would rewrite the genesis on every device whatever the join order. For
+  // the categories that is permanent (nothing else writes them), and every
+  // later edit that keeps an expense's category is refused as "Unknown
+  // category".
+  it("refuse a snap holding a genesis-tagged register the genesis does not hold", async () => {
+    const { file } = await snapFile();
+    expect(check(SNAP, file).ok).toBe(true);
+    const g = genesisState(emptyDocument());
+    const cats = structuredClone(g.unit.get("cat")!.v) as { label: string }[];
+    cats[0].label += "zzz";
+    const other = [{ id: "zz", label: "Z", bg: "#FFFFFF", fg: null, position: 0 }];
+    const withUnit = (key: string, value: unknown) => (_f: Record<string, unknown>, s: Record<string, unknown>) => {
+      s.unit = (s.unit as unknown[][]).filter(([k]) => k !== key).concat([[key, value, [1, "g"]]]);
+    };
+    const spoils: [string, (f: Record<string, unknown>, s: Record<string, unknown>) => void][] = [
+      ["other categories", withUnit("cat", other)],
+      ["a category relabelled", withUnit("cat", cats)],
+      ["another time zone", withUnit("st/timeZone", "Asia/Karachi")],
+      ["a lock the genesis never set", withUnit("lk/2026-07", true)],
+      ["a record the genesis never held", (_f, s) => (s.rec as { debt: unknown[] }).debt.push({ id: ID, c: [1, "g"], v: { _c: { o: genesisOrderKey(0) }, _s: { at: 1, by: "a" }, name: "Sam", amount: "1.00" } })],
+    ];
+    for (const [name, spoil] of spoils) {
+      const copy = JSON.parse(JSON.stringify(file));
+      spoil(copy, copy.state);
+      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed" });
+    }
+  });
+
+  it("accept a snap whose genesis-tagged registers are its epoch's genesis's own, and only against that genesis", async () => {
+    const doc = emptyDocument();
+    doc.debts = [{ id: ID, updatedAt: 1, updatedBy: "a", name: "Sam", amount: "1.00" }];
+    const r = new Replica(D, doc);
+    const [debt] = await r.backend.getDebts();
+    await r.backend.updateDebt(debt.row, { name: "Sam", amount: 2 });
+    const file = { fv: 1, kind: "snap", epoch: EPOCH, device: D, through: r.state.maxL, chain: CHAIN_START, seen: vectorOf(r.state.seen), maxL: r.state.maxL, joined: {}, state: encodeState(r.state) };
+    const [record] = file.state.rec.debt;
+    expect(record.c).toEqual([1, "g"]);
+    expect(check(SNAP, file, genesisState(doc)).ok).toBe(true);
+    // Another epoch's genesis never held this record.
+    expect(check(SNAP, file, genesisState(emptyDocument()))).toMatchObject({ ok: false, problem: "malformed" });
+    // A genesis-tagged field with a value the genesis did not set.
+    const renamed = JSON.parse(JSON.stringify(file));
+    renamed.state.rec.debt[0].v.name = "Zed";
+    expect(check(SNAP, renamed, genesisState(doc))).toMatchObject({ ok: false, problem: "malformed" });
   });
 
   it("refuse an op or a snap that splits an EMI's balance pair (remainingAsOf with asOfDate)", async () => {
