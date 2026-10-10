@@ -258,14 +258,17 @@ const isDateText = matches(/^\d{4}-\d{2}-\d{2}$/);
 const isDueDay: Check = (value) => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 31;
 
 /** monthKey()'s output: the year unpadded, the month zero-padded. */
-const isMonthKey = matches(/^[1-9]\d{0,9}-(0[1-9]|1[0-2])$/);
+export const isMonthKey = matches(/^[1-9]\d{0,9}-(0[1-9]|1[0-2])$/);
 
 /** A record id: crypto.randomUUID()'s form. */
-const isRecordId = matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+export const isRecordId = matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+/** The stamps every record carries (BaseRecord minus the id). */
+export const isRecordStamp = (at: unknown, by: unknown): boolean => isFiniteNumber(at) && isString(by);
 
 /** Each record collection's own fields (BaseRecord aside), with the check
  * each value must pass. */
-const RECORD_FIELDS = {
+export const RECORD_FIELDS = {
   expenses: {
     sortKey: matches(/^[A-Za-z][0-9A-Za-z]*$/),
     amount: isMoneyText,
@@ -326,7 +329,7 @@ function isRecordList(value: unknown, fields: Record<string, Check>, ids: Set<st
 const SAVINGS_LINE: Record<string, Check> = { name: isString, amount: isMoneyText };
 
 /** One financeMonths value: what setMonthIncome writes. */
-function isFinanceMonth(value: unknown): boolean {
+export function isFinanceMonth(value: unknown): boolean {
   return isShape(value, {
     salary: orNull(isMoneyText),
     otherIncome: orNull(isMoneyText),
@@ -337,20 +340,20 @@ function isFinanceMonth(value: unknown): boolean {
 const CARD_FIELDS: Record<string, Check> = { name: isString, due: isMoneyText, paid: isMoneyText, dueDate: orNull(isDateText), settled: isBoolean };
 
 /** One cardBills value: what setMonthBills writes, card ids unique. */
-function isCardBillList(value: unknown): boolean {
+export function isCardBillList(value: unknown): boolean {
   return isRecordList(value, CARD_FIELDS, new Set());
 }
 
 const CATEGORY: Record<string, Check> = { id: isString, label: isString, bg: isString, fg: orNull(isString), position: isFiniteNumber };
 
 /** The categories list: only a genesis sets it. Ids unique. */
-function isCategoryList(value: unknown): boolean {
+export function isCategoryList(value: unknown): boolean {
   if (!Array.isArray(value) || !value.every((c) => isShape(c, CATEGORY))) return false;
   return new Set(value.map((c: { id: string }) => c.id)).size === value.length;
 }
 
 /** settings.modules: plain strings (canonicalModules drops unknown names). */
-const isModuleList: Check = (value) => Array.isArray(value) && value.every(isString);
+export const isModuleList: Check = (value) => Array.isArray(value) && value.every(isString);
 
 /** A month-keyed map whose every value passes `check`. */
 function isMonthMap(value: unknown, check: Check): boolean {
