@@ -5,7 +5,7 @@ import { parseRepoFileName } from "./epoch";
 import { createOrderKey, genesisOrderKey } from "./keys";
 import { genesisState, type Op, type SyncState } from "./state";
 import { MAX_L } from "./tags";
-import { Replica, deviceId, emptyDocument, fingerprint } from "./testkit";
+import { Replica, deviceId, docText, emptyDocument, fingerprint } from "./testkit";
 
 // The structural validator and file formats (design sections 3.1, 3.6, 6
 // and 12): one test per malformed shape, format-version gating, and name
@@ -74,6 +74,11 @@ describe("op validator", () => {
     ["an empty time zone", withSet(createOp(), [["st/timeZone", ""]])],
     ["a time zone with a space", withSet(createOp(), [["st/timeZone", "Asia/New Delhi"]])],
     ["a time zone with a dot segment", withSet(createOp(), [["st/timeZone", "Asia/../UTC"]])],
+    ["an EMI asOfDate that is not a calendar day (2026-02-30)", withSet(createOp(), [[`emi/${ID}/remainingAsOf`, "1.00"], [`emi/${ID}/asOfDate`, "2026-02-30"]])],
+    ["an EMI asOfDate in month 13", withSet(createOp(), [[`emi/${ID}/remainingAsOf`, "1.00"], [`emi/${ID}/asOfDate`, "2026-13-01"]])],
+    ["an EMI target in year 0", withSet(createOp(), [[`emi/${ID}/untilTarget`, "0000-01-01"]])],
+    ["a subscription expiry that is not a calendar day", withSet(createOp(), [[`sub/${ID}/expiryAnchor`, "2026-04-31"]])],
+    ["a card bill due date that is not a calendar day", withSet(createOp(), [["cb/2026-05", [{ id: ID, updatedAt: 1, updatedBy: "a", name: "Card A", due: "1.00", paid: "0.00", dueDate: "2026-02-29", settled: false }]]])],
     ["a register set twice", withSet(createOp(), [...createOp().set, [`debt/${ID}/name`, "Alex"]])],
     ["a create missing a field", withSet(createOp(), createOp().set.filter(([k]) => !k.endsWith("/amount")))],
     ["a create missing its stamp", withSet(createOp(), createOp().set.filter(([k]) => !k.endsWith("/_s")))],
@@ -87,9 +92,12 @@ describe("op validator", () => {
     });
   }
 
-  it("accepts every IANA zone name shape", () => {
+  it("accepts every IANA zone name shape and every real calendar day", () => {
     for (const zone of ["UTC", "Asia/Kolkata", "America/Argentina/Buenos_Aires", "America/Port-au-Prince", "Etc/GMT+5", "Etc/GMT-14", "EST5EDT", "Not/AZone"]) {
       expect(opProblem(withSet(createOp(), [["st/timeZone", zone]])), zone).toBeNull();
+    }
+    for (const day of ["2024-02-29", "2026-12-31", "0001-01-01", "9999-12-31"]) {
+      expect(opProblem(withSet(createOp(), [[`sub/${ID}/expiryAnchor`, day]])), day).toBeNull();
     }
   });
 });
@@ -119,6 +127,20 @@ describe("values a remote op may set", () => {
     await expect(v.backend.getOverview()).resolves.toBeDefined();
   });
 
+  it("an EMI anchored at 9999-12-31: a payment past year 9999 is refused with a 400 and writes nothing", async () => {
+    const v = new Replica(D, emptyDocument());
+    const emi = await v.backend.addEmi(emiInput);
+    const id = v.doc.emis[0].id;
+    const op = remote(10, [[`emi/${id}/remainingAsOf`, "900.00"], [`emi/${id}/asOfDate`, "9999-12-31"]]);
+    expect(opProblem(op)).toBeNull();
+    v.receive(X, op);
+    const before = docText(v.doc);
+    await expect(v.backend.payEmi(emi.row, 100)).rejects.toMatchObject({ status: 400 });
+    expect(docText(v.doc)).toBe(before);
+    // Editing the EMI re-anchors it at today, and payments work again.
+    await v.backend.updateEmi(emi.row, { ...emi, durationMonths: null });
+    await expect(v.backend.payEmi(emi.row, 100)).resolves.toMatchObject({ asOfDate: expect.stringMatching(/^2026-/) });
+  });
 });
 
 function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
