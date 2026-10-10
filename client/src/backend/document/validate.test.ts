@@ -50,6 +50,7 @@ describe("isWritableDocument", () => {
     ["a month's cards with one id twice", { ...emptyDocument(), cardBills: { "2026-05": [1, 2].map(() => ({ id: ID, updatedAt: 1, updatedBy: "a", name: "Card A", due: "1.00", paid: "0.00", dueDate: null, settled: false })) } }],
     ["a finance month missing savings", { ...emptyDocument(), financeMonths: { "2026-05": { salary: "1.00", otherIncome: null } } }],
     ["a missing collection", (({ debts: _debts, ...rest }) => rest)(emptyDocument())],
+    ["a time zone that is not a zone name", { ...emptyDocument(), settings: { modules: ["expenses"], timeZone: "0.zzz" } }],
     ["a sortKey whose integer part is too short (b0)", withExpenses({ "2026-05": [{ ...record, sortKey: "b0" }] })],
     ["a sortKey whose fraction ends in 0 (a10)", withExpenses({ "2026-05": [{ ...record, sortKey: "a10" }] })],
     ["the smallest integer as a sortKey", withExpenses({ "2026-05": [{ ...record, sortKey: `A${"0".repeat(26)}` }] })],

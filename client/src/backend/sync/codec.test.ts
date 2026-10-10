@@ -70,6 +70,10 @@ describe("op validator", () => {
     ["card bills with a repeated id", withSet(createOp(), [["cb/2026-05", [1, 2].map(() => ({ id: ID, updatedAt: 1, updatedBy: "a", name: "Card A", due: "1.00", paid: "0.00", dueDate: null, settled: false }))]])],
     ["an EMI due day of 32", withSet(createOp(), [[`emi/${ID}/dueDay`, 32]])],
     ["a subscription duration outside the two", withSet(createOp(), [[`sub/${ID}/duration`, "Weekly"]])],
+    ["a time zone that is not a zone name (0.zzz)", withSet(createOp(), [["st/timeZone", "0.zzz"]])],
+    ["an empty time zone", withSet(createOp(), [["st/timeZone", ""]])],
+    ["a time zone with a space", withSet(createOp(), [["st/timeZone", "Asia/New Delhi"]])],
+    ["a time zone with a dot segment", withSet(createOp(), [["st/timeZone", "Asia/../UTC"]])],
     ["a register set twice", withSet(createOp(), [...createOp().set, [`debt/${ID}/name`, "Alex"]])],
     ["a create missing a field", withSet(createOp(), createOp().set.filter(([k]) => !k.endsWith("/amount")))],
     ["a create missing its stamp", withSet(createOp(), createOp().set.filter(([k]) => !k.endsWith("/_s")))],
@@ -82,6 +86,39 @@ describe("op validator", () => {
       expect(opProblem(op)).not.toBeNull();
     });
   }
+
+  it("accepts every IANA zone name shape", () => {
+    for (const zone of ["UTC", "Asia/Kolkata", "America/Argentina/Buenos_Aires", "America/Port-au-Prince", "Etc/GMT+5", "Etc/GMT-14", "EST5EDT", "Not/AZone"]) {
+      expect(opProblem(withSet(createOp(), [["st/timeZone", zone]])), zone).toBeNull();
+    }
+  });
+});
+
+// A value the validator accepts must never stop a later local write or read:
+// the structural checks may only be loosened within fv 1, so each value the
+// local write path can't take has to be refused here, or handled there.
+describe("values a remote op may set", () => {
+  const X = deviceId(0xa);
+  const remote = (L: number, set: [string, unknown][]): Op => ({ L, at: 0, by: "sam", vv: {}, set, del: [] });
+  const emiInput = { cardOrBank: "Car Loan", emiAmount: 100, dueDay: 3, totalAmount: 1000, remarks: "", remainingAsOf: 1000, interestRate: null, foreclosureCharge: null };
+
+  it("a well-shaped zone this runtime does not know: writes and reads still work, in UTC", async () => {
+    const op = remote(2, [["st/timeZone", "Not/AZone"]]);
+    expect(check(LOG, logFile([op])).ok).toBe(true);
+    const v = new Replica(D, emptyDocument());
+    v.clock = Date.UTC(2026, 4, 10, 22, 0); // 10 May in UTC, 11 May in Asia/Kolkata
+    v.receive(X, op);
+    expect(v.doc.settings.timeZone).toBe("Not/AZone");
+    const emi = await v.backend.addEmi(emiInput);
+    expect(v.doc.emis[0].asOfDate).toBe("2026-05-10");
+    await v.backend.updateEmi(emi.row, { ...emi, durationMonths: null });
+    await v.backend.payEmi(emi.row, 100);
+    await v.backend.addSubscription({ service: "Music", amount: 199, duration: "Monthly", expiryAnchor: "2026-05-20", cardOrBank: "Card A" });
+    await expect(v.backend.getEmis()).resolves.toHaveLength(1);
+    await expect(v.backend.getSubscriptions()).resolves.toHaveLength(1);
+    await expect(v.backend.getOverview()).resolves.toBeDefined();
+  });
+
 });
 
 function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
