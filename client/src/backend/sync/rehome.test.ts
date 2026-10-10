@@ -106,4 +106,47 @@ describe("rehome re-issue (section 10.3 step 4)", () => {
     expect(doc.financeMonths["2026-05"]).toBeDefined();
     expect(doc.monthLocks).toEqual({ "2026-05": true });
   });
+
+  // A re-apply or discard (section 9.4) records a marker in ra. The marker
+  // has no tag, so the register walk above never sees it; lost, the group
+  // would be offered again on every device, and a second re-apply would
+  // overwrite edits made since the first.
+  it("re-issues a discard's marker, though the discard op set and deleted nothing", async () => {
+    const marker = `${EPOCH}/${deviceId(0x5)}`;
+    const one = new Replica(D, emptyDocument());
+    const two = new Replica(D, emptyDocument());
+    one.receive(D, { L: 2, at: 0, by: "alex", vv: {}, set: [], del: [], ra: [marker] }); // the discard, L 2
+    await two.backend.setMonthLock(2026, 5, true); // L 2
+    const rebuilt = rebuild(emptyDocument(), two.ops);
+
+    const ops = reissue(one.state, rebuilt);
+    expect(ops.map((op) => [op.L, op.set, op.del, op.ra])).toEqual([[2, [], [], [marker]]]);
+    const state = cloneState(rebuilt);
+    for (const op of ops) applyOp(state, D2, op);
+    expect([...state.ra]).toEqual([marker]);
+  });
+
+  it("re-issues a re-apply's marker on the last re-issued op, and no marker the rebuild already holds", async () => {
+    const kept = `${EPOCH}/${deviceId(0x6)}`;
+    const lost = `${EPOCH}/${deviceId(0x5)}`;
+    const one = new Replica(D, emptyDocument());
+    const two = new Replica(D, emptyDocument());
+    one.receive(deviceId(0x7), { L: 2, at: 0, by: "sam", vv: {}, set: [], del: [], ra: [kept] });
+    two.receive(deviceId(0x7), { L: 2, at: 0, by: "sam", vv: {}, set: [], del: [], ra: [kept] });
+    one.amend((doc) => (doc.monthLocks["2026-05"] = true), [lost]); // L 3
+    await one.backend.setMonthLock(2026, 7, true); // L 4
+    await two.backend.setMonthLock(2026, 6, true); // L 3
+    const rebuilt = rebuild(emptyDocument(), two.ops);
+    applyOp(rebuilt, deviceId(0x7), { L: 2, at: 0, by: "sam", vv: {}, set: [], del: [], ra: [kept] });
+
+    const ops = reissue(one.state, rebuilt);
+    expect(ops.map((op) => [op.L, op.ra])).toEqual([
+      [3, undefined],
+      [4, [lost]],
+    ]);
+    const state = cloneState(rebuilt);
+    for (const op of ops) applyOp(state, D2, op);
+    expect([...state.ra].sort()).toEqual([kept, lost].sort());
+    expect(Object.keys(materialize(state).monthLocks).sort()).toEqual(["2026-05", "2026-06", "2026-07"]);
+  });
 });
