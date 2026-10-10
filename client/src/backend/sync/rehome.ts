@@ -16,10 +16,16 @@ import { compareTags } from "./tags";
 //     gets its current value, which its own tag still decides on join.
 //   - A TOGETHER group (an EMI's balance pair) is re-issued whole when
 //     either of its registers is.
+//
+// Re-apply markers (ra, section 9.4) carry no tag, so the walk above never
+// sees them. Every marker of the pre-rehome state that the rebuilt state
+// lacks is re-issued too, on the last re-issued op, or alone on an op at
+// the device's greatest own L when nothing else is. A marker is a
+// grow-only set member, so re-issuing one held elsewhere changes nothing.
 
 /** One re-issued op's content at its original L, before the engine adds
  * `at`, `by` and `vv`. */
-export type Reissue = Pick<Op, "L" | "set" | "del">;
+export type Reissue = Pick<Op, "L" | "set" | "del" | "ra">;
 
 function kept(reg: Register, rebuilt: Register | undefined): boolean {
   return rebuilt !== undefined && compareTags(reg.t, rebuilt.t) === 0 && sameValue(reg.v, rebuilt.v);
@@ -27,7 +33,7 @@ function kept(reg: Register, rebuilt: Register | undefined): boolean {
 
 /** The ops device `device`'s rehome re-issues: what `pre`, its state before
  * the rehome, holds under `device` that `rebuilt` lacks, as one op per
- * original L in ascending L. */
+ * original L in ascending L, and the re-apply markers `rebuilt` lacks. */
 export function rehomeReissue(pre: SyncState, rebuilt: SyncState, device: string): Reissue[] {
   const byL = new Map<number, { set: Map<string, unknown>; del: string[] }>();
   const at = (L: number) => {
@@ -67,7 +73,16 @@ export function rehomeReissue(pre: SyncState, rebuilt: SyncState, device: string
     if (!theirs || theirs.by !== deletion.by || theirs.L !== deletion.L) at(deletion.L).del.push(key);
   }
 
+  const markers = [...pre.ra].filter((marker) => !rebuilt.ra.has(marker)).sort();
+  if (markers.length > 0 && byL.size === 0) at(Math.max(1, pre.seen.get(device) ?? pre.maxL));
+  const last = Math.max(...byL.keys());
+
   return [...byL]
     .sort(([a], [b]) => a - b)
-    .map(([L, op]) => ({ L, set: [...op.set].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), del: op.del.sort() }));
+    .map(([L, op]) => ({
+      L,
+      set: [...op.set].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      del: op.del.sort(),
+      ...(L === last && markers.length > 0 ? { ra: markers } : {}),
+    }));
 }
