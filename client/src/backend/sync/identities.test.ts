@@ -106,6 +106,37 @@ describe("epochs", () => {
     expect(winningEpoch([`${E2b}.genesis.enc`, `${E1}.genesis.enc`, `${E2a}.genesis.enc`])).toBe(E2b);
   });
 
+  // A restore writes the epoch after the winning one (section 9.2), and must
+  // never be refused. So no listed genesis, however it is numbered, may
+  // leave the restore without a greater key: numbers go on past 6 digits,
+  // and only an unbroken run of epochs from 1 counts, so a genesis can't
+  // jump ahead to a number whose names would outgrow a file name either.
+  it("always leave a restore a next epoch that wins, whatever genesis is listed", () => {
+    const crafted = "e999999-ffffffff";
+    for (const listing of [[`${E1}.genesis.enc`, `${crafted}.genesis.enc`], [`${crafted}.genesis.enc`], [`${E1}.genesis.enc`]]) {
+      const winner = winningEpoch(listing);
+      const next = nextEpochKey(winner, () => "00000000");
+      expect(isEpochKey(next), next).toBe(true);
+      expect(winningEpoch([...listing, `${next}.genesis.enc`])).toBe(next);
+    }
+    // A run that really reaches 999999 goes on to 7 digits, in order.
+    expect(nextEpochKey(crafted, () => "00000000")).toBe("e1000000-00000000");
+    expect(isEpochKey("e1000000-00000000")).toBe(true);
+    expect(compareEpochKeys(crafted, "e1000000-00000000")).toBeLessThan(0);
+    expect(compareEpochKeys("e1000000-00000000", "e1000001-00000000")).toBeLessThan(0);
+    // One way to write each number: 6 digits zero-padded, or more with no
+    // leading zero.
+    for (const key of ["e0000001-00000000", "e01000000-00000000"]) expect(isEpochKey(key), key).toBe(false);
+  });
+
+  it("count an epoch only in an unbroken run from 1: a gap leaves the epochs past it out", () => {
+    const E3 = "e000003-00000000";
+    expect(winningEpoch([`${E1}.genesis.enc`, `${E2a}.genesis.enc`, `${E3}.genesis.enc`])).toBe(E3);
+    expect(winningEpoch([`${E1}.genesis.enc`, `${E3}.genesis.enc`, `${E10}.genesis.enc`])).toBe(E1);
+    expect(winningEpoch([`${E2a}.genesis.enc`])).toBeNull();
+    expect(winningEpoch(["e000000-00000000.genesis.enc"])).toBeNull();
+  });
+
   it("say whether a listing is stale, the same epoch, or a restore to switch to", () => {
     expect(epochMove(E1, E2a)).toBe("stale");
     expect(epochMove(E2a, E2a)).toBe("same");

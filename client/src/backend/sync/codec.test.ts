@@ -41,6 +41,8 @@ describe("op validator", () => {
   it("accepts well-formed ops", () => {
     expect(opProblem(createOp())).toBeNull();
     expect(opProblem({ L: 3, at: 0, by: "", vv: {}, set: [["lk/2026-05", false], ["fm/2026-05", null], ["cb/2026-05", null]], del: [`e/${ID}`], ra: ["e000001-9c1f22aa/d0000000000000001"] })).toBeNull();
+    // A re-apply in an epoch numbered past 999999 (epoch keys go on growing).
+    expect(opProblem({ L: 3, at: 0, by: "", vv: {}, set: [], del: [], ra: ["e1000000-9c1f22aa/d0000000000000001"] })).toBeNull();
   });
 
   const bad: [string, unknown][] = [
