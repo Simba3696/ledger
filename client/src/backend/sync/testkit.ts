@@ -78,7 +78,7 @@ export function deviceId(n: number): string {
   return `d${n.toString(16).padStart(16, "0")}`;
 }
 
-const ALL_MODULES = ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"] as const;
+export const ALL_MODULES = ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"] as const;
 
 export function emptyDocument(): LedgerDocument {
   return createEmptyDocument({ modules: [...ALL_MODULES], timeZone: "UTC" });
