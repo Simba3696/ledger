@@ -75,7 +75,10 @@ export function rehomeReissue(pre: SyncState, rebuilt: SyncState, device: string
 
   const markers = [...pre.ra].filter((marker) => !rebuilt.ra.has(marker)).sort();
   if (markers.length > 0 && byL.size === 0) at(Math.max(1, pre.seen.get(device) ?? pre.maxL));
-  const last = Math.max(...byL.keys());
+  // A loop, not Math.max(...keys): a spread of one argument per re-issued L
+  // overflows the stack past about 120k of them, and rehome is never refused.
+  let last = 0;
+  for (const L of byL.keys()) if (L > last) last = L;
 
   return [...byL]
     .sort(([a], [b]) => a - b)
