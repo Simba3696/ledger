@@ -112,7 +112,9 @@ export function isOrderKey(value: unknown): value is string {
  * A key naming a greater L (or one past 2^50) would sort after the key the
  * next local create gets, as above. The device is not bound, because a
  * rehome re-issues a create under a new device id with its original L
- * (design section 10.3). */
+ * (design section 10.3). A re-apply (section 9.4, as ADR-0008 amends it)
+ * re-creates a list record with its old id but a fresh key for its own L:
+ * the old key names an L from the old epoch, which this refuses. */
 export function orderKeyNames(key: string, L: number): boolean {
   return !key.startsWith("1.") || key.slice(2, 18) === String(L).padStart(16, "0");
 }

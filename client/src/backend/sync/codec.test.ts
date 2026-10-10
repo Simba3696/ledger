@@ -256,6 +256,37 @@ describe("order keys", () => {
     });
   }
 
+  // Re-apply (design section 9.4) runs in the new epoch, where the device
+  // has a new id and its L starts again near 1. A list record it re-creates
+  // keeps its old id but gets a fresh _c naming the re-apply op's own L, so
+  // it lists last, as any create does. Its old _c names an L from the old
+  // epoch, which could sort after the next local create's key, so the
+  // validator refuses it. An expense keeps its old {m}: no L in it.
+  it("accept a re-apply re-create with a fresh order key, and refuse one that keeps its old key", async () => {
+    const ra = { ra: [`${EPOCH}/${OTHER}`] };
+    const fresh = { ...withKey(createOrderKey(3, D), 3), ...ra };
+    expect(opProblem(fresh)).toBeNull();
+    expect(check(LOG, logFile([fresh])).ok).toBe(true);
+    const stale = { ...withKey(createOrderKey(57, OTHER), 3), ...ra };
+    expect(opProblem(stale)).not.toBeNull();
+    expect(check(LOG, logFile([stale]))).toMatchObject({ ok: false, problem: "malformed" });
+    const expense = {
+      L: 3, at: 1, by: "alex", vv: {}, del: [], ...ra,
+      set: [
+        [`e/${ID}/_c`, { m: "2026-05" }], [`e/${ID}/sortKey`, "a0"], [`e/${ID}/amount`, "12.00"], [`e/${ID}/remarks`, "Lunch"],
+        [`e/${ID}/category`, null], [`e/${ID}/cardNote`, null], [`e/${ID}/_s`, { at: 1, by: "alex" }],
+      ] as [string, unknown][],
+    };
+    expect(opProblem(expense)).toBeNull();
+
+    // The re-created record lists last, and a later local add after it.
+    const r = new Replica(D, emptyDocument());
+    await r.backend.addDebt({ name: "Alex", amount: 5 });
+    r.receive(OTHER, { ...withKey(createOrderKey(4, OTHER), 4), ...ra });
+    await r.backend.addDebt({ name: "Kim", amount: 7 });
+    expect((await r.backend.getDebts()).map((d) => d.name)).toEqual(["Alex", "Sam", "Kim"]);
+  });
+
   it("a remote create the validator accepts never blocks a later local add to that list", async () => {
     const r = new Replica(D, emptyDocument());
     const odd = withKey(createOrderKey(2, OTHER));
