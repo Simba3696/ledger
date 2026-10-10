@@ -165,6 +165,9 @@ describe("files", () => {
     ["a record created by the genesis pseudo-device above L 1", (_f, s) => ((s.rec as { e: { c: unknown }[] }).e[0].c = [2, "g"])],
     ["a field tagged by the genesis pseudo-device above L 1", (_f, s) => ((s.rec as { e: { t?: unknown }[] }).e[0].t = { amount: [2, "g"] })],
     ["a malformed joined sha", (f) => (f.joined = { [GENESIS]: "abc" })],
+    ["a joined name that is no repo file", (f) => (f.joined = { "not-a-file": SHA })],
+    ["a joined name with a path", (f) => (f.joined = { [`../${GENESIS}`]: SHA })],
+    ["a joined name with an uppercase device id", (f) => (f.joined = { [`${EPOCH}.${D.toUpperCase()}.log.enc`]: SHA })],
     ["a state with missing parts", (_f, s) => delete s.ra],
   ];
   for (const [name, spoil] of badSnaps) {
