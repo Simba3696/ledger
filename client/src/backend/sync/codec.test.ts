@@ -254,6 +254,22 @@ describe("files", () => {
     expect(check(GENESIS, { ...genesis, doc: emptyDocument(), reason: "merge" })).toMatchObject({ ok: false, problem: "malformed" });
   });
 
+  // Only a genesis sets the categories (design section 2.2), and an op that
+  // sets them is refused. A snap must not be a way round that: a joiner
+  // would take its categories over the genesis's, republish them, and
+  // refuse every edit that keeps an expense's old category.
+  it("refuse a snap whose categories were set by anything but the genesis, as an op is refused", async () => {
+    const { file } = await snapFile();
+    expect(check(SNAP, file).ok).toBe(true);
+    const only = [{ id: "only", label: "Only", bg: "#000000", fg: null, position: 0 }];
+    expect(opProblem(withSet(createOp(), [["cat", only]]))).not.toBeNull();
+    for (const tag of [[2, D], [2, OTHER], [file.maxL, D]]) {
+      const copy = JSON.parse(JSON.stringify(file));
+      copy.state.unit = copy.state.unit.map((entry: unknown[]) => (entry[0] === "cat" ? ["cat", only, tag] : entry));
+      expect(check(SNAP, copy), JSON.stringify(tag)).toMatchObject({ ok: false, problem: "malformed" });
+    }
+  });
+
   it("refuse an op or a snap that splits an EMI's balance pair (remainingAsOf with asOfDate)", async () => {
     const both: [string, unknown][] = [[`emi/${ID}/remainingAsOf`, "1.00"], [`emi/${ID}/asOfDate`, "2026-06-03"]];
     expect(opProblem(withSet(createOp(), both))).toBeNull();
