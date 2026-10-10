@@ -55,6 +55,8 @@ describe("op validator", () => {
     ["an unknown register", withSet(createOp(), [["st/theme", "dark"]])],
     ["a non-uuid record id", withSet(createOp(), [["debt/42/name", "Sam"]])],
     ["a field from another collection", withSet(createOp(), [[`debt/${ID}/sortKey`, "a0"]])],
+    ["a sortKey no append can follow (b0)", withSet(createOp(), [[`e/${ID}/sortKey`, "b0"]])],
+    ["a sortKey with a trailing 0 (a10)", withSet(createOp(), [[`e/${ID}/sortKey`, "a10"]])],
     ["the categories (genesis only)", withSet(createOp(), [["cat", []]])],
     ["a malformed money string", withSet(createOp(), [[`debt/${ID}/amount`, "12.5"]])],
     ["a number for money", withSet(createOp(), [[`debt/${ID}/amount`, 12]])],

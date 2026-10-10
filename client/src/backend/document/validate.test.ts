@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createEmptyDocument } from "./createDocument";
 import { DocumentBackend } from "./DocumentBackend";
 import type { LedgerDocument } from "./types";
-import { isWritableDocument } from "./validate";
+import { keyBetween, sequentialKeys } from "./sortKey";
+import { RECORD_FIELDS, isWritableDocument } from "./validate";
 
 // The deep document shape check GitHub mode applies to a document it did not
 // just build: a genesis, a backup to restore, and sync's own self-check
@@ -49,10 +50,49 @@ describe("isWritableDocument", () => {
     ["a month's cards with one id twice", { ...emptyDocument(), cardBills: { "2026-05": [1, 2].map(() => ({ id: ID, updatedAt: 1, updatedBy: "a", name: "Card A", due: "1.00", paid: "0.00", dueDate: null, settled: false })) } }],
     ["a finance month missing savings", { ...emptyDocument(), financeMonths: { "2026-05": { salary: "1.00", otherIncome: null } } }],
     ["a missing collection", (({ debts: _debts, ...rest }) => rest)(emptyDocument())],
+    ["a sortKey whose integer part is too short (b0)", withExpenses({ "2026-05": [{ ...record, sortKey: "b0" }] })],
+    ["a sortKey whose fraction ends in 0 (a10)", withExpenses({ "2026-05": [{ ...record, sortKey: "a10" }] })],
+    ["the smallest integer as a sortKey", withExpenses({ "2026-05": [{ ...record, sortKey: `A${"0".repeat(26)}` }] })],
   ];
   for (const [name, doc] of bad) {
     it(`refuses ${name}`, () => {
       expect(isWritableDocument(doc)).toBe(false);
     });
   }
+});
+
+describe("the sortKey field check", () => {
+  const isSortKeyField = RECORD_FIELDS.expenses.sortKey;
+  const appendable = (key: string) => {
+    try {
+      keyBetween(key, null);
+      keyBetween(null, key);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("accepts every key the backend makes", () => {
+    const keys = sequentialKeys(400);
+    for (const key of keys) expect(isSortKeyField(key)).toBe(true);
+    for (let i = 1; i < keys.length; i += 37) expect(isSortKeyField(keyBetween(keys[i - 1], keys[i]))).toBe(true);
+    expect(isSortKeyField(keyBetween(null, "a0"))).toBe(true);
+  });
+
+  it("accepts exactly the keys an append or a move can build on (B12: a remote key can't break a month)", () => {
+    const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const heads = "aAbBzZyY0";
+    let seed = 7;
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    for (let i = 0; i < 4000; i++) {
+      let key = heads[next(heads.length)];
+      const length = next(6);
+      for (let j = 0; j < length; j++) key += next(4) === 0 ? "0" : chars[next(chars.length)];
+      expect(isSortKeyField(key), key).toBe(appendable(key));
+    }
+  });
 });
