@@ -3,7 +3,7 @@ import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf, type FileCheck } from "./codec";
 import { parseRepoFileName } from "./epoch";
 import { createOrderKey, genesisOrderKey } from "./keys";
-import type { Op } from "./state";
+import { genesisState, type Op } from "./state";
 import { MAX_L } from "./tags";
 import { Replica, deviceId, emptyDocument, fingerprint } from "./testkit";
 
@@ -252,6 +252,19 @@ describe("files", () => {
     expect(check(GENESIS, genesis)).toMatchObject({ ok: false, problem: "malformed" });
     expect(check(GENESIS, { ...genesis, doc: emptyDocument(), basedOn: { epoch: EPOCH } })).toMatchObject({ ok: false, problem: "malformed" });
     expect(check(GENESIS, { ...genesis, doc: emptyDocument(), reason: "merge" })).toMatchObject({ ok: false, problem: "malformed" });
+  });
+
+  // maxL is the greatest L the state has joined (design section 2.3), so it
+  // is derived from the tags, deletions and seen the snap holds. Carried as
+  // a free number it could raise every joiner's maxL to 2^50 - 1, after
+  // which no device could allocate another L in the epoch.
+  it("refuse a snap whose maxL is not the greatest L it holds", async () => {
+    const { file } = await snapFile();
+    const genesisOnly = { ...file, through: 0, seen: {}, maxL: 1, state: encodeState(genesisState(emptyDocument())) };
+    expect(check(SNAP, genesisOnly).ok).toBe(true);
+    for (const maxL of [file.maxL + 1, MAX_L - 1]) expect(check(SNAP, { ...file, maxL }), String(maxL)).toMatchObject({ ok: false, problem: "malformed" });
+    expect(check(SNAP, { ...genesisOnly, maxL: 2 })).toMatchObject({ ok: false, problem: "malformed" });
+    expect(check(SNAP, { ...genesisOnly, maxL: 0 })).toMatchObject({ ok: false, problem: "malformed" });
   });
 
   // Only a genesis sets the categories (design section 2.2), and an op that
