@@ -110,8 +110,8 @@ describe("the sortKey field check", () => {
       "Zz",
       "a0",
       "a0V",
-      "z" + "z".repeat(25),
-      "z" + "z".repeat(25) + "V",
+      "z" + "z".repeat(26),
+      "z" + "z".repeat(26) + "V",
     ];
     for (const key of edges) {
       expect(isSortKeyField(key), key).toBe(true);

@@ -118,7 +118,9 @@ export function keyBetween(a: string | null, b: string | null): string {
     if (ib < b) return ib;
     const decremented = decrementInteger(ib);
     if (decremented === null) throw new Error("cannot decrement any more");
-    return decremented;
+    // Below the integer just above the smallest is only the smallest, which
+    // is no key: a fraction under it is the key below b.
+    return decremented === SMALLEST_INTEGER ? decremented + midpoint("", null) : decremented;
   }
   const ia = integerPart(a);
   const fa = a.slice(ia.length);
