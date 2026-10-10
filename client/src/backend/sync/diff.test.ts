@@ -291,7 +291,7 @@ describe("re-apply (section 9.4)", () => {
       });
     }, ra);
     expect(op?.ra).toEqual(ra);
-    expect(keysOf(op).filter((key) => key.endsWith("/_c"))).toEqual([`debt/${ids[0]}/_c`, `debt/${ids[1]}/_c`, `emi/${emiId}/_c`]);
+    expect(keysOf(op ?? undefined).filter((key) => key.endsWith("/_c"))).toEqual([`debt/${ids[0]}/_c`, `debt/${ids[1]}/_c`, `emi/${emiId}/_c`]);
     expect(r.doc.debts.map((d) => d.name)).toEqual(["Alex", "Sam", "Sam"]);
     expect(r.doc.debts.slice(1).map((d) => d.id)).toEqual(ids);
     expect(r.state.ra).toEqual(new Set(ra));

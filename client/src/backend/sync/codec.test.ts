@@ -239,7 +239,7 @@ describe("values a remote op may set", () => {
   it("a snap whose seen names the last L: later local writes still commit, in a new epoch", async () => {
     const snap = { fv: 1, kind: "snap", epoch: EPOCH, device: X, through: 0, chain: CHAIN_START, seen: { [deviceId(3)]: MAX_L - 1 }, maxL: MAX_L - 1, joined: {}, state: encodeState(genesisState(emptyDocument())) };
     const result = check(`${EPOCH}.${X}.snap.enc`, snap);
-    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.detail);
     const v = new Replica(D, emptyDocument());
     v.receiveState(result.state!);
     expect(() => v.amend((doc) => (doc.monthLocks["2026-05"] = true))).not.toThrow();
