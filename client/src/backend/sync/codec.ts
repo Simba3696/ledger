@@ -14,7 +14,7 @@ import { canonicalJson } from "./canonical";
 import { isEpochKey, parseRepoFileName, type RepoFile } from "./epoch";
 import { CREATE, FIELDS, STAMP, TOGETHER, isOrderKey, orderKeyNames, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
 import { emptyState, type Op, type Register, type SyncState } from "./state";
-import { compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
+import { GENESIS_TAG, compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
 
 // The sync file formats and their structural validator (design sections 3.1,
 // 3.6 and 6). A file another device wrote is joined only if it passes here
@@ -253,6 +253,8 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     const [key, unitValue, t] = entry as [string, unknown, Tag];
     const parsed = parseRegisterKey(key);
     if (!parsed || parsed.kind === "field" || !isRegisterValue(parsed, unitValue, t[0])) return `state holds a malformed ${key}`;
+    // As in opProblem: only a genesis sets the categories.
+    if (parsed.kind === "categories" && compareTags(t, GENESIS_TAG) !== 0) return "state holds categories a genesis did not set";
     if (state.unit.has(key)) return `state holds ${key} twice`;
     state.unit.set(key, { v: unitValue, t: tagged(t) });
   }
