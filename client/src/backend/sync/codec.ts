@@ -43,6 +43,10 @@ const isString = (value: unknown): value is string => typeof value === "string";
 const isFiniteNumber: Check = (value) => typeof value === "number" && Number.isFinite(value);
 /** A count of ops, or an L that may be 0 (nothing yet). */
 const isLamportOrZero: Check = (value) => value === 0 || isLamport(value);
+/** A restore cut (section 9.2: R.seen with {R: R.ownMaxL}): a version
+ * vector whose entries may also be 0, because a restorer that wrote no op
+ * in its epoch has ownMaxL 0. A 0 entry cuts nothing, as an absent one. */
+const isRestoreCut: Check = (value) => isPlainObject(value) && Object.entries(value).every(([device, L]) => isDeviceId(device) && isLamportOrZero(L));
 const isChain: Check = (value) => typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
 const isBlobSha: Check = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 /** A re-apply marker: "<oldEpoch>/<deviceId>". */
@@ -311,7 +315,7 @@ function genesisProblem(value: Record<string, unknown>): string | null {
   if (value.reason !== "create" && value.reason !== "restore") return "genesis reason is malformed";
   if (!isString(value.by) || !isFiniteNumber(value.at)) return "genesis stamp is malformed";
   const basedOn = value.basedOn;
-  if (basedOn !== null && !(isPlainObject(basedOn) && hasKeys(basedOn, ["epoch", "seen"]) && isEpochKey(basedOn.epoch) && isVersionVector(basedOn.seen))) {
+  if (basedOn !== null && !(isPlainObject(basedOn) && hasKeys(basedOn, ["epoch", "seen"]) && isEpochKey(basedOn.epoch) && isRestoreCut(basedOn.seen))) {
     return "genesis basedOn is malformed";
   }
   return isWritableDocument(value.doc) ? null : "genesis document is malformed";

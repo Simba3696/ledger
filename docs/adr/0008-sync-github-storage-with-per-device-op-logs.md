@@ -24,6 +24,7 @@ Format details settled while building the core (stage 1):
 - A new list record's order key pads L to 16 digits. Every L below 2^50 has at most 16 digits, so the keys compare as strings in L order.
 - Record ids are `crypto.randomUUID()` uuids. A genesis or backup must pass the deep `isWritableDocument` check, which uses the same field checks as the op validator.
 - The structural validator is versioned by the per-file format version `fv`. Within one `fv` it may only be loosened, never tightened.
+- A restore genesis's `basedOn.seen` is the section 9.2 cut exactly as built, `R.seen ∪ {R: R.ownMaxL}`, so an entry may be 0 (a restorer that wrote no op in its epoch). A 0 entry cuts nothing, the same as an absent one. Every other version vector (`vv`, a snap's `seen`) still needs each L ≥ 1.
 - `DocumentBackend`, `LedgerBackend` and `DocumentHost` do not change. A write that the diff can't represent as an op fails closed, with a 500 and the document untouched, instead of being dropped.
 
 ## Alternatives considered
