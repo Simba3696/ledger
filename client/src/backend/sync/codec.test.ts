@@ -112,6 +112,17 @@ describe("files", () => {
     expect(check(GENESIS, { ...genesis, reason: "restore", basedOn: { epoch: EPOCH, seen: { [D]: 4 } } }).ok).toBe(true);
   });
 
+  it("accept a restore genesis whose cut holds 0 for a restorer that wrote no op (section 9.2: seen with {R: ownMaxL})", () => {
+    const genesis = { fv: 1, kind: "genesis", epoch: "e000002-0000abcd", reason: "restore", by: "alex", at: 0, doc: emptyDocument() };
+    const name = "e000002-0000abcd.genesis.enc";
+    expect(check(name, { ...genesis, basedOn: { epoch: "e000001-0000abcd", seen: { [D]: 0 } } }).ok).toBe(true);
+    expect(check(name, { ...genesis, basedOn: { epoch: "e000001-0000abcd", seen: { [OTHER]: 7, [D]: 0 } } }).ok).toBe(true);
+    // Still refused: a negative or fractional L, a non-device, an L at 2^50.
+    for (const seen of [{ [D]: -1 }, { [D]: 0.5 }, { g: 0 }, { [D]: 2 ** 50 }]) {
+      expect(check(name, { ...genesis, basedOn: { epoch: "e000001-0000abcd", seen } })).toMatchObject({ ok: false, problem: "malformed" });
+    }
+  });
+
   it("gate on the format version: newer is needsUpdate, on every kind, before anything else is read", () => {
     for (const name of [LOG, SNAP, GENESIS]) {
       expect(check(name, { fv: FORMAT_VERSION + 1, whatever: true })).toMatchObject({ ok: false, problem: "needsUpdate" });
