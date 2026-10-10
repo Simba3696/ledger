@@ -276,7 +276,10 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
   }
 
   if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
-  if (greatestL > maxL || Object.values(seen).some((L) => L > maxL)) return "state holds an L above its maxL";
+  // maxL is the greatest L joined (section 2.3), never a free number: one
+  // above everything held would raise every joiner's next L for nothing,
+  // up to where no device can allocate another.
+  if (Math.max(greatestL, ...Object.values(seen)) !== maxL) return "state maxL is not the greatest L it holds";
   state.seen = new Map(Object.entries(seen));
   state.maxL = maxL;
   return state;
