@@ -267,6 +267,17 @@ describe("files", () => {
     expect(check(SNAP, { ...genesisOnly, maxL: 0 })).toMatchObject({ ok: false, problem: "malformed" });
   });
 
+  // The validator answers ok or a refusal, never a throw: a throw could
+  // escape the engine's per-file handling, which halts only that device's
+  // stream (section 12). Spreading a seen vector this large into one
+  // Math.max call exceeds the engine's argument limit.
+  it("answers, never throws, on a snap whose seen vector is very large", async () => {
+    const { file } = await snapFile();
+    const seen = Object.fromEntries(Array.from({ length: 300_000 }, (_, i) => [deviceId(i + 1), 1]));
+    const huge = { ...file, through: 0, seen, maxL: 1, state: encodeState(genesisState(emptyDocument())) };
+    expect(check(SNAP, huge).ok).toBe(true);
+  });
+
   // Only a genesis sets the categories (design section 2.2), and an op that
   // sets them is refused. A snap must not be a way round that: a joiner
   // would take its categories over the genesis's, republish them, and
