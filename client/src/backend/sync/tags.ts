@@ -51,11 +51,23 @@ export function isVersionVector(value: unknown): value is VersionVector {
   return Object.entries(value).every(([device, L]) => isDeviceId(device) && isLamport(L));
 }
 
+/** No L is left to allocate in this epoch. A valid file may carry any L
+ * below 2^50, so joining one at 2^50 - 1 (an op's L, or a snap's seen)
+ * leaves none, and no bound on files can prevent it: a device that joined
+ * a file at the bound would have to write above it. The host recovers by
+ * restoring its current document as a new epoch, where L starts again, and
+ * committing the write there (ADR-0008). It never reaches DocumentBackend,
+ * which would answer it with a 500. */
+export class LamportExhausted extends RangeError {
+  override name = "LamportExhausted";
+}
+
 /** The next L to allocate: 1 + the greatest L this device has joined,
- * committed or allocated. Throws rather than leave the exact range. */
+ * committed or allocated. Throws LamportExhausted rather than leave the
+ * exact range. */
 export function nextLamport(maxL: number, lastAllocated: number): number {
   const L = Math.max(maxL, lastAllocated) + 1;
-  if (!isLamport(L)) throw new RangeError(`Lamport value out of range: ${L}`);
+  if (!isLamport(L)) throw new LamportExhausted(`Lamport value out of range: ${L}`);
   return L;
 }
 

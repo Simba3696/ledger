@@ -244,7 +244,7 @@ describe("values a remote op may set", () => {
     v.receiveState(result.state!);
     expect(() => v.amend((doc) => (doc.monthLocks["2026-05"] = true))).not.toThrow();
     expect(v.doc.monthLocks).toEqual({ "2026-05": true });
-    await expect(v.backend.addEntry({ year: 2026, month: 5, amount: 1, remarks: "Tea", category: "food", isCard: false })).rejects.toMatchObject({ status: 400 });
+    await expect(v.backend.addEntry({ year: 2026, month: 5, amount: 1, remarks: "Tea", category: "food", isCard: false })).rejects.toMatchObject({ status: 403 });
     await expect(v.backend.addEntry({ year: 2026, month: 6, amount: 1, remarks: "Tea", category: "food", isCard: false })).resolves.toBeDefined();
   });
 
@@ -470,9 +470,10 @@ describe("files", () => {
   });
 
   // maxL is the greatest L the state has joined (design section 2.3), so it
-  // is derived from the tags, deletions and seen the snap holds. Carried as
-  // a free number it could raise every joiner's maxL to 2^50 - 1, after
-  // which no device could allocate another L in the epoch.
+  // is derived from the tags, deletions and seen the snap holds, never a
+  // free number. This does not stop L running out: a seen entry or an op's
+  // L may be 2^50 - 1 (see "a snap whose seen names the last L", where the
+  // host starts a new epoch instead).
   it("refuse a snap whose maxL is not the greatest L it holds", async () => {
     const { file } = await snapFile();
     const genesisOnly = { ...file, through: 0, seen: {}, maxL: 1, state: encodeState(genesisState(emptyDocument())) };

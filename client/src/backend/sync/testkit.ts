@@ -8,8 +8,9 @@ import { encodeState, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
 import { FIELDS, TOGETHER, createOrderKey, type Coll } from "./keys";
 import { materialize, readerOf, rematerialize } from "./materialize";
+import { nextEpochKey } from "./epoch";
 import { applyOp, cloneState, genesisState, joinInto, type Op, type SyncState } from "./state";
-import { nextLamport } from "./tags";
+import { LamportExhausted, newDeviceId, nextLamport } from "./tags";
 
 // Test support for the sync core: a seeded PRNG, fingerprints for comparing
 // states and documents, and Replica, an in-memory stand-in for the engine's
@@ -100,9 +101,16 @@ export function docText(doc: LedgerDocument): string {
  * are kept in `ops` (its log) and handed to `onOp`. With `checks` on, every
  * commit and join also checks the section 15 invariants: the materialised
  * state equals the committed document (AC3), incremental materialisation
- * equals full, and the document is writable. */
+ * equals full, and the document is writable.
+ *
+ * When no L is left (LamportExhausted), it does what the engine does: it
+ * restores its current document as the next epoch, under a new device id,
+ * keeps the genesis it would PUT in `geneses`, and commits the write in the
+ * new epoch. */
 export class Replica implements DocumentHost {
-  readonly device: string;
+  device: string;
+  epoch: string;
+  readonly geneses: Record<string, unknown>[] = [];
   state: SyncState;
   doc: LedgerDocument;
   readonly ops: Op[] = [];
@@ -112,8 +120,9 @@ export class Replica implements DocumentHost {
   onOp?: (device: string, op: Op) => void;
   #lastL = 0;
 
-  constructor(device: string, genesis: LedgerDocument | SyncState, options: { actor?: string; clock?: number; newId?: () => string } = {}) {
+  constructor(device: string, genesis: LedgerDocument | SyncState, options: { actor?: string; clock?: number; newId?: () => string; epoch?: string } = {}) {
     this.device = device;
+    this.epoch = options.epoch ?? "e000001-00000000";
     this.state = "rec" in genesis ? cloneState(genesis) : genesisState(genesis);
     this.doc = materialize(this.state);
     this.clock = options.clock ?? Date.UTC(2026, 4, 10, 6, 0);
@@ -136,7 +145,14 @@ export class Replica implements DocumentHost {
   /** The commit path, synchronously: diff, allocate L, join, swap. `ra`
    * is the re-apply markers the op carries (section 9.4). */
   commitNow(next: LedgerDocument, ra?: string[]): Op | null {
-    const L = nextLamport(this.state.maxL, this.#lastL);
+    let L: number;
+    try {
+      L = nextLamport(this.state.maxL, this.#lastL);
+    } catch (err) {
+      if (!(err instanceof LamportExhausted)) throw err;
+      this.#restoreAsNextEpoch();
+      L = nextLamport(this.state.maxL, this.#lastL);
+    }
     const body = diffDocuments(this.state, this.doc, next, { L, device: this.device });
     if (!body) return null;
     this.#lastL = L;
@@ -156,6 +172,21 @@ export class Replica implements DocumentHost {
     const next = structuredClone(this.doc);
     run(next);
     return this.commitNow(next, ra);
+  }
+
+  /** Section 9.2 with the current document as the backup: a genesis whose
+   * cut is everything this device has seen and written, then the new
+   * epoch's genesis state under a new device id. `current()` reads the same
+   * before and after, so a write diffed against it commits unchanged. */
+  #restoreAsNextEpoch(): void {
+    const seen = { ...vectorOf(this.state.seen), [this.device]: this.state.seen.get(this.device) ?? 0 };
+    const from = this.epoch;
+    this.epoch = nextEpochKey(from);
+    this.geneses.push({ fv: 1, kind: "genesis", epoch: this.epoch, reason: "restore", by: "alex", at: this.clock, basedOn: { epoch: from, seen }, doc: structuredClone(this.doc) });
+    this.device = newDeviceId();
+    this.state = genesisState(this.doc);
+    this.doc = materialize(this.state);
+    this.#lastL = 0;
   }
 
   /** Joins another device's op. */

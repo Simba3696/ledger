@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch } from "./epoch";
 import { createOrderKey, genesisOrderKey, parseRecordKey, parseRegisterKey } from "./keys";
-import { MAX_L, compareTags, isDeviceId, isTag, nextLamport, newDeviceId } from "./tags";
+import { LamportExhausted, MAX_L, compareTags, isDeviceId, isTag, nextLamport, newDeviceId } from "./tags";
 
 // Identities, tags, register keys and epochs (design sections 2.1, 2.2, 2.4,
 // 6 and 9.1): all data, no clock.
@@ -22,7 +22,8 @@ describe("tags", () => {
     expect(nextLamport(7, 3)).toBe(8);
     expect(nextLamport(7, 9)).toBe(10);
     expect(nextLamport(MAX_L - 2, 0)).toBe(MAX_L - 1);
-    expect(() => nextLamport(MAX_L - 1, 0)).toThrow(RangeError);
+    expect(() => nextLamport(MAX_L - 1, 0)).toThrow(LamportExhausted);
+    expect(() => nextLamport(0, MAX_L - 1)).toThrow(LamportExhausted);
   });
 
   it("accept device ids of 'd' + 16 hex digits, the genesis pseudo-device only in a tag", () => {

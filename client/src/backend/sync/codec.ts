@@ -301,9 +301,11 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number, g
   }
 
   // maxL is the greatest L joined (section 2.3), never a free number: one
-  // above everything held would raise every joiner's next L for nothing,
-  // up to where no device can allocate another. A loop, not a spread: a
-  // large seen would exceed the argument limit and throw.
+  // above everything held would raise every joiner's next L for nothing.
+  // This does not keep L from running out: a seen entry (or an op's own L)
+  // may be 2^50 - 1, which leaves none. The host recovers from that by
+  // starting a new epoch (tags.ts, LamportExhausted). A loop, not a spread:
+  // a large seen would exceed the argument limit and throw.
   let greatest = greatestL;
   for (const L of Object.values(seen)) if (L > greatest) greatest = L;
   if (greatest !== maxL) return "state maxL is not the greatest L it holds";
