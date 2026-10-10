@@ -36,6 +36,19 @@ Format details settled while building the core (stage 1):
 - A payment's new balance is held to the bound every local amount passes, at most 12 integer digits (`numeric(14,2)`). The validator takes stored money with up to 15 integer digits and either sign, and the payment computes the balance from stored values: a remote negative `emiAmount` is added back for each passed due date, and a 15-digit `remainingAsOf` can round up to 1e15. `payEmi` refuses a balance past the bound with a 400, and the document is untouched, instead of the diff refusing its own op with a 500. Editing the EMI fixes it. The validator's money check is unchanged.
 - `DocumentBackend`, `LedgerBackend` and `DocumentHost` do not change. A write that the diff can't represent as an op fails closed, with a 500 and the document untouched, instead of being dropped.
 
+## Threat model
+Owner decision, 2026-10-10.
+- **Trusted: household members.** Encryption keeps outsiders out. Anyone who can produce a validly encrypted file holds the passphrase, and could already change or delete anything through the app. So a key holder forging a tag, a device id or authorship, or rewriting another device's edits, is out of scope and not a bug.
+- **Guaranteed: no repo file, however corrupt or crafted, may**
+  1. crash the app or throw uncaught;
+  2. make any later legitimate local read or write fail (a 500) or block permanently;
+  3. break convergence: replicas holding the same files must materialise identically.
+- **Never refused: legitimate flows.** Create, join, rehome after a fork, restore to a new epoch, re-apply (spec section 9.4) and snapshots. Every file they write must pass the validator.
+
+The design meets this through the spec's section 3.6 and section 12: each file is validated whole before any join, a malformed file halts only its own stream (`needsAttention`) and is never partly applied, the cycle's catch-all keeps status from sticking, and the tag order is total even on malformed history. A halted stream is not a block under 2, because local reads and writes carry on. The rules above that keep a remote value from making a later local op fail (order key and `sortKey` shapes, `st/timeZone`, calendar dates, the payment bound) are what 2 needs.
+
+Some rules above, such as binding a snap to its genesis's registers and to its own `seen`, mainly stop a key holder rewriting other devices' values, which this model puts out of scope. They stay as written: fv 1 is unreleased, and within one `fv` a rule may later be loosened but never tightened, so strict is the conservative choice. Loosening any of them later must keep guarantees 1-3 and the never-refused flows.
+
 ## Alternatives considered
 - **Keep the shared file and fix the merge:** every fix on the old branch tried this, and each fix created new bugs.
 - **A CRDT library (Automerge, Yjs):** it adds a large dependency to the GitHub bundle. Its opaque binary history would sit inside our encryption, and it still needs our own rules for deletes, restores and one-writer files.
