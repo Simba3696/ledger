@@ -149,4 +149,18 @@ describe("rehome re-issue (section 10.3 step 4)", () => {
     expect([...state.ra].sort()).toEqual([kept, lost].sort());
     expect(Object.keys(materialize(state).monthLocks).sort()).toEqual(["2026-05", "2026-06", "2026-07"]);
   });
+
+  it("re-issues 200,000 distinct own Ls without overflowing the stack", () => {
+    // A spread of one argument per L overflowed V8's stack near 120k (and
+    // JavaScriptCore's near 64k), which refused the rehome on every retry.
+    const N = 200_000;
+    const monthOf = (i: number) => `${2000 + Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, "0")}`;
+    const pre = genesisState(emptyDocument());
+    for (let i = 0; i < N; i++) applyOp(pre, D, { L: i + 2, at: 0, by: "alex", vv: {}, set: [[`lk/${monthOf(i)}`, true]], del: [] });
+
+    const ops = reissue(pre, rebuild(emptyDocument(), []));
+    expect(ops).toHaveLength(N);
+    expect(ops[0].L).toBe(2);
+    expect(ops[N - 1].L).toBe(N + 1);
+  }, 60_000);
 });
