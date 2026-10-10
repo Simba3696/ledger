@@ -188,6 +188,25 @@ describe("files", () => {
     expect(check(GENESIS, { ...genesis, doc: emptyDocument(), basedOn: { epoch: EPOCH } })).toMatchObject({ ok: false, problem: "malformed" });
     expect(check(GENESIS, { ...genesis, doc: emptyDocument(), reason: "merge" })).toMatchObject({ ok: false, problem: "malformed" });
   });
+
+  it("refuse an op or a snap that splits an EMI's balance pair (remainingAsOf with asOfDate)", async () => {
+    const both: [string, unknown][] = [[`emi/${ID}/remainingAsOf`, "1.00"], [`emi/${ID}/asOfDate`, "2026-06-03"]];
+    expect(opProblem(withSet(createOp(), both))).toBeNull();
+    for (const half of both) expect(opProblem(withSet(createOp(), [half]))).not.toBeNull();
+
+    const r = new Replica(D, emptyDocument());
+    await r.backend.addEmi({ cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 9000, interestRate: null, foreclosureCharge: null });
+    const e = (await r.backend.getEmis())[0];
+    r.clock += 86_400_000;
+    await r.backend.updateEmi(e.row, { ...e, remainingAsOf: 8000, durationMonths: null });
+    const file = { fv: 1, kind: "snap", epoch: EPOCH, device: D, through: r.state.maxL, chain: CHAIN_START, seen: vectorOf(r.state.seen), maxL: r.state.maxL, joined: {}, state: encodeState(r.state) };
+    expect(check(SNAP, file).ok).toBe(true);
+    const split = JSON.parse(JSON.stringify(file));
+    const [record] = split.state.rec.emi;
+    expect(record.t.remainingAsOf).toEqual(record.t.asOfDate);
+    record.t.asOfDate = record.c;
+    expect(check(SNAP, split)).toMatchObject({ ok: false, problem: "malformed" });
+  });
 });
 
 describe("compact state", () => {
