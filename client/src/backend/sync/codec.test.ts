@@ -161,6 +161,9 @@ describe("files", () => {
     ["a malformed value", (_f, s) => ((s.rec as { e: { v: Record<string, unknown> }[] }).e[0].v.amount = 40)],
     ["a tag on a field it doesn't hold", (_f, s) => ((s.rec as { e: { t?: unknown }[] }).e[0].t = { nope: [2, D] })],
     ["a deletion by the genesis pseudo-device", (_f, s) => ((s.del as unknown[][])[0][1] = "g")],
+    ["a unit tagged by the genesis pseudo-device above L 1", (_f, s) => ((s.unit as unknown[][])[0][2] = [2, "g"])],
+    ["a record created by the genesis pseudo-device above L 1", (_f, s) => ((s.rec as { e: { c: unknown }[] }).e[0].c = [2, "g"])],
+    ["a field tagged by the genesis pseudo-device above L 1", (_f, s) => ((s.rec as { e: { t?: unknown }[] }).e[0].t = { amount: [2, "g"] })],
     ["a malformed joined sha", (f) => (f.joined = { [GENESIS]: "abc" })],
     ["a state with missing parts", (_f, s) => delete s.ra],
   ];
