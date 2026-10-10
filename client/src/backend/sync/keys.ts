@@ -28,6 +28,17 @@ export const FIELDS: { readonly [C in Coll]: readonly string[] } = {
   sub: Object.keys(RECORD_FIELDS.subscriptions),
 };
 
+/** Field groups that mean something only together: an op that sets one
+ * field of a group sets them all, so the group's registers always share a
+ * tag and one op's values win whole. An EMI's balance is an amount as of a
+ * date; split between two writers, a payment would be counted twice. */
+export const TOGETHER: { readonly [C in Coll]: readonly (readonly string[])[] } = {
+  e: [],
+  debt: [],
+  emi: [["remainingAsOf", "asOfDate"]],
+  sub: [],
+};
+
 export const CREATE = "_c";
 export const STAMP = "_s";
 

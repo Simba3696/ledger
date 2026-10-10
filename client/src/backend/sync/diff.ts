@@ -1,7 +1,7 @@
 import type { LedgerDocument } from "../document/types";
 import { sameValue } from "./canonical";
 import { opProblem } from "./codec";
-import { COLLECTIONS, CREATE, FIELDS, STAMP, createOrderKey, recordKey, type Coll } from "./keys";
+import { COLLECTIONS, CREATE, FIELDS, STAMP, TOGETHER, createOrderKey, recordKey, type Coll } from "./keys";
 import { rematerialize, type StateReader } from "./materialize";
 import { beats, opState, type Op, type SyncState } from "./state";
 
@@ -157,8 +157,11 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
     dirty.add(unit);
   };
   const update = (coll: Coll, before: AnyRecord, after: AnyRecord, unit: string) => {
-    const changed = FIELDS[coll].filter((field) => !sameValue(before[field], after[field]));
-    if (changed.length === 0) return;
+    const differs = new Set(FIELDS[coll].filter((field) => !sameValue(before[field], after[field])));
+    if (differs.size === 0) return;
+    // A group that changed at all is set whole (TOGETHER).
+    for (const group of TOGETHER[coll]) if (group.some((field) => differs.has(field))) for (const field of group) differs.add(field);
+    const changed = FIELDS[coll].filter((field) => differs.has(field));
     const rk = recordKey(coll, after.id);
     for (const field of changed) set.push([`${rk}/${field}`, after[field]]);
     set.push([`${rk}/${STAMP}`, { at: after.updatedAt, by: after.updatedBy }]);
