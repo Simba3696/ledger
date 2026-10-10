@@ -82,11 +82,10 @@ describe("epochs", () => {
     expect(compareEpochKeys(E2a, E2a)).toBe(0);
   });
 
-  it("make the next key after the highest number listed", () => {
-    expect(nextEpochKey(1, () => "41d0be77")).toBe(E2a);
-    expect(nextEpochKey(0, () => "00000000")).toBe("e000001-00000000");
-    expect(isEpochKey(nextEpochKey(41))).toBe(true);
-    expect(() => nextEpochKey(999999)).toThrow(RangeError);
+  it("make the next key after the winning epoch, or the first when none is listed", () => {
+    expect(nextEpochKey(E1, () => "41d0be77")).toBe(E2a);
+    expect(nextEpochKey(null, () => "00000000")).toBe("e000001-00000000");
+    expect(isEpochKey(nextEpochKey("e000041-00000000"))).toBe(true);
   });
 
   it("name repo files, and ignore every other name", () => {

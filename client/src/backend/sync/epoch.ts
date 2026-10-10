@@ -1,28 +1,48 @@
 import { isDeviceId, randomHex } from "./tags";
 
 // Epochs as data (design sections 2.1, 6 and 9.1). A restore starts a new
-// epoch; the greatest epoch with a listed genesis wins outright, and no clock
-// is involved in choosing it.
+// epoch; the greatest counted epoch with a listed genesis wins outright, and
+// no clock is involved in choosing it.
+//
+// A restore must never be refused, so a restore always has a next epoch
+// that wins: the number is not capped at 6 digits, and an epoch counts only
+// if every number below it, from 1, has a listed genesis too. Honest
+// restores add 1 to the winner, so they always extend the run; a genesis
+// numbered past a gap is ignored, so no single file can take the number to
+// a value whose file names would be too long to write.
 
-/** "e", a 6-digit epoch number, "-", 8 random hex digits. */
+/** "e", the epoch number (6 digits zero-padded, or more with no leading
+ * zero: one spelling per number), "-", 8 random hex digits. */
 export function isEpochKey(value: unknown): value is string {
-  return typeof value === "string" && /^e\d{6}-[0-9a-f]{8}$/.test(value);
+  return typeof value === "string" && /^e(\d{6}|[1-9]\d{6,})-[0-9a-f]{8}$/.test(value);
 }
 
-function epochNumber(key: string): number {
-  return Number(key.slice(1, 7));
+/** The epoch number's digits, as isEpochKey spells them. */
+function epochDigits(key: string): string {
+  return key.slice(1, key.indexOf("-"));
 }
 
-/** By epoch number, then by the random hex. */
+/** How epoch number `n` is spelled in a key. */
+function spellEpoch(n: number): string {
+  return String(n).padStart(6, "0");
+}
+
+/** By epoch number, then by the random hex. Numbers compare exactly at any
+ * length: a longer spelling is a greater number. */
 export function compareEpochKeys(a: string, b: string): number {
-  return epochNumber(a) - epochNumber(b) || (a < b ? -1 : a > b ? 1 : 0);
+  const [da, db] = [epochDigits(a), epochDigits(b)];
+  if (da.length !== db.length) return da.length - db.length;
+  return da < db ? -1 : da > db ? 1 : a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** The key for the epoch after the highest-numbered one listed. */
-export function nextEpochKey(highestNumber: number, hex: (count: number) => string = randomHex): string {
-  const n = highestNumber + 1;
-  if (!Number.isInteger(n) || n < 1 || n > 999999) throw new RangeError(`Epoch number out of range: ${n}`);
-  return `e${String(n).padStart(6, "0")}-${hex(4)}`;
+/** The key for a restore's epoch: the one after `winner`, the winning epoch
+ * of a fresh listing, or the first epoch when none is listed. */
+export function nextEpochKey(winner: string | null, hex: (count: number) => string = randomHex): string {
+  // A counted epoch's number is at most the number of genesis files listed,
+  // so it is a small safe integer.
+  const n = winner === null ? 1 : Number(epochDigits(winner)) + 1;
+  if (!Number.isSafeInteger(n)) throw new RangeError(`Epoch number out of range: ${n}`);
+  return `e${spellEpoch(n)}-${hex(4)}`;
 }
 
 /** A file in the data repo's ledger/ folder that sync reads. */
@@ -44,14 +64,20 @@ export function repoFileName(file: RepoFile): string {
   return file.kind === "genesis" ? `${file.epoch}.genesis.enc` : `${file.epoch}.${file.device}.${file.kind}.enc`;
 }
 
-/** The winning epoch in a listing: the greatest epoch key with a genesis
- * listed. An epoch counts only if its genesis is listed. Null if none is. */
+/** The winning epoch in a listing: the greatest counted epoch key. An
+ * epoch counts only if its genesis is listed and so is a genesis for every
+ * number from 1 up to its own. Null if none counts. */
 export function winningEpoch(names: readonly string[]): string | null {
-  let winner: string | null = null;
+  const byNumber = new Map<string, string>();
   for (const name of names) {
     const file = parseRepoFileName(name);
-    if (file?.kind === "genesis" && (winner === null || compareEpochKeys(file.epoch, winner) > 0)) winner = file.epoch;
+    if (file?.kind !== "genesis") continue;
+    const digits = epochDigits(file.epoch);
+    const best = byNumber.get(digits);
+    if (best === undefined || compareEpochKeys(file.epoch, best) > 0) byNumber.set(digits, file.epoch);
   }
+  let winner: string | null = null;
+  for (let n = 1; byNumber.has(spellEpoch(n)); n++) winner = byNumber.get(spellEpoch(n))!;
   return winner;
 }
 

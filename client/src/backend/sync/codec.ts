@@ -51,7 +51,11 @@ const isRestoreCut: Check = (value) => isPlainObject(value) && Object.entries(va
 const isChain: Check = (value) => typeof value === "string" && /^[0-9a-f]{16}$/.test(value);
 const isBlobSha: Check = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 /** A re-apply marker: "<oldEpoch>/<deviceId>". */
-const isReapplyMarker: Check = (value) => typeof value === "string" && /^e\d{6}-[0-9a-f]{8}\/d[0-9a-f]{16}$/.test(value);
+const isReapplyMarker: Check = (value) => {
+  if (typeof value !== "string") return false;
+  const parts = value.split("/");
+  return parts.length === 2 && isEpochKey(parts[0]) && isDeviceId(parts[1]);
+};
 
 const FIELD_CHECKS: { readonly [C in Coll]: Record<string, Check> } = {
   e: RECORD_FIELDS.expenses,
