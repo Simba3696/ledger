@@ -180,6 +180,32 @@ describe("values a remote op may set", () => {
     }
   });
 
+  // An asOfDate late in 9999 puts the first due date in year 10000, whose
+  // month key ("10000-01") sorts before every 4-digit year's as text. The
+  // projection must still stop at its window, not walk on for ~10,000 years.
+  it("EMIs anchored late in 9999 with nothing paid each month: the projection still answers at once", async () => {
+    const v = new Replica(D, emptyDocument());
+    const set: [string, unknown][] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+      const fields: Record<string, unknown> = {
+        _c: { o: createOrderKey(5, X) }, cardOrBank: "Car Loan", emiAmount: "0.00", dueDay: 1, totalAmount: "100.00", remarks: "",
+        remainingAsOf: "100.00", asOfDate: "9999-12-31", untilTarget: null, interestRate: null, foreclosureCharge: null, _s: { at: 0, by: "sam" },
+      };
+      for (const [field, value] of Object.entries(fields)) set.push([`emi/${id}/${field}`, value]);
+    }
+    const op = remote(5, set);
+    expect(opProblem(op)).toBeNull();
+    v.receive(X, op);
+    const started = Date.now();
+    const year = await v.backend.getEmiMonthlyProjection(12);
+    const auto = await v.backend.getEmiMonthlyProjection("auto");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(year).toHaveLength(12);
+    expect(year.every((month) => month.count === 0)).toBe(true);
+    expect(auto).toHaveLength(1);
+  });
+
   // "A" + 25 zeros + "1" is the integer just above the smallest one, which
   // no key may be. A move to the top of its month must not build that key.
   it("an expense keyed just above the smallest integer: moving another entry above it still works", async () => {
