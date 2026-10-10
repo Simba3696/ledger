@@ -3,7 +3,7 @@ import { sameValue } from "./canonical";
 import { opProblem } from "./codec";
 import { COLLECTIONS, CREATE, FIELDS, STAMP, TOGETHER, createOrderKey, recordKey, type Coll } from "./keys";
 import { rematerialize, type StateReader } from "./materialize";
-import { beats, opState, type Op, type SyncState } from "./state";
+import { beats, joinRecord, opState, type Op, type SyncState } from "./state";
 
 // The diff (design section 3.3): one write's before and after documents,
 // turned into one op. DocumentBackend runs every write unchanged (checks,
@@ -74,10 +74,7 @@ function overlay(base: SyncState, top: SyncState): StateReader {
       const under = base.rec.get(key);
       if (!over || !under) return over ?? under;
       const merged = new Map(under);
-      for (const [field, reg] of over) {
-        const current = merged.get(field);
-        if (!current || beats(reg, current)) merged.set(field, reg);
-      }
+      joinRecord(key.slice(0, key.indexOf("/")) as Coll, merged, over);
       return merged;
     },
     unit(key) {

@@ -1,12 +1,13 @@
 import { isWritableDocument } from "../document/validate";
 import type { LedgerDocument } from "../document/types";
 import { canonicalJson } from "./canonical";
-import { COLLECTIONS, CREATE, FIELDS, STAMP, genesisOrderKey, parseRegisterKey, recordKey, type Coll } from "./keys";
+import { COLLECTIONS, CREATE, FIELDS, STAMP, TOGETHER, genesisOrderKey, parseRegisterKey, recordKey, type Coll } from "./keys";
 import { GENESIS_TAG, compareTags, type Tag, type VersionVector } from "./tags";
 
 // The sync state and its join (design section 2.3). The state is a set of
 // registers, a deleted set, re-apply markers and a seen vector. Joining two
-// states takes, per register, the one with the greater tag. The join is
+// states takes, per register, the one with the greater tag, and per field
+// group (keys.ts TOGETHER) the whole group of one side. The join is
 // commutative, associative and idempotent, so the same ops give the same
 // state whatever order they arrive in, however often and however batched.
 // Convergence rests on that alone, and join.test.ts checks the laws.
@@ -82,11 +83,58 @@ export function cloneState(state: SyncState): SyncState {
 
 /** Whether register `a` beats `b`: the greater tag, or on an equal tag
  * (only after a fork) the greater canonical value. The order is therefore
- * total, and the join stays commutative even on malformed history. */
+ * total, and the join stays commutative even on malformed history. A
+ * TOGETHER group is compared as one unit instead (joinRecord). */
 export function beats(a: Register, b: Register): boolean {
   const order = compareTags(a.t, b.t);
   if (order !== 0) return order > 0;
   return a.v !== b.v && canonicalJson(a.v) > canonicalJson(b.v);
+}
+
+/** Whether a field group's registers `a` beat `b`'s, as one unit: their
+ * tags in group order, then on equal tags (only after a fork) the canonical
+ * JSON of all their values. Comparing values per register instead would let
+ * a fork take one field from each side: a pair nobody wrote. */
+function groupBeats(a: readonly Register[], b: readonly Register[]): boolean {
+  for (let i = 0; i < a.length; i++) {
+    const order = compareTags(a[i].t, b[i].t);
+    if (order !== 0) return order > 0;
+  }
+  if (a.every((reg, i) => reg === b[i])) return false;
+  return canonicalJson(a.map((reg) => reg.v)) > canonicalJson(b.map((reg) => reg.v));
+}
+
+function isWhole(regs: readonly (Register | undefined)[]): regs is Register[] {
+  return regs.every((reg) => reg !== undefined);
+}
+
+/** Joins one record's `incoming` registers into `mine` in place, and says
+ * whether any changed: per register the one that beats, except that a
+ * TOGETHER group present whole on both sides is taken whole from the side
+ * whose group beats. Valid input always holds a group whole or not at all
+ * (codec.ts), so the join stays commutative, associative and idempotent. */
+export function joinRecord(coll: Coll, mine: Map<string, Register>, incoming: ReadonlyMap<string, Register>): boolean {
+  let changed = false;
+  const grouped = new Set<string>();
+  for (const group of TOGETHER[coll]) {
+    const ours = group.map((field) => mine.get(field));
+    const theirs = group.map((field) => incoming.get(field));
+    if (!isWhole(ours) || !isWhole(theirs)) continue;
+    for (const field of group) grouped.add(field);
+    if (groupBeats(theirs, ours)) {
+      group.forEach((field, i) => mine.set(field, theirs[i]));
+      changed = true;
+    }
+  }
+  for (const [field, reg] of incoming) {
+    if (grouped.has(field)) continue;
+    const current = mine.get(field);
+    if (!current || beats(reg, current)) {
+      mine.set(field, reg);
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** The same order for deletions: (L, by), then the canonical vv. */
@@ -125,15 +173,7 @@ export function joinInto(target: SyncState, source: SyncState): Changes {
       continue;
     }
     const before = mine.get(CREATE);
-    let changed = false;
-    for (const [field, reg] of regs) {
-      const current = mine.get(field);
-      if (!current || beats(reg, current)) {
-        mine.set(field, reg);
-        changed = true;
-      }
-    }
-    if (changed) touch(key, before);
+    if (joinRecord(key.slice(0, key.indexOf("/")) as Coll, mine, regs)) touch(key, before);
   }
   for (const [key, reg] of source.unit) {
     const current = target.unit.get(key);
