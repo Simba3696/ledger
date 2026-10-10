@@ -141,6 +141,44 @@ describe("values a remote op may set", () => {
     await v.backend.updateEmi(emi.row, { ...emi, durationMonths: null });
     await expect(v.backend.payEmi(emi.row, 100)).resolves.toMatchObject({ asOfDate: expect.stringMatching(/^2026-/) });
   });
+
+  // Stored money may have up to 15 integer digits and any sign, but the
+  // local write path stores at most 12 (numeric(14,2)). A payment computes
+  // its balance from stored values, so a remote amount can push it past
+  // what the diff (or the SQL store) takes: that payment is a 400 with the
+  // document untouched, never a 500 from the diff.
+  it("an EMI whose payment balance would pass 12 digits: refused with a 400 and writes nothing", async () => {
+    // A negative EMI amount is added back for each passed due date.
+    const v = new Replica(D, emptyDocument());
+    const emi = await v.backend.addEmi(emiInput);
+    const id = v.doc.emis[0].id;
+    const op = remote(10, [[`emi/${id}/emiAmount`, "-999999999999999.99"]]);
+    expect(opProblem(op)).toBeNull();
+    v.receive(X, op);
+    v.clock = Date.UTC(2026, 7, 10, 6, 0);
+    const before = docText(v.doc);
+    await expect(v.backend.payEmi(emi.row, 1)).rejects.toMatchObject({ status: 400 });
+    expect(docText(v.doc)).toBe(before);
+    // Editing the EMI fixes it, and payments work again.
+    await v.backend.updateEmi(emi.row, { ...emiInput, durationMonths: null });
+    await expect(v.backend.payEmi(emi.row, 100)).resolves.toMatchObject({ remainingAsOf: 900 });
+
+    // A 15-digit balance whose double rounds up to 1e15, paid 0, and one
+    // just past 12 digits.
+    for (const [stored, status] of [["999999999999999.95", 400], ["1000000000000.00", 400], ["999999999999.99", 200]] as const) {
+      const w = new Replica(D, emptyDocument());
+      const e = await w.backend.addEmi(emiInput);
+      const wid = w.doc.emis[0].id;
+      w.receive(X, remote(10, [[`emi/${wid}/remainingAsOf`, stored], [`emi/${wid}/asOfDate`, "2026-05-01"]]));
+      const was = docText(w.doc);
+      if (status === 400) {
+        await expect(w.backend.payEmi(e.row, 0), stored).rejects.toMatchObject({ status: 400 });
+        expect(docText(w.doc)).toBe(was);
+      } else {
+        await expect(w.backend.payEmi(e.row, 0), stored).resolves.toMatchObject({ remainingAsOf: 999999999999.99 });
+      }
+    }
+  });
 });
 
 function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
