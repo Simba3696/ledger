@@ -22,18 +22,17 @@ export function isDeviceId(value: unknown): value is string {
   return typeof value === "string" && /^d[0-9a-f]{16}$/.test(value);
 }
 
-/** A device id, or the genesis pseudo-device: what a tag may name. */
-function isTagDevice(value: unknown): value is string {
-  return value === GENESIS_DEVICE || isDeviceId(value);
-}
-
 /** A usable Lamport value: a safe integer in [1, 2^50). */
 export function isLamport(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) < MAX_L;
 }
 
+/** A device's tag [L, deviceId], or the genesis tag [1, "g"] exactly: the
+ * pseudo-device never writes at any other L, and a "g" tag above 1 would
+ * beat every real device's write. */
 export function isTag(value: unknown): value is Tag {
-  return Array.isArray(value) && value.length === 2 && isLamport(value[0]) && isTagDevice(value[1]);
+  if (!Array.isArray(value) || value.length !== 2 || !isLamport(value[0])) return false;
+  return value[1] === GENESIS_DEVICE ? value[0] === GENESIS_TAG[0] : isDeviceId(value[1]);
 }
 
 /** Device ids compare as plain strings (code-unit order). */
