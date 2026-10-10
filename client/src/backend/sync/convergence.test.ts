@@ -416,6 +416,38 @@ describe("conflict table (section 4)", () => {
     expect(a.doc.emis[0].remainingAsOf).not.toBe(before);
   });
 
+  it("payEmi / updateEmi on one EMI from the same state: one device's balance (remainingAsOf with its asOfDate) wins whole", async () => {
+    // The payment settles the 06-05 installment early; the edit touches only
+    // the remarks but re-dates the shown balance to today, as the form does.
+    // Each order of the two writers, so each one holds the higher tag once.
+    for (const payerIsA of [true, false]) {
+      const { a, b, sync } = await pair();
+      a.clock = b.clock = Date.UTC(2026, 5, 3, 6, 0);
+      const [payer, editor] = payerIsA ? [a, b] : [b, a];
+      await payer.backend.payEmi((await payer.backend.getEmis())[0].row, 1000);
+      const e = (await editor.backend.getEmis())[0];
+      await editor.backend.updateEmi(e.row, {
+        cardOrBank: e.cardOrBank,
+        emiAmount: e.emiAmount,
+        dueDay: e.dueDay,
+        totalAmount: e.totalAmount,
+        remarks: "note",
+        remainingAsOf: e.remaining,
+        interestRate: e.interestRate,
+        foreclosureCharge: e.foreclosureCharge,
+        durationMonths: null,
+      });
+      a.clock = b.clock = Date.UTC(2026, 5, 10, 6, 0);
+      const pairs = [a, b].map((r) => [r.doc.emis[0].remainingAsOf, r.doc.emis[0].asOfDate]);
+      const alone = [(await a.backend.getEmis())[0].remaining, (await b.backend.getEmis())[0].remaining];
+      sync();
+      const merged = a.doc.emis[0];
+      expect(pairs).toContainEqual([merged.remainingAsOf, merged.asOfDate]);
+      expect(alone).toContain((await a.backend.getEmis())[0].remaining);
+      expect(merged.remarks).toBe("note");
+    }
+  });
+
   it("settings / anything: per-key last-writer-wins; a record in a disabled module is kept and hidden", async () => {
     const { a, b, sync } = await pair();
     a.amend((doc) => (doc.settings.modules = doc.settings.modules.filter((m) => m !== "debts")));
