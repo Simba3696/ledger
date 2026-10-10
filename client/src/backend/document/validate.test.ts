@@ -121,4 +121,23 @@ describe("the sortKey field check", () => {
       expect([isSortKeyField(above), above > key], `above ${key}: ${above}`).toEqual([true, true]);
     }
   });
+
+  // The check sets no length limit (fv 1 checks may only be loosened), so
+  // a remote key may be very long. Building a key next to one must not
+  // recurse once per character, or a long run of "z" overflows the stack.
+  it("builds a key between or after keys with a very long run of z, in constant stack depth", () => {
+    const run = "z".repeat(100000);
+    const cases: [string, string | null][] = [
+      [`a0${run}`, "a1"],
+      [`a0${run}`, null],
+      [`${"z".repeat(27)}${run}`, null],
+      [`a0${run}`, `a0${run}V`],
+      [`a0${"y".repeat(50000)}${run}`, "a1"],
+    ];
+    for (const [a, b] of cases) {
+      expect(isSortKeyField(a)).toBe(true);
+      const key = keyBetween(a, b);
+      expect([isSortKeyField(key), key > a, b === null || key < b], `${a.slice(0, 8)}…, ${b?.slice(0, 8)}`).toEqual([true, true, true]);
+    }
+  });
 });

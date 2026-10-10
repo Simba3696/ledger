@@ -263,6 +263,38 @@ describe("values a remote op may set", () => {
     await expect(v.backend.moveEntry(2026, 5, rows[1].row, rows[0].row)).resolves.toBeUndefined();
     expect((await v.backend.getMonth(2026, 5)).map((row) => row.remarks)).toEqual(["Lunch", "Groceries"]);
   });
+
+  // A sortKey has no length limit, so a remote key may end in a long run
+  // of "z". Appending after it, or moving an entry next to it, must still
+  // commit: the key between is built without recursing per character.
+  it("an expense keyed with a very long run of z: appends after it and moves beside it still work", async () => {
+    const created = (sortKey: string): Op =>
+      remote(10, [
+        [`e/${ID}/_c`, { m: "2026-05" }],
+        [`e/${ID}/sortKey`, sortKey],
+        [`e/${ID}/amount`, "1.00"],
+        [`e/${ID}/remarks`, "Bus"],
+        [`e/${ID}/category`, "food"],
+        [`e/${ID}/cardNote`, null],
+        [`e/${ID}/_s`, { at: 1, by: "sam" }],
+      ]);
+    const run = "z".repeat(20000);
+
+    const last = created("z".repeat(27) + run); // the greatest integer: an append takes a fraction after it
+    expect(opProblem(last)).toBeNull();
+    const v = new Replica(D, emptyDocument());
+    v.receive(X, last);
+    await expect(v.backend.addEntry({ year: 2026, month: 5, amount: 5, remarks: "Lunch", category: "food", isCard: false })).resolves.toBeDefined();
+    expect((await v.backend.getMonth(2026, 5)).map((row) => row.remarks)).toEqual(["Bus", "Lunch"]);
+
+    const w = new Replica(D, emptyDocument());
+    w.receive(X, created("a0" + run));
+    await w.backend.addEntry({ year: 2026, month: 5, amount: 5, remarks: "Lunch", category: "food", isCard: false }); // a1
+    await w.backend.addEntry({ year: 2026, month: 5, amount: 6, remarks: "Tea", category: "food", isCard: false }); // a2
+    const rows = await w.backend.getMonth(2026, 5);
+    await expect(w.backend.moveEntry(2026, 5, rows[2].row, rows[1].row)).resolves.toBeUndefined(); // Tea between Bus and Lunch
+    expect((await w.backend.getMonth(2026, 5)).map((row) => row.remarks)).toEqual(["Bus", "Tea", "Lunch"]);
+  });
 });
 
 function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
