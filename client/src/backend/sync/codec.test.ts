@@ -106,21 +106,45 @@ async function snapFile() {
 }
 
 describe("order keys", () => {
-  const withKey = (o: string) => withSet(createOp(), createOp().set.map(([key, value]): [string, unknown] => (key.endsWith("/_c") ? [key, { o }] : [key, value])));
+  /** A debt create at `L` whose order key is `o`. */
+  const withKey = (o: string, L = 2) => withSet(createOp(L), createOp(L).set.map(([key, value]): [string, unknown] => (key.endsWith("/_c") ? [key, { o }] : [key, value])));
 
-  /** A valid snap holding one more debt, with order key `o`. */
-  const snapWithKey = async (o: string) => {
+  /** A valid snap holding one more debt, created at `L`, with order key `o`. */
+  const snapWithKey = async (o: string, L = 2) => {
     const snap = JSON.parse(JSON.stringify((await snapFile()).file));
-    snap.state.rec.debt.push({ id: ID, c: [2, D], v: { _c: { o }, _s: { at: 1, by: "alex" }, name: "Sam", amount: "1.00" } });
+    snap.state.rec.debt.push({ id: ID, c: [L, D], v: { _c: { o }, _s: { at: 1, by: "alex" }, name: "Sam", amount: "1.00" } });
+    snap.maxL = Math.max(snap.maxL, L);
     return snap;
   };
 
   it("accept exactly the shapes keys.ts makes: a genesis index, or 1.<L>.<device>", async () => {
-    for (const o of [genesisOrderKey(0), genesisOrderKey(35), genesisOrderKey(36 ** 6), createOrderKey(2, D), createOrderKey(MAX_L - 1, OTHER)]) {
-      expect(opProblem(withKey(o)), o).toBeNull();
-      expect(check(SNAP, await snapWithKey(o)).ok, o).toBe(true);
+    const keys: [string, number][] = [[genesisOrderKey(0), 2], [genesisOrderKey(35), 2], [genesisOrderKey(36 ** 6), 2], [createOrderKey(2, D), 2], [createOrderKey(MAX_L - 1, OTHER), MAX_L - 1]];
+    for (const [o, L] of keys) {
+      expect(opProblem(withKey(o, L)), o).toBeNull();
+      expect(check(SNAP, await snapWithKey(o, L)).ok, o).toBe(true);
     }
   });
+
+  // A create's key carries the L of the op that made it, so after the join
+  // every device's next L is greater and its own create lists last. A key
+  // naming any other L could sort after that next local key (one above
+  // 2^50 forever), and the diff would then refuse every later add to the
+  // list on every device. The device part is not bound: a rehome (section
+  // 10.3) re-issues a create under a new device id with its original L.
+  it("accept a create whose key names its op's L and another device (a rehome re-issue)", async () => {
+    expect(opProblem(withKey(createOrderKey(5, OTHER), 5))).toBeNull();
+    expect(check(LOG, logFile([withKey(createOrderKey(5, OTHER), 5)])).ok).toBe(true);
+    expect(check(SNAP, await snapWithKey(createOrderKey(5, OTHER), 5)).ok).toBe(true);
+  });
+
+  for (const [name, digits] of [["above its op's", "0000000000000999"], ["below its op's", "0000000000000001"], ["past 2^50", "9999999999999999"]] as const) {
+    it(`refuse a create whose key names an L ${name}, in an op, a log and a snap`, async () => {
+      const o = `1.${digits}.${OTHER}`;
+      expect(opProblem(withKey(o, 2))).not.toBeNull();
+      expect(check(LOG, logFile([withKey(o, 2)]))).toMatchObject({ ok: false, problem: "malformed" });
+      expect(check(SNAP, await snapWithKey(o, 2))).toMatchObject({ ok: false, problem: "malformed" });
+    });
+  }
 
   // Any other text could sort after the key the next local create gets,
   // and the diff, which lists a new record last as push() does, would then
