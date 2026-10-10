@@ -278,8 +278,11 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
   if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
   // maxL is the greatest L joined (section 2.3), never a free number: one
   // above everything held would raise every joiner's next L for nothing,
-  // up to where no device can allocate another.
-  if (Math.max(greatestL, ...Object.values(seen)) !== maxL) return "state maxL is not the greatest L it holds";
+  // up to where no device can allocate another. A loop, not a spread: a
+  // large seen would exceed the argument limit and throw.
+  let greatest = greatestL;
+  for (const L of Object.values(seen)) if (L > greatest) greatest = L;
+  if (greatest !== maxL) return "state maxL is not the greatest L it holds";
   state.seen = new Map(Object.entries(seen));
   state.maxL = maxL;
   return state;
