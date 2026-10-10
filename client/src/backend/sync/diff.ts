@@ -146,7 +146,11 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
   const create = (coll: Coll, record: AnyRecord, marker: unknown, unit: string) => {
     const rk = recordKey(coll, record.id);
     if (state.del.has(rk)) fail(`${rk} was deleted, and a deleted id never comes back`);
-    if (state.rec.has(rk)) fail(`${rk} is already in the sync state`);
+    // Only a create marker makes an id taken. Field registers without one
+    // (a re-applied create whose op has not joined here, but a later edit
+    // has) are a left-behind record a re-apply re-creates (section 9.4): its
+    // L is above maxL, so it wins every one of them.
+    if (state.rec.get(rk)?.has(CREATE)) fail(`${rk} is already in the sync state`);
     set.push([`${rk}/${CREATE}`, marker]);
     for (const field of FIELDS[coll]) set.push([`${rk}/${field}`, record[field]]);
     set.push([`${rk}/${STAMP}`, { at: record.updatedAt, by: record.updatedBy }]);
