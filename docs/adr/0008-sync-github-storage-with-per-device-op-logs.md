@@ -22,7 +22,7 @@ These deviations from ADR-0007, the epic and its children (the spec's Appendix A
 Format details settled while building the core (stage 1):
 - An equal tag can happen only after a fork. It is broken by comparing the values' canonical JSON, which is a total order with no collision risk, instead of comparing hashes of the values.
 - A new list record's order key pads L to 16 digits. Every L below 2^50 has at most 16 digits, so the keys compare as strings in L order.
-- Record ids are `crypto.randomUUID()` uuids. A genesis or backup must pass the deep `isWritableDocument` check, which uses the same field checks as the op validator.
+- Record ids are `crypto.randomUUID()` uuids. A genesis or backup must pass the deep `isWritableDocument` check, which uses the same field checks as the op validator. An expense's `sortKey` must be a key the fractional-index code (`sortKey.ts`) accepts, so no remote key can make a later append or move in its month fail.
 - The structural validator is versioned by the per-file format version `fv`. Within one `fv` it may only be loosened, never tightened.
 - A restore genesis's `basedOn.seen` is the section 9.2 cut exactly as built, `R.seen ∪ {R: R.ownMaxL}`, so an entry may be 0 (a restorer that wrote no op in its epoch). A 0 entry cuts nothing, the same as an absent one. Every other version vector (`vv`, a snap's `seen`) still needs each L ≥ 1.
 - A tag naming the genesis pseudo-device `g` is valid only as `[1, "g"]`. A snap holding `[L, "g"]` with any other L is malformed.

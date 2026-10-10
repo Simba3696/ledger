@@ -1,5 +1,6 @@
 import { daysInMonth } from "@ledger/shared/dateMath";
 import { LedgerError } from "@ledger/shared/errors";
+import { isSortKey } from "./sortKey";
 import type { LedgerDocument } from "./types";
 
 // The SQL store's input checks, ported (not moved: server/src is what the
@@ -270,7 +271,7 @@ export const isRecordStamp = (at: unknown, by: unknown): boolean => isFiniteNumb
  * each value must pass. */
 export const RECORD_FIELDS = {
   expenses: {
-    sortKey: matches(/^[A-Za-z][0-9A-Za-z]*$/),
+    sortKey: isSortKey,
     amount: isMoneyText,
     remarks: isString,
     category: orNull(isString),

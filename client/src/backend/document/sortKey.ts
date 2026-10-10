@@ -48,6 +48,20 @@ function validate(key: string): void {
   if (fraction.slice(-1) === ZERO) throw new Error(`invalid sort key: ${key}`);
 }
 
+/** Whether `value` is a key keyBetween accepts: base-62 digits only, a
+ * valid head with its whole integer part, not the smallest integer, and no
+ * trailing "0" in the fraction. A key read from elsewhere (a sync op, a
+ * backup) must pass this, or the next append or move in its month throws. */
+export function isSortKey(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || [...value].some((c) => !DIGITS.includes(c))) return false;
+  try {
+    validate(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function incrementInteger(x: string): string | null {
   const [head, ...digits] = x.split("");
   let carry = true;
