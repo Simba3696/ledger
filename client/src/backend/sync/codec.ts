@@ -209,8 +209,9 @@ export function encodeState(state: SyncState): CompactState {
   };
 }
 
-/** A compact state back as a state, validated; or why it is malformed. */
-export function decodeState(value: unknown, seen: VersionVector, maxL: number): SyncState | string {
+/** A compact state back as a state, validated against `genesis`, its
+ * epoch's genesis state; or why it is malformed. */
+export function decodeState(value: unknown, seen: VersionVector, maxL: number, genesis: SyncState): SyncState | string {
   if (!isPlainObject(value) || !hasKeys(value, ["rec", "unit", "del", "ra"])) return "state has the wrong keys";
   if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
   const state = emptyState();
@@ -225,6 +226,13 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
   // equal tag goes to the greater value), and would mislead the gap check.
   const seenOf = (device: string): number => (Object.hasOwn(seen, device) ? seen[device] : 0);
   const unseen = (t: Tag): boolean => compareTags(t, GENESIS_TAG) !== 0 && t[0] > seenOf(t[1]);
+  // A register tagged [1, "g"] ties with the genesis's own on join, and an
+  // equal tag goes to the greater value. So one is valid only as exactly
+  // the genesis's register: otherwise a snap could rewrite a genesis value
+  // (for good, for the categories, which nothing else writes) on every
+  // device, or add genesis-tagged keys the genesis never had.
+  const notGenesisOwn = (t: Tag, v: unknown, own: Register | undefined): boolean =>
+    compareTags(t, GENESIS_TAG) === 0 && (own === undefined || compareTags(own.t, GENESIS_TAG) !== 0 || canonicalJson(own.v) !== canonicalJson(v));
 
   const rec = value.rec;
   if (!isPlainObject(rec) || !hasKeys(rec, ["e", "debt", "emi", "sub"])) return "state rec has the wrong keys";
@@ -246,6 +254,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
         const tag = (t?.[field] as Tag | undefined) ?? c;
         if (!parsed || !isRegisterValue(parsed, fieldValue, tag[0])) return `state holds a malformed ${key}/${field}`;
         if (unseen(tag)) return `state holds ${key}/${field} above its seen for that device`;
+        if (notGenesisOwn(tag, fieldValue, genesis.rec.get(key)?.get(field))) return `state holds ${key}/${field} as the genesis's, but the genesis does not`;
         regs.set(field, { v: fieldValue, t: tagged(tag) });
       }
       if (regs.size === 0) return `state holds ${key} with no registers`;
@@ -264,6 +273,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     // As in opProblem: only a genesis sets the categories.
     if (parsed.kind === "categories" && compareTags(t, GENESIS_TAG) !== 0) return "state holds categories a genesis did not set";
     if (unseen(t)) return `state holds ${key} above its seen for that device`;
+    if (notGenesisOwn(t, unitValue, genesis.unit.get(key))) return `state holds ${key} as the genesis's, but the genesis does not`;
     if (state.unit.has(key)) return `state holds ${key} twice`;
     state.unit.set(key, { v: unitValue, t: tagged(t) });
   }
@@ -386,8 +396,10 @@ function logProblem(value: Record<string, unknown>): string | null {
 
 /** Checks a decrypted file against the name it was listed under (section
  * 6: the path is not covered by the encryption, so the content must repeat
- * it). */
-export function checkRepoFile(name: RepoFile, value: unknown): FileCheck {
+ * it). A snap is also checked against `genesis`, its epoch's genesis state,
+ * which the engine always reads first (section 8.3); checking a snap
+ * without one is a caller error and throws. */
+export function checkRepoFile(name: RepoFile, value: unknown, genesis?: SyncState): FileCheck {
   if (!isPlainObject(value)) return malformed("file is not an object");
   if (Number.isSafeInteger(value.fv) && (value.fv as number) > FORMAT_VERSION) {
     return { ok: false, problem: "needsUpdate", detail: `file format ${String(value.fv)} is newer than ${FORMAT_VERSION}` };
@@ -412,7 +424,8 @@ export function checkRepoFile(name: RepoFile, value: unknown): FileCheck {
   if (!isPlainObject(value.joined) || !Object.entries(value.joined).every(([file, sha]) => parseRepoFileName(file) !== null && isBlobSha(sha))) {
     return malformed("snap joined is malformed");
   }
-  const state = decodeState(value.state, value.seen, value.maxL as number);
+  if (!genesis) throw new Error("A snap is checked against its epoch's genesis state");
+  const state = decodeState(value.state, value.seen, value.maxL as number, genesis);
   if (typeof state === "string") return malformed(state);
   return { ok: true, file: value as unknown as SnapFile, state };
 }

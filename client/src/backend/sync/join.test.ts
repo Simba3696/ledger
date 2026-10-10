@@ -215,7 +215,7 @@ describe(`join laws over ${LAW_SEEDS} random states`, () => {
       expect(fingerprint(join(join(a, b), c))).toBe(fingerprint(join(a, join(b, c))));
       expect(fingerprint(join(a, a))).toBe(fingerprint(a));
       // A state survives its compact encoding (a snapshot) unchanged.
-      const decoded = decodeState(JSON.parse(canonicalJson(encodeState(a))), vectorOf(a.seen), a.maxL);
+      const decoded = decodeState(JSON.parse(canonicalJson(encodeState(a))), vectorOf(a.seen), a.maxL, genesis);
       expect(typeof decoded === "string" ? decoded : fingerprint(decoded)).toBe(fingerprint(a));
     });
   }, 120_000);

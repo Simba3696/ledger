@@ -293,7 +293,7 @@ describe("files", () => {
     for (const [name, spoil] of spoils) {
       const copy = JSON.parse(JSON.stringify(file));
       spoil(copy, copy.state);
-      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed" });
+      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed", detail: expect.stringContaining("above its seen") });
     }
     // The same tags pass once seen covers them.
     const covered = JSON.parse(JSON.stringify(file));
@@ -356,7 +356,7 @@ describe("files", () => {
     for (const [name, spoil] of spoils) {
       const copy = JSON.parse(JSON.stringify(file));
       spoil(copy, copy.state);
-      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed" });
+      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed", detail: expect.stringContaining("as the genesis's") });
     }
   });
 
@@ -371,11 +371,11 @@ describe("files", () => {
     expect(record.c).toEqual([1, "g"]);
     expect(check(SNAP, file, genesisState(doc)).ok).toBe(true);
     // Another epoch's genesis never held this record.
-    expect(check(SNAP, file, genesisState(emptyDocument()))).toMatchObject({ ok: false, problem: "malformed" });
+    expect(check(SNAP, file, genesisState(emptyDocument()))).toMatchObject({ ok: false, problem: "malformed", detail: expect.stringContaining("as the genesis's") });
     // A genesis-tagged field with a value the genesis did not set.
     const renamed = JSON.parse(JSON.stringify(file));
     renamed.state.rec.debt[0].v.name = "Zed";
-    expect(check(SNAP, renamed, genesisState(doc))).toMatchObject({ ok: false, problem: "malformed" });
+    expect(check(SNAP, renamed, genesisState(doc))).toMatchObject({ ok: false, problem: "malformed", detail: expect.stringContaining("as the genesis's") });
   });
 
   it("refuse an op or a snap that splits an EMI's balance pair (remainingAsOf with asOfDate)", async () => {
