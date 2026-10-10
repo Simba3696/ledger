@@ -97,4 +97,28 @@ describe("the sortKey field check", () => {
       expect(isSortKeyField(key), key).toBe(appendable(key));
     }
   });
+
+  // A key the check accepts may come from another device, so the keys an
+  // append or a move builds next to it must pass the check too: the diff
+  // refuses an op holding any other, and the write would be a 500.
+  it("builds a valid key on either side of every valid key, the integers next to the smallest and largest included", () => {
+    const edges = [
+      "A" + "0".repeat(25) + "1",
+      "A" + "0".repeat(25) + "2",
+      "A" + "0".repeat(26) + "1",
+      "A" + "0".repeat(26) + "V",
+      "Zz",
+      "a0",
+      "a0V",
+      "z" + "z".repeat(25),
+      "z" + "z".repeat(25) + "V",
+    ];
+    for (const key of edges) {
+      expect(isSortKeyField(key), key).toBe(true);
+      const below = keyBetween(null, key);
+      const above = keyBetween(key, null);
+      expect([isSortKeyField(below), below < key], `below ${key}: ${below}`).toEqual([true, true]);
+      expect([isSortKeyField(above), above > key], `above ${key}: ${above}`).toEqual([true, true]);
+    }
+  });
 });

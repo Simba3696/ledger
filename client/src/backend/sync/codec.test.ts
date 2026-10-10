@@ -179,6 +179,22 @@ describe("values a remote op may set", () => {
       }
     }
   });
+
+  // "A" + 25 zeros + "1" is the integer just above the smallest one, which
+  // no key may be. A move to the top of its month must not build that key.
+  it("an expense keyed just above the smallest integer: moving another entry above it still works", async () => {
+    const v = new Replica(D, emptyDocument());
+    await v.backend.addEntry({ year: 2026, month: 5, amount: 40, remarks: "Groceries", category: "food", isCard: false });
+    const id = v.doc.expenses["2026-05"][0].id;
+    const op = remote(10, [[`e/${id}/sortKey`, "A" + "0".repeat(25) + "1"], [`e/${id}/_s`, { at: 1, by: "sam" }]]);
+    expect(opProblem(op)).toBeNull();
+    v.receive(X, op);
+    await v.backend.addEntry({ year: 2026, month: 5, amount: 12, remarks: "Lunch", category: "food", isCard: false });
+    const rows = await v.backend.getMonth(2026, 5);
+    expect(rows.map((row) => row.remarks)).toEqual(["Groceries", "Lunch"]);
+    await expect(v.backend.moveEntry(2026, 5, rows[1].row, rows[0].row)).resolves.toBeUndefined();
+    expect((await v.backend.getMonth(2026, 5)).map((row) => row.remarks)).toEqual(["Lunch", "Groceries"]);
+  });
 });
 
 function logFile(ops: Op[], extra: Record<string, unknown> = {}) {
