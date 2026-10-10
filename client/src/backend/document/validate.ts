@@ -1,4 +1,4 @@
-import { daysInMonth } from "@ledger/shared/dateMath";
+import { daysInMonth, formatDate } from "@ledger/shared/dateMath";
 import { LedgerError } from "@ledger/shared/errors";
 import { isSortKey } from "./sortKey";
 import type { LedgerDocument } from "./types";
@@ -44,7 +44,9 @@ function assertMoney(amount: number, opts: { positive: boolean }): void {
   if (absCents >= MONEY_LIMIT_CENTS) throw new LedgerError("Amount is too large", 400);
 }
 
-/** A real YYYY-MM-DD calendar date. */
+/** A real YYYY-MM-DD calendar date. What every stored date must be: the
+ * user's dates are checked with it, formatDate() only makes such dates, and
+ * the document shape check below holds a remote value to it too. */
 function isRealDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [y, m, d] = value.split("-").map(Number);
@@ -215,6 +217,16 @@ export function validateEmiPayment(amountPaid: number): void {
   }
 }
 
+/** `date` as the EMI write path stores it. A payment settles the first due
+ * date after the stored asOfDate, so an asOfDate late in 9999 (which a remote
+ * op may set) would move to year 10000, which no stored date can hold: that
+ * payment is refused, and editing the EMI re-anchors it at today. */
+export function storableDate(date: Date): string {
+  const text = formatDate(date);
+  if (!isRealDate(text)) throw new LedgerError(`Date out of range: ${text}`, 400);
+  return text;
+}
+
 export function emiNotFound(row: number): LedgerError {
   return new LedgerError(`No EMI entry at row ${row}`, 404);
 }
@@ -255,7 +267,7 @@ const matches = (pattern: RegExp): Check => (value) => typeof value === "string"
 /** Money: toDecimalString(_, 2). Rates: toDecimalString(_, 3). */
 const isMoneyText = matches(/^-?\d{1,15}\.\d{2}$/);
 const isRateText = matches(/^-?\d{1,15}\.\d{3}$/);
-const isDateText = matches(/^\d{4}-\d{2}-\d{2}$/);
+const isDateText: Check = (value) => typeof value === "string" && isRealDate(value);
 const isDueDay: Check = (value) => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 31;
 
 /** monthKey()'s output: the year unpadded, the month zero-padded. */
