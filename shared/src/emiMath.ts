@@ -304,7 +304,10 @@ export function projectEmiMonthly(
   const firstOfThisMonth = makeDate(day.getFullYear(), day.getMonth() + 1, 1);
   const windowSize = months === "auto" ? EMI_PROJECTION_MAX_MONTHS : months;
   const windowMonths = Array.from({ length: windowSize }, (_, i) => toMonthOnly(addMonths(firstOfThisMonth, i)));
-  const lastWindowMonth = windowMonths[windowMonths.length - 1];
+  // The first day after the window, compared as a date: month keys compare
+  // as text only while years have 4 digits, and a due date can fall in year
+  // 10000 (an asOfDate late in 9999), whose "10000-01" sorts before them.
+  const windowEnd = addMonths(firstOfThisMonth, windowSize);
 
   const buckets = new Map<string, { count: number; totalAmount: number }>(
     windowMonths.map((m) => [m, { count: 0, totalAmount: 0 }]),
@@ -328,8 +331,8 @@ export function projectEmiMonthly(
     const anchor = asOf > day ? asOf : day;
     let due = nextDueDateAfter(anchor, emi.dueDay);
     while (balance > 0) {
+      if (due >= windowEnd) break;
       const monthKey = toMonthOnly(due);
-      if (monthKey > lastWindowMonth) break;
       const payment = Math.min(emi.emiAmount, balance);
       const bucket = buckets.get(monthKey);
       if (bucket) {
