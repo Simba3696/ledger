@@ -18,10 +18,10 @@ import { beats, joinRecord, opState, type Op, type SyncState } from "./state";
 //   - Fail closed: any difference an op can't represent throws
 //     UnrepresentableChange, so commit rejects and the document is
 //     untouched. That covers a changed version or categories, an unknown
-//     key, an expense moved between months, a deleted id coming back, two
-//     creates in one ordered list, and anything else, because the op is
-//     checked by materialising it over the state and comparing every unit it
-//     touched with `next`.
+//     key, an expense moved between months, a deleted id coming back,
+//     creates in one ordered list listed out of id order, and anything else,
+//     because the op is checked by materialising it over the state and
+//     comparing every unit it touched with `next`.
 
 /** A write the sync layer can't express as an op. */
 export class UnrepresentableChange extends Error {
@@ -201,14 +201,15 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
   }
 
   // Debts, EMIs and subscriptions: ordered by their create marker, so a new
-  // record lists last. One write creates at most one per list.
+  // record lists last. Several creates in one write (a re-apply, section
+  // 9.4) share the op's marker and list by id: the check below refuses them
+  // unless `next` lists them last in id order.
   for (const coll of ["debt", "emi", "sub"] as const) {
     const name = COLLECTIONS[coll];
     const list = next[name] as unknown;
     if (!Array.isArray(list)) fail(`${name} is not a list`);
     const old = new Map((current[name] as unknown as AnyRecord[]).map((r) => [r.id, r]));
     const seen = new Set<string>();
-    let creates = 0;
     for (const value of list) {
       const record = checkRecord(coll, value);
       if (seen.has(record.id)) fail(`${name} record ${record.id} appears twice`);
@@ -217,7 +218,6 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
       if (previous) {
         update(coll, previous, record, coll);
       } else {
-        if (++creates > 1) fail(`one write created two ${name} records, whose order an op can't keep`);
         create(coll, record, { o: createOrderKey(writer.L, writer.device) }, coll);
       }
     }
