@@ -296,4 +296,24 @@ describe("re-apply (section 9.4)", () => {
     expect(r.doc.debts.slice(1).map((d) => d.id)).toEqual(ids);
     expect(r.state.ra).toEqual(new Set(ra));
   });
+
+  it("re-creates a left-behind record whose fields a joined op already set without its create marker", () => {
+    // Device B's re-apply re-created R and C then edited R's amount; B's
+    // log has not joined here (corrupt, newer fv, or a gap), C's has. R's
+    // field registers are in the state with no _c, so R is not visible and
+    // the group is still offered. Re-applying it must go through.
+    const R = "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a01";
+    const ra = [`e000001-9c1f22aa/${deviceId(0xaa)}`];
+    const r = new Replica(A, emptyDocument(), { epoch: "e000002-11111111" });
+    r.receive(deviceId(0xc), { L: 5, at: 1, by: "sam", vv: {}, set: [[`e/${R}/amount`, "12.00"], [`e/${R}/_s`, { at: 1, by: "sam" }]], del: [] });
+    expect(r.doc.expenses["2026-05"] ?? []).toEqual([]);
+
+    const op = r.amend((doc) => {
+      doc.expenses["2026-05"] = [{ id: R, updatedAt: 1, updatedBy: "alex", sortKey: "a0", amount: "40.00", remarks: "Groceries", category: "food", cardNote: null }];
+    }, ra);
+    expect(op?.L).toBeGreaterThan(5);
+    expect(keysOf(op ?? undefined)).toContain(`e/${R}/_c`);
+    expect(r.doc.expenses["2026-05"].map((e) => [e.id, e.amount])).toEqual([[R, "40.00"]]);
+    expect(r.state.ra).toEqual(new Set(ra));
+  });
 });
