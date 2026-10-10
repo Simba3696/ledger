@@ -114,6 +114,7 @@ describe("order keys", () => {
     const snap = JSON.parse(JSON.stringify((await snapFile()).file));
     snap.state.rec.debt.push({ id: ID, c: [L, D], v: { _c: { o }, _s: { at: 1, by: "alex" }, name: "Sam", amount: "1.00" } });
     snap.maxL = Math.max(snap.maxL, L);
+    snap.seen[D] = Math.max(snap.seen[D], L);
     return snap;
   };
 

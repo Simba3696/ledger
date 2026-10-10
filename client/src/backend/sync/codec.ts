@@ -212,12 +212,19 @@ export function encodeState(state: SyncState): CompactState {
 /** A compact state back as a state, validated; or why it is malformed. */
 export function decodeState(value: unknown, seen: VersionVector, maxL: number): SyncState | string {
   if (!isPlainObject(value) || !hasKeys(value, ["rec", "unit", "del", "ra"])) return "state has the wrong keys";
+  if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
   const state = emptyState();
   let greatestL = 0;
   const tagged = (t: Tag): Tag => {
     greatestL = Math.max(greatestL, t[0]);
     return t;
   };
+  // Every write a state holds is at or below seen for its device: an op
+  // sets seen[device] to its L and a join takes the pointwise max. A write
+  // above it could pre-empt that device's real write at the same L (an
+  // equal tag goes to the greater value), and would mislead the gap check.
+  const seenOf = (device: string): number => (Object.hasOwn(seen, device) ? seen[device] : 0);
+  const unseen = (t: Tag): boolean => compareTags(t, GENESIS_TAG) !== 0 && t[0] > seenOf(t[1]);
 
   const rec = value.rec;
   if (!isPlainObject(rec) || !hasKeys(rec, ["e", "debt", "emi", "sub"])) return "state rec has the wrong keys";
@@ -238,6 +245,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
         const parsed = parseRegisterKey(`${key}/${field}`);
         const tag = (t?.[field] as Tag | undefined) ?? c;
         if (!parsed || !isRegisterValue(parsed, fieldValue, tag[0])) return `state holds a malformed ${key}/${field}`;
+        if (unseen(tag)) return `state holds ${key}/${field} above its seen for that device`;
         regs.set(field, { v: fieldValue, t: tagged(tag) });
       }
       if (regs.size === 0) return `state holds ${key} with no registers`;
@@ -255,6 +263,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     if (!parsed || parsed.kind === "field" || !isRegisterValue(parsed, unitValue, t[0])) return `state holds a malformed ${key}`;
     // As in opProblem: only a genesis sets the categories.
     if (parsed.kind === "categories" && compareTags(t, GENESIS_TAG) !== 0) return "state holds categories a genesis did not set";
+    if (unseen(t)) return `state holds ${key} above its seen for that device`;
     if (state.unit.has(key)) return `state holds ${key} twice`;
     state.unit.set(key, { v: unitValue, t: tagged(t) });
   }
@@ -265,6 +274,7 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     const [key, by, L, vv] = entry as unknown[];
     if (!isString(key) || !parseRecordKey(key) || !isDeviceId(by) || !isLamport(L) || !isVersionVector(vv)) return "state del entry is malformed";
     if (state.del.has(key)) return `state deletes ${key} twice`;
+    if (L > seenOf(by)) return `state deletes ${key} above its seen for that device`;
     state.del.set(key, { by, L, vv });
     greatestL = Math.max(greatestL, L);
   }
@@ -275,7 +285,6 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number): 
     state.ra.add(marker);
   }
 
-  if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
   // maxL is the greatest L joined (section 2.3), never a free number: one
   // above everything held would raise every joiner's next L for nothing,
   // up to where no device can allocate another. A loop, not a spread: a
