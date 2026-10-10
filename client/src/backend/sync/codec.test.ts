@@ -267,6 +267,38 @@ describe("files", () => {
     expect(check(SNAP, { ...genesisOnly, maxL: 0 })).toMatchObject({ ok: false, problem: "malformed" });
   });
 
+  // Every state a device holds has each tag [L, d] and each deletion (L, by)
+  // at or below seen[d] (an op sets seen[device] to its L, a join takes the
+  // pointwise max). A snap naming a device above its own seen could carry a
+  // forged write at an L that device has not reached: its real write at that
+  // L would tie on the tag, and the tie goes to the greater value, so the
+  // forgery could win on every device. It would also mislead the section
+  // 8.2 gap check, which trusts seen.
+  it("refuse a snap holding a tag or deletion above its seen for that device", async () => {
+    const { file } = await snapFile();
+    expect(check(SNAP, file).ok).toBe(true);
+    const seenD = file.seen[D];
+    const spoils: [string, (f: Record<string, unknown>, s: Record<string, unknown>) => void][] = [
+      ["a unit tagged by a device it has not seen", (_f, s) => (s.unit as unknown[]).push(["lk/2026-06", true, [2, OTHER]])],
+      ["a field tagged above its own device's seen", (f, s) => {
+        (s.rec as { e: { t?: unknown }[] }).e[0].t = { remarks: [seenD + 1, D] };
+        f.maxL = seenD + 1;
+      }],
+      ["a deletion by a device it has not seen", (_f, s) => ((s.del as unknown[][])[0][1] = OTHER)],
+      ["a seen entry lowered below its device's tags", (f) => (f.seen = { [D]: 1 })],
+    ];
+    for (const [name, spoil] of spoils) {
+      const copy = JSON.parse(JSON.stringify(file));
+      spoil(copy, copy.state);
+      expect(check(SNAP, copy), name).toMatchObject({ ok: false, problem: "malformed" });
+    }
+    // The same tags pass once seen covers them.
+    const covered = JSON.parse(JSON.stringify(file));
+    covered.state.unit.push(["lk/2026-06", true, [2, OTHER]]);
+    covered.seen = { ...covered.seen, [OTHER]: 2 };
+    expect(check(SNAP, covered).ok).toBe(true);
+  });
+
   // The validator answers ok or a refusal, never a throw: a throw could
   // escape the engine's per-file handling, which halts only that device's
   // stream (section 12). Spreading a seen vector this large into one
