@@ -97,3 +97,12 @@ export function genesisOrderKey(index: number): string {
 export function createOrderKey(L: number, device: string): string {
   return `1.${String(L).padStart(16, "0")}.${device}`;
 }
+
+/** Whether `value` has a shape the two functions above make: a genesis
+ * index, or "1.", a 16-digit L and a device id. Other text could sort
+ * after the key the next local create gets, and the diff, which lists a new
+ * record last as push() does, would then refuse every later add to that
+ * list. */
+export function isOrderKey(value: unknown): value is string {
+  return typeof value === "string" && (/^0\.[0-9a-z]{6,57}$/.test(value) || /^1\.\d{16}\.d[0-9a-f]{16}$/.test(value));
+}

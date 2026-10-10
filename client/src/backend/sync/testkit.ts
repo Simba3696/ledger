@@ -6,7 +6,7 @@ import { isWritableDocument } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { encodeState, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
-import { FIELDS, TOGETHER, type Coll } from "./keys";
+import { FIELDS, TOGETHER, createOrderKey, type Coll } from "./keys";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { applyOp, cloneState, genesisState, joinInto, type Op, type SyncState } from "./state";
 import { nextLamport } from "./tags";
@@ -242,7 +242,7 @@ export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
       const coll = rng.pick(["e", "e", "debt", "emi", "sub"]);
       const rk = `${coll}/${rng.uuid()}`;
       pool.push(rk);
-      put(`${rk}/_c`, coll === "e" ? { m: rng.pick(MONTHS) } : { o: `1.${String(L).padStart(16, "0")}.${rng.pick(["a", "b"])}` });
+      put(`${rk}/_c`, coll === "e" ? { m: rng.pick(MONTHS) } : { o: createOrderKey(L, deviceId(1 + rng.int(2))) });
       for (const field of FIELDS[coll as Coll]) put(`${rk}/${field}`, fieldValue(rng, coll, field));
       put(`${rk}/_s`, { at: rng.int(1000), by: rng.pick(NAMES) });
     } else if (kind < 6) {

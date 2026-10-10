@@ -12,7 +12,7 @@ import {
 } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { isEpochKey, parseRepoFileName, type RepoFile } from "./epoch";
-import { CREATE, FIELDS, STAMP, TOGETHER, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
+import { CREATE, FIELDS, STAMP, TOGETHER, isOrderKey, parseRecordKey, parseRegisterKey, type Coll, type RegisterKey } from "./keys";
 import { emptyState, type Op, type Register, type SyncState } from "./state";
 import { compareTags, isDeviceId, isLamport, isTag, isVersionVector, type Tag, type VersionVector } from "./tags";
 
@@ -51,8 +51,6 @@ const isChain: Check = (value) => typeof value === "string" && /^[0-9a-f]{16}$/.
 const isBlobSha: Check = (value) => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 /** A re-apply marker: "<oldEpoch>/<deviceId>". */
 const isReapplyMarker: Check = (value) => typeof value === "string" && /^e\d{6}-[0-9a-f]{8}\/d[0-9a-f]{16}$/.test(value);
-/** An order key (keys.ts): plain text, compared as a string. */
-const isOrderKey: Check = (value) => typeof value === "string" && value.length > 0 && value.length <= 64;
 
 const FIELD_CHECKS: { readonly [C in Coll]: Record<string, Check> } = {
   e: RECORD_FIELDS.expenses,
