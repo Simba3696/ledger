@@ -3,7 +3,7 @@
 **Status:** Accepted (2026-10-10). Amends [ADR-0007](0007-serverless-github-storage-mode.md)'s storage layout and the epic's T5, #8 and #9. ADR-0007 itself is unchanged.
 
 ## Context
-ADR-0007 stores a household's data as one shared `ledger.json.enc`. The first sync engine for it (#7) merged each device's copy three ways against a remembered base and wrote it back with a sha-guarded PUT. Six review rounds found 32 data-loss bugs. Most came from four sources: the shared file, the remembered base going stale when a PUT's response is lost, replaying in-flight edits, and treating timestamps as intent. Each fix added state, and that state opened the next hole. That branch was not merged.
+ADR-0007 stores a household's data as one shared `ledger.json.enc`. The first sync engine for it (#7) merged each device's copy three ways against a remembered base and wrote it back with a sha-guarded PUT. Building it surfaced 28 data-loss or correctness bugs (B1-B28 in the #7 spec). 20 of the 28 came from four sources: the shared file, the remembered base going stale when a PUT's response is lost, replaying in-flight edits, and treating timestamps as intent. Each fix added state, and that state opened the next hole. That branch was not merged.
 
 The redesign (the spec in #7, accepted by the owner on 2026-10-10) removes those four sources rather than adding rules around them. GitHub mode is unreleased, so there is nothing to migrate.
 
@@ -30,7 +30,7 @@ Format details settled while building the core (stage 1):
 - `DocumentBackend`, `LedgerBackend` and `DocumentHost` do not change. A write that the diff can't represent as an op fails closed, with a 500 and the document untouched, instead of being dropped.
 
 ## Alternatives considered
-- **Keep the shared file and fix the merge:** each of the 6 rounds tried this, and each fix created new bugs.
+- **Keep the shared file and fix the merge:** every fix on the old branch tried this, and each fix created new bugs.
 - **A CRDT library (Automerge, Yjs):** it adds a large dependency to the GitHub bundle. Its opaque binary history would sit inside our encryption, and it still needs our own rules for deletes, restores and one-writer files.
 - **Edit wins over delete:** this needs a resurrection rule that depends on timestamps, which caused the earlier B2, B3 and B25 bugs. Remove-wins keeps the edit recoverable as "Add it back as a new entry".
 
