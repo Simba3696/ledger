@@ -222,9 +222,10 @@ describe("fail closed", () => {
     }],
     ["an emptied month left as an empty list", (doc) => (doc.expenses["2026-05"] = [])],
     ["a reorder with no field change", (doc) => doc.debts.reverse()],
-    ["two creates in one list", (doc) => {
-      doc.debts.push({ ...doc.debts[0], id: "00000000-0000-4000-8000-0000000000ab" });
+    // Creates in one op share its order key, so they list by id.
+    ["two creates in one list, out of id order", (doc) => {
       doc.debts.push({ ...doc.debts[0], id: "00000000-0000-4000-8000-0000000000ac" });
+      doc.debts.push({ ...doc.debts[0], id: "00000000-0000-4000-8000-0000000000ab" });
     }],
     ["a record id that is not a uuid", (doc) => doc.debts.push({ ...doc.debts[0], id: "debt-1" })],
     ["a malformed amount", (doc) => (doc.debts[0].amount = "1")],
@@ -268,5 +269,31 @@ describe("fail closed", () => {
     const b = diffDocuments(r.state, r.doc, next, { L: 9, device: A });
     expect(a).toEqual(b);
     expect(fingerprint(r.state)).toBe(state);
+  });
+});
+
+describe("re-apply (section 9.4)", () => {
+  // Re-apply builds one op through SyncedHost.amend: each list record it
+  // re-creates keeps its old id and gets a fresh _c for the op's own L
+  // (ADR-0008). Several re-created in one list share that key and list by
+  // id, so re-apply appends them in id order, and the op must go through.
+  it("re-creates two debts and an EMI in one op carrying ra, listed last in id order", async () => {
+    const r = new Replica(deviceId(0xb), emptyDocument());
+    await r.backend.addDebt({ name: "Alex", amount: 5 });
+    const ids = ["6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a01", "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a02"];
+    const emiId = "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a03";
+    const ra = [`e000001-9c1f22aa/${A}`];
+    const op = r.amend((doc) => {
+      for (const id of ids) doc.debts.push({ id, updatedAt: 1, updatedBy: "sam", name: "Sam", amount: "1.00" });
+      doc.emis.push({
+        id: emiId, updatedAt: 1, updatedBy: "sam", cardOrBank: "Car Loan", emiAmount: "1000.00", dueDay: 5, totalAmount: "12000.00", remarks: "",
+        remainingAsOf: "9000.00", asOfDate: "2026-05-01", untilTarget: null, interestRate: null, foreclosureCharge: null,
+      });
+    }, ra);
+    expect(op?.ra).toEqual(ra);
+    expect(keysOf(op).filter((key) => key.endsWith("/_c"))).toEqual([`debt/${ids[0]}/_c`, `debt/${ids[1]}/_c`, `emi/${emiId}/_c`]);
+    expect(r.doc.debts.map((d) => d.name)).toEqual(["Alex", "Sam", "Sam"]);
+    expect(r.doc.debts.slice(1).map((d) => d.id)).toEqual(ids);
+    expect(r.state.ra).toEqual(new Set(ra));
   });
 });

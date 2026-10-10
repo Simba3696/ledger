@@ -133,13 +133,14 @@ export class Replica implements DocumentHost {
     this.commitNow(next);
   }
 
-  /** The commit path, synchronously: diff, allocate L, join, swap. */
-  commitNow(next: LedgerDocument): Op | null {
+  /** The commit path, synchronously: diff, allocate L, join, swap. `ra`
+   * is the re-apply markers the op carries (section 9.4). */
+  commitNow(next: LedgerDocument, ra?: string[]): Op | null {
     const L = nextLamport(this.state.maxL, this.#lastL);
     const body = diffDocuments(this.state, this.doc, next, { L, device: this.device });
     if (!body) return null;
     this.#lastL = L;
-    const op: Op = { L, at: this.clock, by: "alex", vv: vectorOf(this.state.seen), ...body };
+    const op: Op = { L, at: this.clock, by: "alex", vv: vectorOf(this.state.seen), ...body, ...(ra ? { ra } : {}) };
     expect(opProblem(op)).toBeNull();
     this.receive(this.device, op);
     if (this.checks) expect(docText(this.doc)).toBe(docText(next));
@@ -149,11 +150,12 @@ export class Replica implements DocumentHost {
   }
 
   /** A write made directly on a copy of the document (a stand-in for
-   * SyncedHost.amend and for #8's updateSettings). */
-  amend(run: (doc: LedgerDocument) => void): Op | null {
+   * SyncedHost.amend and for #8's updateSettings), carrying the re-apply
+   * markers `ra` if given. */
+  amend(run: (doc: LedgerDocument) => void, ra?: string[]): Op | null {
     const next = structuredClone(this.doc);
     run(next);
-    return this.commitNow(next);
+    return this.commitNow(next, ra);
   }
 
   /** Joins another device's op. */
