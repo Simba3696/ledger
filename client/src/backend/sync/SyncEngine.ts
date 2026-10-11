@@ -74,7 +74,7 @@ export interface EngineState {
   pendingCount: number;
   /** The last write on this device failed to save (and was refused). */
   deviceSaveFailed: boolean;
-  /** Records go only to this tab's memory (IndexedDB never opened). */
+  /** Records go only to this tab's memory (the browser refuses IndexedDB). */
   volatile: boolean;
   noticeCount: number;
   leftBehindCount: number;

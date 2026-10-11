@@ -4,8 +4,8 @@ import type { Mutation, SyncStore } from "./persist";
 import type { DeviceKey } from "./records";
 
 // Test support for the engine's local half: a device key, a Web Locks fake,
-// a store whose writes can be held at either side of the transaction, and a
-// raw dump of the ledger:sync databases. Imported only by tests, which load
+// a store whose writes can be held at either side of the transaction, an
+// indexedDB whose opens fail, and a raw dump of the ledger:sync databases. Imported only by tests, which load
 // fake-indexeddb first.
 
 /** A device key without the second of PBKDF2 a real one costs. */
@@ -77,6 +77,30 @@ export class FakeLocks {
   asLockManager(): LockManager {
     return this as unknown as LockManager;
   }
+}
+
+/** `real`, except that open(name) fails while `fail(name)` returns an
+ * error: as an error event, the way a browser reports a full quota or a
+ * corrupt backing store, or thrown at the call with `sync`. `databases:
+ * false` hides indexedDB.databases(), as Firefox before 126 does. */
+export function faultyIndexedDB(real: IDBFactory, fail: (name: string) => DOMException | null, options: { sync?: boolean; databases?: boolean } = {}): IDBFactory {
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop === "databases" && options.databases === false) return undefined;
+      if (prop === "open") {
+        return (name: string, version?: number) => {
+          const error = fail(name);
+          if (!error) return target.open(name, version);
+          if (options.sync) throw error;
+          const failed = { error, result: undefined, onerror: null, onsuccess: null, onupgradeneeded: null } as unknown as IDBOpenDBRequest;
+          setTimeout(() => failed.onerror?.call(failed, { preventDefault() {} } as unknown as Event));
+          return failed;
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {

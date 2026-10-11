@@ -5,7 +5,7 @@ import { ApiError } from "../ApiError";
 import { DocumentBackend } from "../document/DocumentBackend";
 import { isWritableDocument } from "../document/validate";
 import { CHAIN_START, chainNext, opHash, opProblem } from "./codec";
-import { FakeLocks, deferred, dumpDatabase, hookedStore, tamper, testKey } from "./localTestkit";
+import { FakeLocks, deferred, dumpDatabase, faultyIndexedDB, hookedStore, tamper, testKey } from "./localTestkit";
 import { clearSyncState, openSyncStore, type SyncStore } from "./persist";
 import { decodeDelta, seal, unseal, type DeviceKey } from "./records";
 import { genesisState } from "./state";
@@ -474,6 +474,66 @@ describe("saved state this build can't read (section 12, B13, B22)", () => {
     await d.backend.addEntry(ENTRY);
     expect(d.engine.getState()).toMatchObject({ volatile: true, hasDocument: true, deviceSaveFailed: false });
     expect(remarks(d)).toEqual(["Groceries"]);
+  });
+
+  const quota = () => new DOMException("The quota has been exceeded.", "QuotaExceededError");
+
+  it("a full device that can't create the next generation's probe still loads the saved records (D19)", async () => {
+    const old = await savedDevice();
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, (name) => (name === "ledger:sync:2" ? quota() : null)));
+    const d = await device();
+    expect(d.engine.getState()).toMatchObject({ status: "idle", needsInit: false, volatile: false, unreadable: null });
+    expect(d.engine.deviceId).toBe(old.engine.deviceId);
+    expect(remarks(d)).toEqual(["Groceries"]);
+    expect(d.engine.pushableOps()).toHaveLength(1);
+    await d.backend.addEntry({ ...ENTRY, remarks: "Rent" });
+    vi.stubGlobal("indexedDB", factory);
+    expect(remarks(await reload(d))).toEqual(["Groceries", "Rent"]);
+  });
+
+  it("without indexedDB.databases(), a probe that fails is unknown, not absent: unreadable, never memory, writes refused", async () => {
+    await savedDevice();
+    const before = await dumpDatabase();
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, (name) => (name === "ledger:sync:2" ? quota() : null), { databases: false }));
+    const d = await device();
+    await expectUnreadable(d, "loadFailed", before);
+    expect(d.engine.getState().volatile).toBe(false);
+    await expect(d.backend.addEntry({ ...ENTRY, remarks: "Rent" })).rejects.toBeInstanceOf(ApiError);
+    expect(await dumpDatabase()).toBe(before);
+
+    // Once the probe works again, Try again finds every saved write.
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => null, { databases: false }));
+    await d.engine.retry();
+    expect(remarks(d)).toEqual(["Groceries"]);
+  });
+
+  it("a database that keeps failing to open with anything but a refusal is unreadable, never memory: a full quota or a corrupt store", async () => {
+    await savedDevice();
+    const before = await dumpDatabase();
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => new DOMException("Internal error opening backing store for indexedDB.open.", "UnknownError")));
+    const corrupt = await device();
+    vi.stubGlobal("indexedDB", factory);
+    await expectUnreadable(corrupt, "loadFailed", before);
+    expect(corrupt.engine.getState().volatile).toBe(false);
+    await clearSyncState();
+
+    // A first start on a full device: nothing can be stored, so nothing is
+    // accepted into tab memory either.
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, quota));
+    const full = await device();
+    expect(full.engine.getState()).toMatchObject({ status: "unreadable", unreadable: "loadFailed", needsInit: false, volatile: false });
+    await expect(full.backend.addEntry(ENTRY)).rejects.toBeInstanceOf(ApiError);
+    expect(await factory.databases()).toEqual([]);
+  });
+
+  it("a refusal from a database indexedDB.databases() lists is unreadable, never memory", async () => {
+    await savedDevice();
+    const before = await dumpDatabase();
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => new DOMException("A mutation operation was attempted on a database that did not allow mutations.", "InvalidStateError")));
+    const d = await device();
+    vi.stubGlobal("indexedDB", factory);
+    await expectUnreadable(d, "loadFailed", before);
+    expect(d.engine.getState().volatile).toBe(false);
   });
 
   it("Start as a new device keeps the old records as a raw backup and starts over under a new device id", async () => {

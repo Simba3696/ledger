@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dumpDatabase, tamper } from "./localTestkit";
+import { dumpDatabase, faultyIndexedDB, tamper } from "./localTestkit";
 import { LocalStateNewer, StoreUnreadable, WriterTokenMismatch, clearSyncState, openSyncStore, type Mutation } from "./persist";
 
 // The ledger:sync records (design section 10.1) at the store level: one
@@ -154,9 +154,21 @@ describe("loads that fail are never a first start", () => {
     expect(store.volatile()).toBe(false);
   });
 
-  it("falls back to tab memory only when the database never opens, and says so", async () => {
+  it("a database that never opens is unreadable unless the browser refuses storage: a lost connection or a full quota is not a first start", async () => {
+    for (const name of ["UnknownError", "QuotaExceededError", "AbortError"]) {
+      vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => new DOMException("did not open", name)));
+      const store = openSyncStore(noWait);
+      await expect(store.load(), name).rejects.toBeInstanceOf(StoreUnreadable);
+      expect(store.volatile()).toBe(false);
+      await expect(store.mutate(first())).rejects.toThrow();
+    }
+    vi.stubGlobal("indexedDB", factory);
+    expect(await indexedDB.databases()).toEqual([]);
+  });
+
+  it("falls back to tab memory only when the browser refuses storage and the database never opens, and says so", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    failingOpens(Infinity);
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => new DOMException("The operation is insecure.", "SecurityError"), { sync: true }));
     const store = openSyncStore(noWait);
     expect(await store.load()).toBeNull();
     expect(store.volatile()).toBe(true);
@@ -212,5 +224,28 @@ describe("generations", () => {
     await clearSyncState();
     expect(await indexedDB.databases()).toEqual([]);
     expect(await openSyncStore(noWait).load()).toBeNull();
+  });
+
+  it("finds the newest generation by probing when indexedDB.databases() is missing, and creates none while probing", async () => {
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, () => null, { databases: false }));
+    const store = openSyncStore(noWait);
+    await store.mutate(first());
+    await store.startNewGeneration();
+    await store.mutate(first({ base: "base-new" }));
+    expect((await openSyncStore(noWait).load())?.base).toBe("base-new");
+    expect((await factory.databases()).map((db) => db.name).sort()).toEqual(["ledger:sync", "ledger:sync:2"]);
+  });
+
+  it("a probe of the next generation that fails is not an absence: the store is unreadable, never memory or the older generation", async () => {
+    await openSyncStore(noWait).mutate(first());
+    const quota = (name: string) => (name === "ledger:sync:2" ? new DOMException("The quota has been exceeded.", "QuotaExceededError") : null);
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, quota, { databases: false }));
+    const store = openSyncStore(noWait);
+    await expect(store.load()).rejects.toBeInstanceOf(StoreUnreadable);
+    expect(store.volatile()).toBe(false);
+
+    // With databases() no probe is needed, and the saved records load.
+    vi.stubGlobal("indexedDB", faultyIndexedDB(factory, quota));
+    expect((await openSyncStore(noWait).load())?.base).toBe("base-1");
   });
 });

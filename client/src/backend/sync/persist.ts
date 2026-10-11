@@ -22,11 +22,20 @@
 // falls back to tab memory only when the database never opened (some
 // private windows), and a failed write fails only that write (B8).
 //
+// Tab memory is narrower than "never opened": only an open the browser
+// refuses outright (SecurityError, InvalidStateError) counts, and only
+// while no ledger:sync database is listed. A full quota, a lost connection
+// or a corrupt store that never clears is `unreadable` instead, and writes
+// are refused: owner decision D19 holds nothing only in tab memory.
+//
 // A load that still fails is never a first start (B13, B22): it rejects,
 // and the engine shows `unreadable`. "Start as a new device" then opens the
 // next generation of the database (`ledger:sync:2`, ...) and leaves the old
 // one byte for byte as it was, as a raw backup. Loads use the newest
-// generation that exists; clearSyncState() deletes them all.
+// generation that exists, found by indexedDB.databases() where the browser
+// has it, so finding it creates nothing; without it, by probing the next
+// name, and a probe that fails is "unknown", never "absent".
+// clearSyncState() deletes them all.
 
 const DB_NAME = "ledger:sync";
 /** The IndexedDB schema version. A database a newer build upgraded opens
@@ -92,7 +101,7 @@ export interface SyncStore {
    * new, empty generation: "Start as a new device" (section 10.1). */
   startNewGeneration(): Promise<void>;
   /** Whether records go only to this tab's memory although the browser has
-   * IndexedDB (it never opened): a reload loses what isn't in the repo. */
+   * IndexedDB (it refuses to open it): a reload loses what isn't in the repo. */
   volatile(): boolean;
 }
 
@@ -111,9 +120,22 @@ export class WriterTokenMismatch extends Error {
   override name = "WriterTokenMismatch";
 }
 
-/** The database didn't open, as opposed to one read or write failing. */
-class DatabaseUnavailable extends Error {
-  override name = "DatabaseUnavailable";
+/** The browser refused to open IndexedDB at all (an opaque origin, blocked
+ * site data, some private windows): the only failure that may send records
+ * to tab memory. Any other open failure is a plain Error. */
+class StorageRefused extends Error {
+  override name = "StorageRefused";
+}
+
+/** The errors with which a browser refuses IndexedDB outright. */
+const REFUSALS = new Set(["SecurityError", "InvalidStateError"]);
+
+/** Why database `name` didn't open: StorageRefused for a refusal, else an
+ * Error that reads as "couldn't tell" (a full quota, a lost connection, a
+ * corrupt store). */
+function openFailure(name: string, cause: unknown): Error {
+  const refused = cause instanceof DOMException && REFUSALS.has(cause.name);
+  return new (refused ? StorageRefused : Error)(`${name} did not open`, { cause });
 }
 
 /** Something that syncs in this tab and must stop when the state is cleared. */
@@ -134,9 +156,10 @@ function settle<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-/** Whether database `name` exists, without creating it: an open with no
- * version that needs an upgrade is a new database, and aborting that
- * upgrade leaves none behind. */
+/** Whether database `name` exists: an open with no version that needs an
+ * upgrade is a new database, and aborting that upgrade leaves none behind.
+ * The open still has to create the database before it can abort, so on a
+ * full device it can fail: that rejects, never answers "absent". */
 function exists(idb: IDBFactory, name: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
     let created = false;
@@ -144,7 +167,7 @@ function exists(idb: IDBFactory, name: string): Promise<boolean> {
     try {
       request = idb.open(name);
     } catch (err) {
-      reject(new DatabaseUnavailable(`${name} did not open`, { cause: err }));
+      reject(openFailure(name, err));
       return;
     }
     request.onupgradeneeded = () => {
@@ -156,21 +179,41 @@ function exists(idb: IDBFactory, name: string): Promise<boolean> {
       resolve(true);
     };
     request.onerror = (event) => {
-      if (created) {
-        event.preventDefault();
-        resolve(false);
-      } else {
-        reject(new DatabaseUnavailable(`${name} did not open`, { cause: request.error }));
-      }
+      event.preventDefault();
+      if (created) resolve(false);
+      else reject(openFailure(name, request.error));
     };
   });
 }
 
-/** The newest generation that exists (1 when none does). */
-async function newestGeneration(idb: IDBFactory): Promise<number> {
+/** The generation that database `name` is, or null if it isn't one. */
+function generationOf(name: string): number | null {
+  if (name === DB_NAME) return 1;
+  const match = /^ledger:sync:([1-9]\d{0,8})$/.exec(name);
+  return match ? Number(match[1]) : null;
+}
+
+/** The generations indexedDB.databases() lists, or null when this browser
+ * can't list them (Firefox before 126) or the listing failed. */
+async function listedGenerations(idb: IDBFactory): Promise<number[] | null> {
+  if (typeof idb.databases !== "function") return null;
+  try {
+    const listed = await idb.databases();
+    return listed.map((db) => (db.name === undefined ? null : generationOf(db.name))).filter((n) => n !== null);
+  } catch {
+    return null;
+  }
+}
+
+/** The newest generation that exists (1 when none does), and whether any
+ * is known to exist. Listed where the browser can list databases, which
+ * creates nothing; otherwise probed, and a probe that fails rejects. */
+async function newestGeneration(idb: IDBFactory): Promise<{ n: number; stored: boolean }> {
+  const listed = await listedGenerations(idb);
+  if (listed) return { n: Math.max(1, ...listed), stored: listed.length > 0 };
   let n = 1;
   while (await exists(idb, generationName(n + 1))) n++;
-  return n;
+  return { n, stored: n > 1 };
 }
 
 function openDb(idb: IDBFactory, name: string): Promise<IDBDatabase> {
@@ -179,7 +222,7 @@ function openDb(idb: IDBFactory, name: string): Promise<IDBDatabase> {
     try {
       request = idb.open(name, DB_VERSION);
     } catch (err) {
-      reject(new DatabaseUnavailable(`${name} did not open`, { cause: err }));
+      reject(openFailure(name, err));
       return;
     }
     request.onupgradeneeded = () => {
@@ -198,7 +241,7 @@ function openDb(idb: IDBFactory, name: string): Promise<IDBDatabase> {
       event.preventDefault();
       const error = request.error;
       if (error?.name === "VersionError") reject(new LocalStateNewer(`${name} was upgraded by a newer build`, { cause: error }));
-      else reject(new DatabaseUnavailable(`${name} did not open`, { cause: error }));
+      else reject(openFailure(name, error));
     };
   });
 }
@@ -312,7 +355,7 @@ function emptyMemory(): MemoryRecords {
   return { tail: [], ownLog: new Map(), chain: new Map(), notices: new Map(), leftBehind: new Map() };
 }
 
-/** The tab's in-memory records, when IndexedDB never opened. */
+/** The tab's in-memory records, when the browser refuses IndexedDB. */
 let memory = emptyMemory();
 
 function readMemory(): StoredRecords | null {
@@ -367,20 +410,26 @@ const LOAD_RETRY_MS = [50, 250];
 
 /** The store: IndexedDB when this browser has it and it opens, otherwise
  * memory for the life of the tab. It switches to memory only when the
- * database never opened in this store, on a load's every attempt. Any other
- * failure rejects, the caller's state unknown rather than empty. */
+ * browser refused every open of a load's every attempt, the database never
+ * opened in this store and none is listed. Any other failure rejects, the
+ * caller's state unknown rather than empty. */
 export function openSyncStore(options: { sleep?: (ms: number) => Promise<void> } = {}): SyncStore {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const hasIdb = typeof globalThis.indexedDB !== "undefined";
   let useMemory = !hasIdb;
-  /** The database opened at least once: never fall back to memory after. */
+  /** The database opened at least once, or a generation is known to exist:
+   * never fall back to memory, which would hide saved records. */
   let opened = false;
   let generation: number | null = null;
   let connection: Promise<IDBDatabase> | null = null;
 
   const connect = async (): Promise<IDBDatabase> => {
     const idb = globalThis.indexedDB;
-    generation ??= await newestGeneration(idb);
+    if (generation === null) {
+      const newest = await newestGeneration(idb);
+      if (newest.stored) opened = true;
+      generation = newest.n;
+    }
     const db = await openDb(idb, generationName(generation));
     opened = true;
     db.onclose = () => {
@@ -428,10 +477,10 @@ export function openSyncStore(options: { sleep?: (ms: number) => Promise<void> }
           await sleep(LOAD_RETRY_MS[attempt]);
           continue;
         }
-        if (opened || !(lastError instanceof DatabaseUnavailable)) {
+        if (opened || !(lastError instanceof StorageRefused)) {
           throw new StoreUnreadable("ledger:sync could not be read", { cause: lastError });
         }
-        console.error("ledger:sync: IndexedDB never opened, keeping sync state in this tab's memory", lastError);
+        console.error("ledger:sync: this browser refuses IndexedDB, keeping sync state in this tab's memory", lastError);
         useMemory = true;
       }
       return readMemory();
@@ -449,7 +498,7 @@ export function openSyncStore(options: { sleep?: (ms: number) => Promise<void> }
         return;
       }
       const idb = globalThis.indexedDB;
-      const current = generation ?? (await newestGeneration(idb));
+      const current = generation ?? (await newestGeneration(idb)).n;
       // Close ours first, so nothing more is written to the old generation.
       const open = connection;
       connection = null;
@@ -479,7 +528,7 @@ export async function clearSyncState(): Promise<void> {
   memory = emptyMemory();
   const idb = globalThis.indexedDB;
   if (typeof idb === "undefined") return;
-  const newest = await newestGeneration(idb);
+  const { n: newest } = await newestGeneration(idb);
   for (let n = newest; n >= 1; n--) {
     await new Promise<void>((resolve, reject) => {
       const request = idb.deleteDatabase(generationName(n));
