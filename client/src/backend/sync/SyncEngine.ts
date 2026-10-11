@@ -1,5 +1,6 @@
 import { ApiError } from "../ApiError";
 import { InvalidFileError, WrongPassphraseError } from "../crypto";
+import type { HostWrite } from "../document/DocumentBackend";
 import type { LedgerDocument } from "../document/types";
 import { CHAIN_START, chainNext, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
@@ -267,10 +268,27 @@ export class SyncEngine {
    * and the document is then unchanged. */
   commit(next: LedgerDocument): Promise<void> {
     try {
-      return this.#commit(next);
+      return this.#commit(next, this.#fence.renderedRevision);
     } catch (err) {
       return Promise.reject(err);
     }
+  }
+
+  /** A write submitted now, which commits later (SyncedHost.begin): the
+   * fence judges it by the revision rendered at this call, not at its
+   * commit (section 3.4). end() once it has settled. */
+  beginWrite(): HostWrite {
+    const pin = this.#fence.pin();
+    return {
+      commit: (next) => {
+        try {
+          return this.#commit(next, pin.asOf);
+        } catch (err) {
+          return Promise.reject(err);
+        }
+      },
+      end: () => pin.release(),
+    };
   }
 
   /** A write made directly on a copy of the document (notice actions and
@@ -280,13 +298,14 @@ export class SyncEngine {
     try {
       const next = structuredClone(this.current());
       run(next);
-      return this.#commit(next);
+      return this.#commit(next, this.#fence.renderedRevision);
     } catch (err) {
       return Promise.reject(err);
     }
   }
 
-  #commit(next: LedgerDocument): Promise<void> {
+  /** `asOf`: the revision on screen when the write was submitted. */
+  #commit(next: LedgerDocument, asOf: number): Promise<void> {
     this.#assertWritable();
     const state = this.#state!;
     const meta = this.#meta!;
@@ -300,12 +319,12 @@ export class SyncEngine {
     }
     const body = diffDocuments(state, this.#doc!, next, { L, device: meta.deviceId });
     if (!body) return Promise.resolve();
-    const fenced = this.#fence.apply(body, state);
+    const fenced = this.#fence.apply(body, state, asOf);
     if (!fenced.body && fenced.notices.length === 0) return Promise.resolve();
     this.#lastAllocated = L;
     let op: Op | null = null;
     if (fenced.body) {
-      const vv = { ...this.#fence.renderedSeen(state.seen) };
+      const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
       if (meta.ownMaxL > 0) vv[meta.deviceId] = Math.max(vv[meta.deviceId] ?? 0, meta.ownMaxL);
       op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body.set, del: fenced.body.del };
       const problem = opProblem(op);

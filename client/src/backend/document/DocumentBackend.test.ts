@@ -217,6 +217,40 @@ describe("DocumentBackend writes", () => {
     expect([...keys].sort()).toEqual(keys);
     expect(new Set(keys).size).toBe(20);
   });
+
+  it("tells a host with begin() of each write at the call, commits it through that handle, and ends it once it settles, however it settles", async () => {
+    const { host, backend } = setup();
+    const log: string[] = [];
+    let n = 0;
+    Object.assign(host, {
+      begin: () => {
+        const id = ++n;
+        log.push(`begin ${id}`);
+        return {
+          commit: (next: LedgerDocument) => {
+            log.push(`commit ${id}`);
+            return host.commit(next);
+          },
+          end: () => log.push(`end ${id}`),
+        };
+      },
+    });
+    const first = backend.addEntry(entry("Lunch"));
+    const second = backend.addEntry(entry("", 1)); // rejected before any commit
+    host.failCommit = true;
+    const third = backend.addEntry(entry("Bus"));
+    // All three were begun before the first one ran.
+    expect(log).toEqual(["begin 1", "begin 2", "begin 3"]);
+    await expect(first).rejects.toMatchObject({ status: 500 });
+    await expect(second).rejects.toMatchObject({ status: 400 });
+    await expect(third).rejects.toMatchObject({ status: 500 });
+    expect(log).toEqual(["begin 1", "begin 2", "begin 3", "commit 1", "end 1", "end 2", "commit 3", "end 3"]);
+
+    host.failCommit = false;
+    await backend.addEntry(entry("Tea"));
+    expect(log.slice(-3)).toEqual(["begin 4", "commit 4", "end 4"]);
+    expect(host.commits).toBe(1);
+  });
 });
 
 describe("DocumentBackend order and handles", () => {

@@ -14,12 +14,18 @@ import type { Tag, VersionVector } from "./tags";
 //     document. SyncHost re-keys its children on it and, once the re-keyed
 //     tree has committed, calls rendered(revision).
 //   - For each register a join replaces, the fence keeps the value it
-//     replaced (its pre-image), the oldest one since the last render.
-//   - At diff time, a register in the op whose pre-image is unrendered and
-//     equals the op's value was not touched by the user: it is dropped, and
-//     the remote value stands. One whose op value differs is applied. Both
-//     cases make a notice.
-//   - The op's vv is the seen vector as of the rendered revision, so a
+//     replaced (its pre-image), one per revision that changed it.
+//   - A write is fenced by the revision the view had rendered when it was
+//     submitted (pin()), not when its diff runs: DocumentBackend queues a
+//     write behind the ones before it, and the view may render a join in
+//     between, after the form's values were taken. So the pre-images and
+//     seen vectors a pinned write needs are kept until it is released.
+//   - At diff time, take each register in the op with a pre-image newer
+//     than the write's revision. If the earliest such pre-image (what the
+//     user saw) equals the op's value, the user didn't touch it: it is
+//     dropped, and the remote value stands. One whose op value differs is
+//     applied. Both cases make a notice.
+//   - The op's vv is the seen vector as of the write's revision, so a
 //     remote author whose change this user hadn't seen still gets their
 //     edit/edit notice (section 4.2).
 //
@@ -74,14 +80,25 @@ function recordOf(key: string): string | null {
   return parsed?.kind === "field" ? `${parsed.coll}/${parsed.id}` : null;
 }
 
+/** A write's view of the document: the revision rendered when it was
+ * submitted. Released once the write has settled. */
+export interface FencePin {
+  readonly asOf: number;
+  release(): void;
+}
+
 export class Fence {
   #revision = 0;
   /** The revision the view last rendered; null when no view is attached. */
   #rendered: number | null = null;
-  /** Register key to the value an unrendered join replaced. */
-  readonly #pre = new Map<string, PreImage>();
-  /** The seen vector at each revision since the rendered one. */
+  /** Register key to the values joins replaced, ascending by revision: one
+   * per revision, each the value just before that revision's join. Kept
+   * from the oldest revision a write may still be fenced by. */
+  readonly #pre = new Map<string, PreImage[]>();
+  /** The seen vector at each revision from that oldest one. */
   readonly #seenAt = new Map<number, VersionVector>();
+  /** The writes submitted and not yet settled. */
+  readonly #pins = new Set<{ asOf: number }>();
 
   /** The integration revision: SyncHost's key for its children. */
   get revision(): number {
@@ -117,8 +134,34 @@ export class Fence {
     const upTo = Math.min(rev, this.#revision);
     if (upTo <= this.#rendered) return;
     this.#rendered = upTo;
-    for (const [key, pre] of this.#pre) if (pre.rev <= upTo) this.#pre.delete(key);
-    for (const r of this.#seenAt.keys()) if (r < upTo) this.#seenAt.delete(r);
+    this.#prune();
+  }
+
+  /** A write is being submitted: it is fenced by what is rendered now
+   * (section 3.4), however long it waits to be diffed. */
+  pin(): FencePin {
+    const pin = { asOf: this.renderedRevision };
+    this.#pins.add(pin);
+    return {
+      asOf: pin.asOf,
+      release: () => {
+        if (this.#pins.delete(pin)) this.#prune();
+      },
+    };
+  }
+
+  /** Drops what no write can be fenced by any more: everything up to the
+   * rendered revision, or up to the oldest pinned write's if that is older. */
+  #prune(): void {
+    if (this.#rendered === null) return;
+    let floor = this.#rendered;
+    for (const pin of this.#pins) floor = Math.min(floor, pin.asOf);
+    for (const [key, list] of this.#pre) {
+      const kept = list.filter((pre) => pre.rev > floor);
+      if (kept.length === 0) this.#pre.delete(key);
+      else if (kept.length < list.length) this.#pre.set(key, kept);
+    }
+    for (const r of this.#seenAt.keys()) if (r < floor) this.#seenAt.delete(r);
   }
 
   /** Joins `source` into `live` in place, bumping the revision if the
@@ -156,26 +199,26 @@ export class Fence {
   }
 
   #keep(key: string, value: unknown): void {
-    if (!this.#pre.has(key)) this.#pre.set(key, { value, rev: this.#revision });
+    const list = this.#pre.get(key);
+    if (!list) this.#pre.set(key, [{ value, rev: this.#revision }]);
+    else if (list.at(-1)!.rev !== this.#revision) list.push({ value, rev: this.#revision });
   }
 
-  /** The seen vector as of the rendered revision: the op's vv (section 3.1).
-   * `seen` is the state's seen vector now. */
-  renderedSeen(seen: ReadonlyMap<string, number>): VersionVector {
+  /** The seen vector as of revision `asOf` (by default the rendered one):
+   * the op's vv (section 3.1). `seen` is the state's seen vector now. */
+  renderedSeen(seen: ReadonlyMap<string, number>, asOf = this.renderedRevision): VersionVector {
     if (this.#rendered === null) return vectorOf(seen);
-    return this.#seenAt.get(this.#rendered) ?? vectorOf(seen);
+    return this.#seenAt.get(asOf) ?? vectorOf(seen);
   }
 
   /** The op `body` (diffed against the document `state` materialises to)
-   * with every untouched unrendered register dropped, and the notices
-   * section 3.4 gives. A body left with nothing, or with only stamps, is
-   * null. */
-  apply(body: OpBody, state: SyncState): { body: OpBody | null; notices: FenceNotice[] } {
+   * with every register untouched since revision `asOf` (by default the
+   * rendered one) dropped, and the notices section 3.4 gives. A body left
+   * with nothing, or with only stamps, is null. */
+  apply(body: OpBody, state: SyncState, asOf = this.renderedRevision): { body: OpBody | null; notices: FenceNotice[] } {
     if (this.#pre.size === 0) return { body, notices: [] };
-    const unseen = (key: string) => {
-      const pre = this.#pre.get(key);
-      return pre !== undefined && pre.rev > this.renderedRevision ? pre : undefined;
-    };
+    /** What the first join after `asOf` replaced, if one did. */
+    const unseen = (key: string) => this.#pre.get(key)?.find((pre) => pre.rev > asOf);
     const values = new Map(body.set);
     const creating = new Set(body.set.filter(([key]) => key.endsWith(`/${CREATE}`)).map(([key]) => recordOf(key)));
     const drop = new Set<string>();

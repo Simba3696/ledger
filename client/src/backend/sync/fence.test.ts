@@ -165,6 +165,30 @@ describe("an unrendered remote change", () => {
     expect(w.amount()).toBe("40.00");
   });
 
+  it("is fenced by what was rendered when the write was submitted, though it runs after a later render", async () => {
+    const w = await world();
+    // SyncHost: the layout effect reports the revision once the re-keyed
+    // tree has committed, a moment after the join is shown.
+    w.engine.subscribe(() => queueMicrotask(() => w.engine.rendered(w.engine.getState().revision)));
+    const [samsEntry] = await w.sam.backend.getMonth(2026, 5);
+    await w.sam.backend.updateEntry(2026, 5, samsEntry.row, { ...ENTRY, amount: 12 });
+    const join = w.engine.join({ ops: [[X, w.sam.ops.at(-1)!]] });
+    // Two saves from the screen that still shows 40.00; the second waits
+    // behind the first in DocumentBackend's queue, past the render.
+    const first = w.backend.addEntry({ ...ENTRY, remarks: "Bus" });
+    const second = w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, remarks: "Groceries, weekly" });
+    await Promise.all([join, first, second]);
+    expect(w.engine.getState().revision).toBe(1);
+    const groceries = w.engine.current().expenses["2026-05"].find((e) => e.remarks.startsWith("Groceries"))!;
+    expect(groceries).toMatchObject({ amount: "12.00", remarks: "Groceries, weekly" });
+    expect(w.engine.getState().noticeCount).toBe(1);
+    expect(w.lastOp().vv[X]).toBeUndefined();
+
+    // A save submitted after that render is a deliberate edit.
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, remarks: "Groceries, weekly" });
+    expect(w.amount()).toBe("40.00");
+  });
+
   it("saves fence notices encrypted, keyed by (winner op, loser op)", async () => {
     const w = await world();
     const samsOp = await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
@@ -256,6 +280,35 @@ describe("Fence (pure)", () => {
     const id = "00000000-0000-4000-8000-000000000e02";
     const add = { set: [[`e/${id}/_c`, { m: "2026-05" }], [`e/${id}/amount`, "1.00"]] as [string, unknown][], del: [] };
     expect(fence.apply(add, state).body).toEqual(add);
+  });
+
+  it("keeps the pre-images and seen vectors a pinned write needs until it is released, and for each revision what it replaced", () => {
+    const state = genesisState(emptyDocument());
+    const fence = new Fence();
+    fence.attach(0, {});
+    const lock = (L: number, v: boolean): Op => ({ L, at: 0, by: "sam", vv: {}, del: [], set: [["lk/2026-05", v]] });
+    const unlock = { set: [["lk/2026-05", false]] as [string, unknown][], del: [] };
+    const relock = { set: [["lk/2026-05", true]] as [string, unknown][], del: [] };
+    const atZero = fence.pin();
+    fence.join(state, opState(X, lock(2, true)));
+    fence.rendered(1);
+    const atOne = fence.pin();
+    fence.join(state, opState(X, lock(3, false)));
+    fence.rendered(2);
+    expect(fence.renderedRevision).toBe(2);
+    // Submitted at 0, the user saw it unlocked: an untouched unlock is dropped.
+    expect(fence.apply(unlock, state, atZero.asOf).body).toBeNull();
+    expect(fence.renderedSeen(state.seen, atZero.asOf)).toEqual({});
+    // Submitted at 1, the user saw it locked: an untouched relock is dropped.
+    expect(fence.apply(relock, state, atOne.asOf).body).toBeNull();
+    expect(fence.renderedSeen(state.seen, atOne.asOf)).toEqual({ [X]: 2 });
+    // As of now, it is a deliberate edit.
+    expect(fence.apply(relock, state).body).toEqual(relock);
+    atZero.release();
+    expect(fence.apply(relock, state, atOne.asOf).body).toBeNull();
+    atOne.release();
+    atOne.release();
+    expect(fence.apply(relock, state, atOne.asOf).body).toEqual(relock);
   });
 
   it("forgets everything on detach", () => {
