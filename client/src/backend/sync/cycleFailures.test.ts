@@ -669,6 +669,25 @@ describe("more failure points", () => {
     expect(puts(w)).toHaveLength(2);
     expect(remarks(a)).toEqual(["Groceries", "Rent"]);
   });
+
+  it("a truncated listing that leaves out the genesis is pending, never missing: nothing is read into what it left out", async () => {
+    // Device files ("<epoch>.d…") sort before the genesis ("<epoch>.genesis…"),
+    // so a tree cut short drops the genesis first.
+    w = await world({ fake: { treeEntryLimit: 3 } });
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await cycle(w, a);
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b);
+    await cycle(w, a);
+    expect(status(a)).toBe("pending");
+    expect(a.engine.getState().pendingCount).toBe(0);
+    await a.backend.addEntry(entry("Rent"));
+    await cycle(w, a);
+    expect(status(a)).toBe("pending");
+    expect(remarks(a)).toEqual(["Groceries", "Rent"]);
+  });
 });
 
 describe("old catalogue (section 13)", () => {

@@ -846,6 +846,14 @@ export class SyncEngine {
     const meta = this.#meta!;
     const epoch = meta.epochKey;
     const winner = winningEpoch([...listing.files.keys()]);
+    if (listing.truncated && winner !== epoch) {
+      // A cut listing can leave out any genesis, this epoch's included (a
+      // device's file sorts before its epoch's genesis), so it can't say
+      // there is no ledger, that the repo is older than what this device
+      // joined, or which newer epoch wins. Pending: the next poll lists again.
+      this.#log("the cut listing doesn't name this device's epoch as the winner; trying again later");
+      return null;
+    }
     if (winner === null) {
       // No genesis listed: no ledger in this repo (section 9.5).
       this.#blocker = "missing";
