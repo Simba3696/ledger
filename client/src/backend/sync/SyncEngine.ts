@@ -31,6 +31,14 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from 
 // Every mutation, a local op or a remote join, runs through one queue and
 // is one transaction. A load that fails is never a first start: the engine
 // shows `unreadable`, writes nothing, and leaves the records as they are.
+//
+// The writer token (section 10.2) is renewed by every mutation, so the
+// token a tab expects names the exact records it last loaded or wrote. A
+// load claims the device against the token it read: if anything was written
+// after the read (a superseded tab that hasn't noticed yet), the claim
+// writes nothing and the load reads again, so no resolved write is left out
+// of what this tab shows and pushes, and no own L is allocated twice. Until
+// a claim commits, nothing else is written.
 
 /** The engine's status (section 11). Only some are set by this half. */
 export type SyncStatus =
@@ -91,6 +99,8 @@ export const DEVICE_SAVE_FAILED = "This device couldn't save. Free up storage an
 export const OTHER_TAB = "Ledger is open in another tab. Close it there to use it here.";
 const NOT_LOADED = "Your ledger hasn't loaded yet.";
 const LOCK_NAME = "ledger:sync";
+/** Loads before giving up when every claim finds the records changed. */
+const MAX_LOADS = 5;
 
 interface Loaded {
   meta: SyncMeta;
@@ -127,11 +137,15 @@ export class SyncEngine {
   #lastAllocated = 0;
   readonly #fence = new Fence();
 
-  /** This tab's writer token (section 10.2). */
-  readonly #token = randomHex(16);
-  /** The token the next mutation expects in meta: the one loaded, until
-   * this tab's own claim commits; null before a first start. */
+  /** The writer token the next mutation expects in meta (section 10.2):
+   * the one this tab last wrote, or the one it loaded until its claim
+   * commits; null when nothing is saved yet (a first start). */
   #expect: string | null = null;
+  /** This tab has written the device's meta since loading it: a claim that
+   * failed (a full device) is made again before the next write. */
+  #claimed = false;
+  /** The load in flight, so "Try again" twice runs one load. */
+  #loading: Promise<void> | null = null;
   #queue: Promise<unknown> = Promise.resolve();
 
   #status: SyncStatus = "idle";
@@ -193,6 +207,7 @@ export class SyncEngine {
 
   /** "Try again" on `unreadable`: loads the saved state again. */
   async retry(): Promise<void> {
+    if (this.#loading) return this.#loading;
     if (this.#unreadable === null || this.#stopped || !this.#lockHeld) return;
     await this.#load();
   }
@@ -202,9 +217,9 @@ export class SyncEngine {
    * (needsInit). The first start then mints a new device id, so nothing
    * can overwrite the old id's repo files. */
   async startAsNewDevice(): Promise<void> {
+    if (this.#loading) return this.#loading;
     if (this.#unreadable === null || this.#stopped || !this.#lockHeld) return;
-    await this.#store.startNewGeneration();
-    await this.#load();
+    await this.#load(() => this.#store.startNewGeneration());
   }
 
   /** A first start: saves `state` (a genesis or a cold join of the epoch)
@@ -231,11 +246,11 @@ export class SyncEngine {
         seen: vectorOf(state.seen),
         lastSeenCommit: null,
         refEtag: null,
-        writerToken: this.#token,
+        writerToken: "",
       };
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
-      this.#adopt({ meta, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START });
+      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START }, true);
     });
   }
 
@@ -401,7 +416,7 @@ export class SyncEngine {
   #assertWritable(): void {
     if (this.#superseded || (this.#started && !this.#lockHeld)) throw new ApiError(503, OTHER_TAB);
     if (this.#stopped) throw new ApiError(503, "Ledger was closed in this tab. Reload to continue.");
-    if (this.#doc === null || this.#meta === null || this.#state === null) throw new ApiError(503, NOT_LOADED);
+    if (this.#loading || this.#doc === null || this.#meta === null || this.#state === null) throw new ApiError(503, NOT_LOADED);
   }
 
   #enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -410,11 +425,18 @@ export class SyncEngine {
     return run;
   }
 
-  /** One transaction: `writes` plus `meta`, checked against the writer
-   * token. A takeover makes this tab read-only; any other failure is a
-   * refused write ("This device couldn't save"). */
+  /** One transaction: `writes` plus `meta` with a new writer token,
+   * checked against the token expected. A tab whose claim failed claims
+   * first, in a transaction of its own. A takeover, or a write made since
+   * this tab loaded, makes it read-only; any other failure is a refused
+   * write ("This device couldn't save"). */
   async #mutate(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">): Promise<void> {
-    const nextMeta: SyncMeta = { ...meta, writerToken: this.#token };
+    if (!this.#claimed) await this.#write(this.#meta!, {});
+    await this.#write(meta, writes);
+  }
+
+  async #write(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">): Promise<void> {
+    const nextMeta: SyncMeta = { ...meta, writerToken: randomHex(16) };
     try {
       await this.#store.mutate({ ...writes, expect: this.#expect, meta: nextMeta });
     } catch (err) {
@@ -427,8 +449,9 @@ export class SyncEngine {
       this.#emit();
       throw new ApiError(500, DEVICE_SAVE_FAILED);
     }
-    this.#expect = this.#token;
+    this.#expect = nextMeta.writerToken;
     this.#meta = nextMeta;
+    this.#claimed = true;
     if (this.#deviceSaveFailed) {
       this.#deviceSaveFailed = false;
       this.#emit();
@@ -443,41 +466,86 @@ export class SyncEngine {
     this.#setStatus("locked");
   }
 
-  async #load(): Promise<void> {
-    let records: StoredRecords | null;
-    try {
-      records = await this.#store.load();
-    } catch (err) {
-      this.#log("the saved sync state could not be loaded; it is kept as it is", err);
-      this.#fail(err instanceof LocalStateNewer ? "newer" : "loadFailed");
-      return;
-    }
-    if (this.#stopped) return;
-    if (records === null) {
-      this.#meta = this.#state = this.#doc = null;
-      this.#expect = null;
-      this.#needsInit = true;
-      this.#unreadable = null;
-      this.#setStatus("idle");
-      return;
-    }
-    const loaded = await this.#decode(records);
-    if (this.#stopped) return;
-    if (typeof loaded === "string") {
-      this.#fail(loaded);
-      return;
-    }
-    this.#noticeCount = records.noticeCount;
-    this.#leftBehindCount = records.leftBehindCount;
-    this.#expect = loaded.meta.writerToken;
-    this.#adopt(loaded);
-    // Take over writing (section 10.2): later mutations check this token.
-    await this.#enqueue(() => this.#mutate(this.#meta!, {})).catch((err: unknown) => {
-      if (!this.#superseded) this.#log("could not claim this device's sync state; the next write tries again", err);
-    });
+  /** Loads the saved state and claims it. One load at a time: a call while
+   * one runs gets that one. `before` runs first, as part of it. */
+  #load(before?: () => Promise<void>): Promise<void> {
+    this.#loading ??= (async () => {
+      try {
+        await before?.();
+        await this.#loadAndClaim();
+      } finally {
+        this.#loading = null;
+      }
+    })();
+    return this.#loading;
   }
 
-  #adopt(loaded: Loaded): void {
+  async #loadAndClaim(): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      let records: StoredRecords | null;
+      try {
+        records = await this.#store.load();
+      } catch (err) {
+        this.#log("the saved sync state could not be loaded; it is kept as it is", err);
+        this.#fail(err instanceof LocalStateNewer ? "newer" : "loadFailed");
+        return;
+      }
+      if (this.#stopped) return;
+      if (records === null) {
+        this.#meta = this.#state = this.#doc = null;
+        // A first start's transaction checks that nothing was saved since.
+        this.#expect = null;
+        this.#claimed = true;
+        this.#needsInit = true;
+        this.#unreadable = null;
+        this.#setStatus("idle");
+        return;
+      }
+      const loaded = await this.#decode(records);
+      if (this.#stopped) return;
+      if (typeof loaded === "string") {
+        this.#fail(loaded);
+        return;
+      }
+      // Take over writing (section 10.2), against the records just read.
+      const claim = await this.#enqueue(() => this.#claim(loaded.meta));
+      if (this.#stopped) return;
+      if (claim === "changed") {
+        if (attempt < MAX_LOADS) continue;
+        this.#log("the saved sync state kept changing while it was loaded; it is kept as it is");
+        this.#fail("loadFailed");
+        return;
+      }
+      this.#noticeCount = records.noticeCount;
+      this.#leftBehindCount = records.leftBehindCount;
+      this.#adopt(claim === "failed" ? loaded : { ...loaded, meta: claim }, claim !== "failed");
+      return;
+    }
+  }
+
+  /** Writes a new writer token into `meta` if the records are still the
+   * ones loaded with it: the claimed meta, "changed" if something was
+   * written since (read them again), or "failed" if the device couldn't
+   * save it (writes are refused until a claim is saved). */
+  async #claim(meta: SyncMeta): Promise<SyncMeta | "changed" | "failed"> {
+    if (this.#stopped) return "failed";
+    const claimed: SyncMeta = { ...meta, writerToken: randomHex(16) };
+    try {
+      await this.#store.mutate({ expect: meta.writerToken, meta: claimed });
+    } catch (err) {
+      if (err instanceof WriterTokenMismatch) return "changed";
+      this.#log("could not claim this device's sync state; writes are refused until a claim is saved", err);
+      return "failed";
+    }
+    return claimed;
+  }
+
+  /** Shows `loaded`. Unless `claimed`, the next mutation claims first,
+   * expecting the token loaded. */
+  #adopt(loaded: Loaded, claimed: boolean): void {
+    this.#expect = loaded.meta.writerToken;
+    this.#claimed = claimed;
+    this.#deviceSaveFailed = !claimed;
     this.#meta = loaded.meta;
     this.#state = loaded.state;
     this.#doc = loaded.doc;

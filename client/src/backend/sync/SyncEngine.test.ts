@@ -536,6 +536,100 @@ describe("multi-tab (section 10.2)", () => {
     expect(remarks(await reload(b))).toEqual(["Groceries", "Bus"]);
   });
 
+  it("a write the previous writer makes between this tab's load and its claim is loaded, never forked over", async () => {
+    const z = await device();
+    await z.backend.addEntry(ENTRY);
+    const inner = openSyncStore(noWait);
+    let zWrite: Promise<unknown> | null = null;
+    const store: SyncStore = {
+      async load() {
+        const records = await inner.load();
+        // Z, superseded but not yet told, saves once more after this read.
+        if (!zWrite) await (zWrite = z.backend.addEntry({ ...ENTRY, remarks: "Rent" }));
+        return records;
+      },
+      mutate: (m) => inner.mutate(m),
+      startNewGeneration: () => inner.startNewGeneration(),
+      volatile: () => inner.volatile(),
+    };
+    const a = await device({ store });
+    await zWrite;
+    expect(a.engine.getState().status).toBe("idle");
+    expect(remarks(a)).toEqual(["Groceries", "Rent"]);
+    await expect(z.backend.addEntry({ ...ENTRY, remarks: "Taxi" })).rejects.toEqual(new ApiError(503, OTHER_TAB));
+    await a.backend.addEntry({ ...ENTRY, remarks: "Bus" });
+    expect(a.engine.pushableOps().map((op) => op.L)).toEqual([2, 3, 4]);
+
+    const a2 = await reload(a);
+    expect(remarks(a2)).toEqual(["Groceries", "Rent", "Bus"]);
+    expect(a2.engine.pushableOps().map((op) => op.L)).toEqual([2, 3, 4]);
+    expect(JSON.stringify(a2.engine.pushableOps())).toContain("Rent");
+  });
+
+  it("a claim the device can't save refuses writes until one commits; a write made after another writer's refuses and goes read-only", async () => {
+    const z = await device();
+    await z.backend.addEntry(ENTRY);
+    const on = { full: true };
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore["put"]>) {
+      if (on.full && this.name === "meta") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return put.apply(this, args);
+    });
+    const a = await device();
+    expect(a.engine.getState()).toMatchObject({ status: "idle", hasDocument: true, deviceSaveFailed: true });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    await expect(a.backend.addEntry({ ...ENTRY, remarks: "Rent" })).rejects.toEqual(new ApiError(500, DEVICE_SAVE_FAILED));
+    on.full = false;
+    // The claim is made before the write, against the records as loaded.
+    await a.backend.addEntry({ ...ENTRY, remarks: "Bus" });
+    expect(a.engine.getState().deviceSaveFailed).toBe(false);
+    await expect(z.backend.addEntry({ ...ENTRY, remarks: "Taxi" })).rejects.toEqual(new ApiError(503, OTHER_TAB));
+    expect(remarks(await reload(a))).toEqual(["Groceries", "Bus"]);
+
+    // Unclaimed again, and the old writer saves in between: the claim
+    // finds the records changed, writes nothing and goes read-only.
+    on.full = true;
+    const b = await device();
+    on.full = false;
+    const c = await device();
+    await c.backend.addEntry({ ...ENTRY, remarks: "Tea" });
+    const before = await dumpDatabase();
+    await expect(b.backend.addEntry({ ...ENTRY, remarks: "Taxi" })).rejects.toEqual(new ApiError(503, OTHER_TAB));
+    expect(b.engine.getState().status).toBe("locked");
+    expect(await dumpDatabase()).toBe(before);
+  });
+
+  it("two quick 'Try again' taps run one load: the tab stays the writer and keeps what it wrote", async () => {
+    const seed = await device();
+    await seed.backend.addEntry(ENTRY);
+    seed.engine.stop();
+    const inner = openSyncStore(noWait);
+    let calls = 0;
+    const store: SyncStore = {
+      async load() {
+        calls++;
+        if (calls === 1) throw new Error("transient");
+        return inner.load();
+      },
+      mutate: (m) => inner.mutate(m),
+      startNewGeneration: () => inner.startNewGeneration(),
+      volatile: () => inner.volatile(),
+    };
+    const d = await device({ store });
+    expect(d.engine.getState().unreadable).toBe("loadFailed");
+    const one = d.engine.retry();
+    const two = d.engine.retry();
+    const three = d.engine.startAsNewDevice();
+    await one;
+    await d.backend.addEntry({ ...ENTRY, remarks: "Rent" });
+    await Promise.all([two, three]);
+    expect(calls).toBe(2);
+    expect(d.engine.getState()).toMatchObject({ status: "idle", unreadable: null });
+    expect(remarks(d)).toEqual(["Groceries", "Rent"]);
+    await d.backend.addEntry({ ...ENTRY, remarks: "Bus" });
+    expect(remarks(await reload(d))).toEqual(["Groceries", "Rent", "Bus"]);
+  });
+
   it("clearSyncState() stops the running engine first: it writes nothing more", async () => {
     const d = await device();
     await clearSyncState();
