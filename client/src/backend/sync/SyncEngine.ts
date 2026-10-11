@@ -242,6 +242,18 @@ interface Listing {
   truncated: boolean;
 }
 
+/** The epoch rebuilt by a rehome's cold join, with what it couldn't join:
+ * listed logs halted (by file name, with what halted each) and whether a
+ * listed log waits for its snapshot. `complete` says every listed file was
+ * joined at its listed sha. */
+interface ColdJoin {
+  state: SyncState;
+  joined: Record<string, string>;
+  complete: boolean;
+  halted: Map<string, "needsUpdate" | "needsAttention">;
+  gap: boolean;
+}
+
 /** The own log as text, ready to PUT. */
 interface LogText {
   text: string;
@@ -1279,6 +1291,12 @@ export class SyncEngine {
         this.#doc = doc;
         this.#ownLog = ops;
         this.#chainHead = chain;
+        // The streams as the cold join found them. The head it handled may
+        // be recorded as handled, and then #readOthers, which settles these
+        // otherwise, doesn't run again until another device commits.
+        this.#halted.clear();
+        for (const [name, problem] of rebuilt.halted) this.#halted.set(name, problem);
+        this.#gapWait = rebuilt.gap;
         this.#noticeCount++;
         this.#emit();
       });
@@ -1291,8 +1309,10 @@ export class SyncEngine {
    * design step 5): the genesis, then every log. A version that can't be
    * joined now is replaced by the one this device joined before, which
    * still reads by its sha, so nothing this device had from another device
-   * is dropped. */
-  async #coldJoin(listing: Listing): Promise<{ state: SyncState; joined: Record<string, string>; complete: boolean }> {
+   * is dropped. A listed log that wasn't joined at its listed sha is
+   * reported as #readOthers would find it: halted, with what halted it, or
+   * waiting for its snapshot. */
+  async #coldJoin(listing: Listing): Promise<ColdJoin> {
     const meta = this.#meta!;
     const epoch = meta.epochKey;
     const versions = new Map<string, Listed[]>();
@@ -1306,6 +1326,8 @@ export class SyncEngine {
     const genesisName = repoFileName({ kind: "genesis", epoch });
     let state: SyncState | null = null;
     const joined: Record<string, string> = {};
+    const halted = new Map<string, "needsUpdate" | "needsAttention">();
+    let gap = false;
     let complete = !listing.truncated;
     for (const listed of versions.get(genesisName) ?? []) {
       const read = await this.#read(genesisName, listed);
@@ -1320,9 +1342,16 @@ export class SyncEngine {
       let done = false;
       for (const listed of list) {
         const read = await this.#read(name, listed);
-        if (!read.ok || read.read.file.kind !== "log" || listed.file.kind !== "log") continue;
+        const isListed = listing.files.get(name)?.sha === listed.sha;
+        if (!read.ok || read.read.file.kind !== "log" || listed.file.kind !== "log") {
+          if (isListed && listed.file.kind === "log") halted.set(name, !read.ok && read.problem === "needsUpdate" ? "needsUpdate" : "needsAttention");
+          continue;
+        }
         const log = read.read.file;
-        if (log.snapThrough > (state.seen.get(listed.file.device) ?? 0)) continue;
+        if (log.snapThrough > (state.seen.get(listed.file.device) ?? 0)) {
+          if (isListed) gap = true;
+          continue;
+        }
         for (const op of log.ops) applyOp(state, listed.file.device, op);
         joined[name] = listed.sha;
         done = true;
@@ -1330,7 +1359,7 @@ export class SyncEngine {
       }
       if (!done || joined[name] !== list[0].sha) complete = false;
     }
-    return { state, joined, complete };
+    return { state, joined, complete, halted, gap };
   }
 
   // --- Status ---------------------------------------------------------------

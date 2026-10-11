@@ -637,6 +637,61 @@ describe("forks and rehome (section 10.3, AC19)", () => {
     expectConverged(a, twin);
     expect(remarks(a).sort()).toEqual(["Before the copy", "During the rehome", "On the copy", "On the original"]);
   });
+  describe("a rehome settles which streams are halted or waiting from its cold join", () => {
+    /** a halts X's stream; a clone of a's profile pushes under a's id, so
+     * a's next cycle finds the fork and rehomes. `heal` runs just before
+     * that cycle, in the repo. */
+    async function forkWhileHalted(broken: unknown, heal: () => Promise<void>): Promise<{ a: Device; twin: Device }> {
+      const a = await open();
+      await a.backend.addEntry(entry("Groceries"));
+      await cycle(w, a);
+      await plant(w, { kind: "log", epoch: EPOCH, device: X }, broken);
+      await cycle(w, a);
+      const twin = await open({ store: a.store.clone(), login: "sam" });
+      await twin.backend.addEntry(entry("Tea"));
+      await cycle(w, twin);
+      await heal();
+      await cycle(w, a);
+      expect(a.logs.some((l) => l.includes("syncs on as a new device"))).toBe(true);
+      return { a, twin };
+    }
+
+    it("a stream that healed before the rehome no longer halts the device, before or after its next push", async () => {
+      const { a, twin } = await forkWhileHalted({ fv: 1, kind: "log", epoch: EPOCH, device: X }, () => plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [])).then(() => undefined));
+      for (let i = 0; i < 5; i++) await cycle(w, a, twin);
+      expectConverged(a, twin);
+      expect(remarks(a).sort()).toEqual(["Groceries", "Tea"]);
+      for (const d of [a, twin]) expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    });
+
+    it("a stream on a newer format that healed before the rehome no longer asks for an update", async () => {
+      const op = await someOp("Planted");
+      const { a } = await forkWhileHalted({ ...logFile(X, [op]), fv: 2 }, () => plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [op])).then(() => undefined));
+      for (let i = 0; i < 5; i++) await cycle(w, a);
+      expect(remarks(a).sort()).toEqual(["Groceries", "Planted", "Tea"]);
+      expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    });
+
+    it("a log that waited for its snapshot and was rewritten before the rehome no longer keeps the device saving", async () => {
+      const op = await someOp("Planted");
+      const { a } = await forkWhileHalted(logFile(X, [{ ...op, L: 9 }], { snapThrough: 8 }), () => plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [op])).then(() => undefined));
+      for (let i = 0; i < 5; i++) await cycle(w, a);
+      expect(remarks(a).sort()).toEqual(["Groceries", "Planted", "Tea"]);
+      expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    });
+
+    it("a stream still broken at the rehome stays halted after it, and heals when its device writes a valid file", async () => {
+      const op = await someOp("Planted");
+      const { a } = await forkWhileHalted({ ...logFile(X, [op]), fv: 2 }, async () => {});
+      expect(a.engine.getState()).toMatchObject({ status: "needsUpdate", pendingCount: 0 });
+      await cycle(w, a);
+      expect(status(a)).toBe("needsUpdate");
+      await plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [op]));
+      await cycle(w, a);
+      expect(remarks(a).sort()).toEqual(["Groceries", "Planted", "Tea"]);
+      expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    });
+  });
 });
 
 describe("more failure points", () => {
