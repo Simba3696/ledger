@@ -705,6 +705,7 @@ describe("multi-tab (section 10.2)", () => {
         return records;
       },
       mutate: (m) => inner.mutate(m),
+      chainEntry: (L) => inner.chainEntry(L),
       startNewGeneration: () => inner.startNewGeneration(),
       volatile: () => inner.volatile(),
     };
@@ -768,6 +769,7 @@ describe("multi-tab (section 10.2)", () => {
         return inner.load();
       },
       mutate: (m) => inner.mutate(m),
+      chainEntry: (L) => inner.chainEntry(L),
       startNewGeneration: () => inner.startNewGeneration(),
       volatile: () => inner.volatile(),
     };

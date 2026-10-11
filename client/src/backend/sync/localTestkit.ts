@@ -28,6 +28,7 @@ export function hookedStore(inner: SyncStore, hooks: { before?: (m: Mutation) =>
   const calls = { started: 0, committed: 0 };
   const store: SyncStore = {
     load: () => inner.load(),
+    chainEntry: (L) => inner.chainEntry(L),
     startNewGeneration: () => inner.startNewGeneration(),
     volatile: () => inner.volatile(),
     async mutate(m) {
