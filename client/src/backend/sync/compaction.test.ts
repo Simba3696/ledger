@@ -797,6 +797,63 @@ describe("file bounds: a device never publishes an own file every reader would r
   });
 });
 
+describe("a snapshot's seen and joined name only devices and files the repo lists", () => {
+  const hex = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+  /** Plants `x`'s snapshot again under the name of a device `z` that has no
+   * log, changed by `edit`: the largest snapshot, which a cold start reads
+   * first. */
+  async function plantFromSnap(x: Device, edit: (snap: SnapContent & Record<string, unknown>) => void): Promise<string> {
+    const snap = (await unseal(stored(x, "snap")!.text, w.key)) as SnapContent & Record<string, unknown>;
+    const z = `d${hex()}`;
+    snap.device = z;
+    snap.seen[z] = snap.through;
+    edit(snap);
+    snap.seen = Object.fromEntries(Object.entries(snap.seen).sort(([a], [b]) => (a < b ? -1 : 1)));
+    await plant(w, { kind: "snap", epoch: EPOCH, device: z }, snap);
+    return z;
+  }
+
+  it("a snapshot whose seen names thousands of devices with no file is refused: a reader's later writes still push", async () => {
+    const x = await open({ ...every(1), login: "sam" });
+    await write(x, "From x");
+    await compactNow(x);
+    const z = await plantFromSnap(x, (snap) => {
+      for (let i = 0; i < 5200; i++) snap.seen[`d${hex()}`] = 1;
+    });
+    const planted = w.fake.file(FULL, repoPath({ kind: "snap", epoch: EPOCH, device: z }))!;
+    expect(planted.text.length).toBeLessThan(80_000);
+    // A build that reads files up to 80 KB, so every reader could read it.
+    const r = await open({ fileBounds: { bytes: 80_000, plainBytes: 640_000 }, login: "alex" });
+    expect(remarks(r)).toEqual(["From x"]);
+    const before = puts(w).length;
+    await write(r, "Mine");
+    await cycle(w, r);
+    await cycle(w, r);
+    expect(puts(w).length).toBeGreaterThan(before);
+    expect(r.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    const s = await open({ login: "sam" });
+    expect(remarks(s).sort()).toEqual(["From x", "Mine"]);
+    expect(r.logs.some((l) => l.includes("no file in the repo"))).toBe(true);
+  });
+
+  it("joined names no file lists are not taken: they never reach the reader's own snapshot", async () => {
+    const x = await open({ ...every(1), login: "sam" });
+    await write(x, "From x");
+    await compactNow(x);
+    const phantoms = Array.from({ length: 50 }, () => `${EPOCH}.d${hex()}.log.enc`);
+    await plantFromSnap(x, (snap) => {
+      for (const name of phantoms) snap.joined[name] = "0".repeat(40);
+    });
+    const r = await open({ ...every(1), login: "alex" });
+    expect(remarks(r)).toEqual(["From x"]);
+    expect(Object.keys(r.store.meta().joined as Record<string, string>).filter((name) => phantoms.includes(name))).toEqual([]);
+    await write(r, "Mine");
+    await compactNow(r);
+    expect(Object.keys((await repoSnap(r))!.joined).filter((name) => phantoms.includes(name))).toEqual([]);
+  });
+});
+
 describe("local compaction (section 8.4)", () => {
   it("folds the tail into the base once it passes the limit, in one transaction; a reload shows the same document", async () => {
     const store = new MemoryStore();

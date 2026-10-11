@@ -1175,12 +1175,30 @@ export class SyncEngine {
     const holds = (name: string, sha: string) => (out.joined[name] ?? src.joined[name]) === sha;
     const seenOf = (device: string) => src.seen.get(device) ?? 0;
     const isListed = (name: string, sha: string) => src.listing.files.get(name)?.sha === sha;
+    // The devices with a file in the epoch. A device's ops reach another
+    // only through its log, and nothing is ever deleted, so every device an
+    // honest snapshot has seen has a file in any listing that holds that
+    // snapshot. A cut listing proves no absence.
+    const listedDevices = new Set<string>();
+    for (const { file } of src.listing.files.values()) if (file.kind !== "genesis" && file.epoch === epoch) listedDevices.add(file.device);
 
     const joinSnap = async (name: string, listed: Listed): Promise<FileRead> => {
       const read = await this.#read(name, listed, await src.genesis());
       if (!read.ok) return read;
       const { file, state } = read.read;
       if (!state || file.kind !== "snap") return { ok: false, problem: "malformed", detail: "it is not a snapshot" };
+      // A seen entry joined is carried in every later own op's vv and own
+      // snapshot. Entries for devices with no file would let one small
+      // file make every later own op too large to push.
+      if (!src.listing.truncated) {
+        const unlisted = [...state.seen.keys()].filter((device) => device !== file.device && !listedDevices.has(device));
+        if (unlisted.length > 0) {
+          const refused: FileRead = { ok: false, problem: "malformed", detail: `its seen names ${unlisted.length} devices with no file in the repo` };
+          this.#refused.set(`${name}@${listed.sha}`, refused);
+          this.#log(`${name} can't be joined (malformed): ${refused.detail}`);
+          return refused;
+        }
+      }
       out.states.push(state);
       for (const [device, L] of state.seen) if (L > seenOf(device)) src.seen.set(device, L);
       out.joined[name] = listed.sha;
@@ -1188,6 +1206,9 @@ export class SyncEngine {
         const joinedFile = parseRepoFileName(joinedName);
         // The genesis is the cycle's own to read and record.
         if (!joinedFile || joinedFile.epoch !== epoch || joinedFile.kind === "genesis" || joinedFile.device === src.skip) continue;
+        // A name no file has would only grow meta and every own snapshot:
+        // a file listed later is read then, which costs only that read.
+        if (!src.listing.files.has(joinedName)) continue;
         if (out.joined[joinedName] === undefined && src.joined[joinedName] === undefined) out.joined[joinedName] = sha;
       }
       return read;
