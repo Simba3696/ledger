@@ -369,9 +369,9 @@ The fake should be corrected or extended to match. **Done in step 2:** `fakeGitH
    - `git/trees/{sha|branch}[?recursive=1]`: `{sha, tree, truncated}`, entries with `size`, names sorted.
    - `contents/{dir}`: sorted array; strong ETag equal to the root tree sha; **silent cap at 1,000**.
    - PUT responses with `commit.sha`, `commit.tree.sha` and `commit.parents: [{sha, …}]`.
-6. **Branch race.** Concurrent PUTs to any path give 409 `is at <head> but expected <base>`. A PUT whose file sha is current but whose base head is stale **may** instead be applied on top (GitHub did both).
+6. **Branch race.** Concurrent PUTs to any path give 409 `is at <head> but expected <base>`. A PUT whose file sha is current but whose base head is stale **may** instead be applied on top (GitHub did both). By default the fake keeps a PUT in flight only until the current synchronous section ends, so only PUTs sent in the same tick race; its `putLatencyMs` option keeps each PUT in flight that long, so PUTs sent milliseconds apart race as they did here.
 7. **Identical-content PUT** with the current sha: 200 with a new commit and an unchanged blob sha. The fake already does this.
-8. **Rate-limit headers:** separate `used` counters for reads and writes; 304s not counted; errors counted.
+8. **Rate-limit headers:** separate `used` counters for reads and writes; 304s not counted; errors counted, including the fake's injected ones (`failNext`), which carry the same headers.
 
 ## 18. What the fixture contains
 
@@ -400,6 +400,7 @@ In `samples`, `download_url` tokens, `temp_clone_token` and the committer's iden
 - **Fine-grained token permissions (§16.5 item 6).** Only an OAuth `repo`-scoped token was available. GitHub's documentation lists "Contents: read" for the refs, trees, blobs and commits endpoints, and "Contents: write" for the contents PUT. Verify with a real `github_pat_` token before release.
 - **Keepalive PUT on `pagehide` (§7, §16.5 item 5).** The PUT needs a CORS preflight (it sends `Authorization` and `Content-Type: application/json` with method `PUT`). Whether a browser will run a preflight for a `keepalive` request while the page unloads has varied between browsers and versions. A cached preflight (`max-age=86400`, capped lower by browsers) usually avoids the question. If it fails, the push is a lost send, and step 5 already recovers it on the next start. Needs iOS Safari and Android Chrome.
 - **Secondary rate limits.** Not provoked, on purpose. The response shape `contents.ts` expects (403 or 429 with `retry-after`) is as documented, but was not observed.
+- **Two first commits at once on an empty repo.** Not probed. The loser presumably gets a 409, but GitHub can't name a head it expected, and its message is unknown. The fake answers `is at <head> but expected 0000000000000000000000000000000000000000` (git's null id), which keeps the recorded branch-race shape, so `ShaConflictError` classifies it as a branch race.
 - **ETag across token refreshes.** `Vary` includes `Authorization`, so a refreshed GitHub App token may get a different ETag. The cost would be one 200 instead of a 304. Not testable with one token.
 - **The 100 MB and 7 MB / 100,000-entry ceilings.** Far above Ledger's sizes. Not exercised.
 - **Staleness across regions** (§13). One client, one edge.

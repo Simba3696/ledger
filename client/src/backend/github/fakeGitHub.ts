@@ -28,11 +28,16 @@ import { parseRepoFileName } from "../sync/epoch";
 // in flight at once race even when they write different paths, and the
 // loser gets 409 "is at <head> but expected <base>". The check of the file's
 // sha and the ref move happen in one synchronous step, so no interleaving
-// can lose an update.
+// can lose an update. By default a PUT is in flight only until the current
+// synchronous section ends, so only PUTs sent in the same tick race. On
+// GitHub a PUT took about 1.5 s and PUTs sent ~30 ms apart raced routinely
+// (github-api-behaviour.md section 4); `putLatencyMs` keeps each PUT in
+// flight that long, so tests of devices syncing at once reach the race.
 //
 // GETs answer If-None-Match with a 304 that doesn't count against the rate
 // limit. Reads and writes keep separate rate-limit counters, as GitHub
-// reports them; errors count.
+// reports them; errors count, injected ones (failNext) included, and carry
+// the same x-ratelimit-* headers.
 //
 // By default responses carry only the headers a browser on another origin
 // can read: the CORS-safelisted ones plus GitHub's
@@ -94,9 +99,12 @@ interface RequestMatch {
 
 /** A one-shot failure for the next matching request. `rateLimit` turns a
  * 403 into one of GitHub's rate-limit answers: "primary" (the hourly limit
- * spent, `x-ratelimit-remaining: 0`) or "secondary" (`retry-after: 60` with
- * requests still left in the hour); `network` makes fetch reject as it does
- * offline. The request is not applied. */
+ * spent, `x-ratelimit-remaining: 0`, resetting in a minute) or "secondary"
+ * (`retry-after: 60` with requests still left in the hour); `network` makes
+ * fetch reject as it does offline. The request is not applied. An injected
+ * HTTP failure on an authenticated request (any but 401) counts against the
+ * read or write counter and carries the x-ratelimit-* headers, as GitHub's
+ * errors do; a network failure has no response, so neither. */
 type FakeFailure = RequestMatch &
   (
     | { status: 401 | 403 | 404 | 409 | 422 | 429 | 500; rateLimit?: "primary" | "secondary"; message?: string }
@@ -148,7 +156,10 @@ export interface FakeGitHub {
    * listing without a commit sha, a tree by branch name) see the branch as
    * it was `lag` commits ago; 0 ends it. Reads by sha are never stale.
    * Never observed on real GitHub (github-api-behaviour.md section 13), so
-   * this is how tests show stale reads are harmless. */
+   * this is how tests show stale reads are harmless. A lag past the first
+   * commit shows an empty repo to every branch-named read: the ref and the
+   * tree by branch answer 409 "Git Repository is empty.", contents 404
+   * "This repository is empty.", as GitHub answers an empty repo. */
   staleReads(lag: number): void;
 }
 
@@ -248,6 +259,8 @@ const DOCS = {
 };
 
 const EMPTY_REPO = "Git Repository is empty.";
+/** git's id for "no object". */
+const NULL_SHA = "0".repeat(40);
 
 /** The documentation_url GitHub names in an error from this endpoint. */
 function docsFor(target: { kind: string }, method: string): string {
@@ -457,6 +470,7 @@ export function createFakeGitHub({
   tokens = {},
   cors = true,
   branchRace = "conflict",
+  putLatencyMs = 0,
   rateLimit = 5000,
   treeEntryLimit = TREE_ENTRY_LIMIT,
 }: {
@@ -469,6 +483,13 @@ export function createFakeGitHub({
    * expected …", what GitHub did 22 times in 23) or "rebase" (applied on
    * the new head, what it did once). */
   branchRace?: "conflict" | "rebase";
+  /** How long a PUT is in flight: it is checked against the head as it
+   * arrived, but applied only this many ms later, so PUTs sent within that
+   * window race as they did on GitHub (about 1.5 s a PUT there). 0, the
+   * default, applies it in the same tick, so only PUTs sent in the same
+   * synchronous section race. Real timers: don't combine it with
+   * vi.useFakeTimers unless the test advances them. */
+  putLatencyMs?: number;
   /** Requests an hour, per counter. */
   rateLimit?: number;
   /** Entries a tree response holds before it sets `truncated`. */
@@ -608,16 +629,44 @@ export function createFakeGitHub({
   const counterHeaders = (counter: Counter) =>
     rateLimitHeaders(Math.max(0, rateLimit - counter.used), counter.used, counter.reset, rateLimit);
 
-  function failureResponse(failure: Exclude<FakeFailure, { network: true }>): Response {
-    const secondary = { ...rateLimitHeaders(4990), "retry-after": "60" };
+  /** The grant behind an Authorization header, unless the token is
+   * unknown, revoked or expired. */
+  function validGrant(authorization: string | undefined): FakeToken | undefined {
+    const token = authorization?.match(/^(?:Bearer|token)\s+(.+)$/i)?.[1];
+    const grant = token === undefined ? undefined : grants.get(token);
+    return grant && !(grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now()) ? grant : undefined;
+  }
+
+  /** The token's read or write counter for an authenticated request, as
+   * handle() resolves it, or null when GitHub would not count it (no token,
+   * or one it refuses). */
+  function counterFor(request: RecordedRequest): Counter | null {
+    const grant = validGrant(request.headers.authorization);
+    if (!grant) return null;
+    const budget = budgetFor(grant.login);
+    return request.method === "GET" ? budget.read : budget.write;
+  }
+
+  /** An injected failure, counted and with GitHub's rate headers like any
+   * error on an authenticated request. A 401 is GitHub refusing the token,
+   * so it is neither. */
+  function failureResponse(failure: Exclude<FakeFailure, { network: true }>, request: RecordedRequest): Response {
+    const counter = failure.status === 401 ? null : counterFor(request);
+    if (counter && !(failure.status === 403 && failure.rateLimit === "primary")) counter.used++;
+    const counted = counter ? counterHeaders(counter) : {};
+    const secondary = { ...(counter ? counted : rateLimitHeaders(4990)), "retry-after": "60" };
     const reply = (status: number, message: string, headers?: Record<string, string>) =>
-      toResponse(error(status, message, DOCS.rest), headers ?? {});
+      toResponse(error(status, message, DOCS.rest), headers ?? counted);
     switch (failure.status) {
       case 401:
         return reply(401, failure.message ?? "Bad credentials");
       case 403:
         if (failure.rateLimit === "primary") {
-          const spent = { ...rateLimitHeaders(0), "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 60) };
+          // The hour spent, with its window ending in a minute.
+          const spent = {
+            ...rateLimitHeaders(0, rateLimit, undefined, rateLimit),
+            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 60),
+          };
           return reply(403, failure.message ?? "API rate limit exceeded", spent);
         }
         if (failure.rateLimit === "secondary") {
@@ -711,11 +760,8 @@ export function createFakeGitHub({
       if (target.kind === "user") return toResponse(error(401, "Requires authentication", DOCS.rest), {});
       return toResponse(error(404, "Not Found", docsFor(target, method)), {});
     }
-    const token = authorization.match(/^(?:Bearer|token)\s+(.+)$/i)?.[1];
-    const grant = token === undefined ? undefined : grants.get(token);
-    if (!grant || (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())) {
-      return toResponse(error(401, "Bad credentials", DOCS.rest), {});
-    }
+    const grant = validGrant(authorization);
+    if (!grant) return toResponse(error(401, "Bad credentials", DOCS.rest), {});
 
     // Rate limits: GETs and writes count separately; 304s don't count.
     const budget = budgetFor(grant.login);
@@ -829,8 +875,11 @@ export function createFakeGitHub({
       if (state.trees.has(target.ref)) treeSha = target.ref;
       else if (state.commitObjects.has(target.ref)) treeSha = state.commitObjects.get(target.ref)!.tree;
       else if (target.ref === BRANCH) {
+        // A stale view from before the first commit sees an empty repo, as
+        // the ref read does.
         const head = visibleHeadOf(state);
-        treeSha = head === null ? undefined : state.commitObjects.get(head)!.tree;
+        if (head === null) return error(409, EMPTY_REPO, DOCS.trees);
+        treeSha = state.commitObjects.get(head)!.tree;
         byBranch = true;
       }
       if (treeSha === undefined) return error(404, "Not Found", DOCS.trees);
@@ -962,7 +1011,12 @@ export function createFakeGitHub({
     if (head !== based) {
       // The branch moved while this request was in flight.
       const untouched = filesAt(state, head).get(path) === baseSha;
-      if (branchRace === "conflict" || !untouched) return error(409, `is at ${head} but expected ${based}`, DOCS.put);
+      // On an empty repo there was no head to expect. GitHub's answer to two
+      // first commits at once was never probed; git's null id keeps the
+      // recorded 40-hex shape (github-api-behaviour.md section 19).
+      if (branchRace === "conflict" || !untouched) {
+        return error(409, `is at ${head} but expected ${based ?? NULL_SHA}`, DOCS.put);
+      }
       parent = head;
     }
     const sha = storeBlob(state, bytes);
@@ -1030,6 +1084,10 @@ export function createFakeGitHub({
     const request = await record(input, init, device);
     if (cors && corsRefuses(request)) throw new TypeError("Failed to fetch");
     const fault = takeFault(request);
+    // A PUT stays in flight for putLatencyMs, keeping its arrival head.
+    if (putLatencyMs > 0 && request.method === "PUT" && (fault === undefined || fault.kind === "drop" || fault.kind === "duplicate")) {
+      await new Promise((resolve) => setTimeout(resolve, putLatencyMs));
+    }
     let res: Response;
     switch (fault?.kind) {
       case "fail":
@@ -1037,7 +1095,7 @@ export function createFakeGitHub({
           tick();
           throw new TypeError("Failed to fetch");
         }
-        res = failureResponse(fault.failure);
+        res = failureResponse(fault.failure, request);
         break;
       case "drop":
         handle(request, arrivalHead);

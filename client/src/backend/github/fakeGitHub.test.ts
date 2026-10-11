@@ -98,6 +98,18 @@ describe("fake GitHub faults", () => {
     fake.staleReads(0);
     expect(await gh.getRef("main")).toMatchObject({ kind: "head", commitSha: v2.commitSha });
   });
+
+  it("staleReads past the first commit: every branch-named git read sees an empty repo, as GitHub answers one", async () => {
+    await fake.seedFile(REPO, MY_LOG, "v1");
+    fake.staleReads(1);
+    const get = async (path: string) => {
+      const res = await fake.fetch(`https://api.github.com/repos/${REPO}/${path}`, { headers: { Authorization: `Bearer ${WRITE}` } });
+      return { status: res.status, message: ((await res.json()) as { message: string }).message };
+    };
+    expect(await get("git/ref/heads/main")).toEqual({ status: 409, message: "Git Repository is empty." });
+    expect(await get("git/trees/main?recursive=1")).toEqual({ status: 409, message: "Git Repository is empty." });
+    expect(await get("contents/ledger")).toEqual({ status: 404, message: "This repository is empty." });
+  });
 });
 
 describe("fake GitHub path ownership (AC10)", () => {

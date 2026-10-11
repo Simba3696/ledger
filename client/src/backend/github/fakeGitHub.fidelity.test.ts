@@ -306,6 +306,34 @@ describe("fake GitHub fidelity: concurrent PUTs race on the branch ref (section 
     }
     expect(conflicts).toBe(recordedRun.conflicts409);
   });
+
+  it("without putLatencyMs only PUTs sent in the same tick race; with it, PUTs sent 1 ms apart race as on GitHub", async () => {
+    const recordedRun = recorded.concurrency.differentPaths2;
+    const staggered = async (via: FakeGitHub) => {
+      const paths = await seedLogs(via, 2);
+      let conflicts = 0;
+      for (let r = 0; r < recordedRun.rounds; r++) {
+        const shas = await Promise.all(paths.map(async (p) => (await call("GET", `{r}/contents/${p}`, { via })).body.sha as string));
+        const first = put(paths[0], `a ${r}`, shas[0], { via });
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        const second = put(paths[1], `b ${r}`, shas[1], { via });
+        const answers = await Promise.all([first, second]);
+        for (const a of answers.filter((a) => a.status === 409)) expect(a.body.message).toMatch(race);
+        conflicts += answers.filter((a) => a.status === 409).length;
+      }
+      return conflicts;
+    };
+    expect(await staggered(fake)).toBe(0);
+    expect(await staggered(newFake({ putLatencyMs: 20 }))).toBe(recordedRun.conflicts409);
+  });
+
+  it("two first commits at once on an empty repo: the loser gets the recorded branch-race shape", async () => {
+    const answers = await Promise.all([put(GENESIS, "g1"), put("ledger/e000001-77aa77aa.genesis.enc", "g2")]);
+    expect(answers.map((a) => a.status).sort()).toEqual([201, 409]);
+    const loser = answers.find((a) => a.status === 409)!;
+    expect(loser.body.message).toMatch(race);
+    expect(new ShaConflictError(409, loser.body.message).reason).toBe("branch-race");
+  });
 });
 
 describe("fake GitHub fidelity: ref (section 5)", () => {
@@ -639,6 +667,32 @@ describe("fake GitHub fidelity: rate limits (section 14)", () => {
     expect(recorded.rateLimit.notModifiedCounts).toBe(false);
     expect([v1, conflict, unsupplied].map(used)).toEqual([1, 2, 3]);
     expect([firstGet, notModified, missing].map(used)).toEqual([1, 1, 2]);
+  });
+
+  it("counts injected failures and sends them the rate headers, as GitHub does for errors", async () => {
+    expect(recorded.rateLimit.errorsCount).toBe(true);
+    const v1 = await put(LOG, "v1");
+    expect(used(v1)).toBe(1);
+    fake.failNext({ method: "PUT", status: 409 });
+    const injected = await put(LOG, "v2", v1.body.content.sha);
+    expect(injected.status).toBe(409);
+    for (const header of recorded.rateLimit.headersOnEveryAuthenticatedResponse) expect(injected.headers.has(header), header).toBe(true);
+    expect(used(injected)).toBe(2);
+    fake.failNext({ method: "GET", status: 404 });
+    const missing = await call("GET", "{r}/git/ref/heads/main");
+    expect(missing.status).toBe(404);
+    expect(used(missing)).toBe(1);
+    const organic = await put(LOG, "v3", "6abd7d5cdfbf9c44a806872d2e0f200e39cf70c5");
+    expect(organic.status).toBe(409);
+    expect(used(organic)).toBe(3);
+    // A secondary limit leaves requests in the hour; a primary one none.
+    fake.failNext({ method: "PUT", status: 403, rateLimit: "secondary" });
+    const secondary = await put(LOG, "v4", v1.body.content.sha);
+    expect(used(secondary)).toBe(4);
+    expect(secondary.headers.get("x-ratelimit-remaining")).toBe(String(recorded.rateLimit.limit - 4));
+    expect(secondary.headers.get("retry-after")).toBe("60");
+    fake.failNext({ method: "GET", status: 403, rateLimit: "primary" });
+    expect((await call("GET", "{r}")).headers.get("x-ratelimit-remaining")).toBe("0");
   });
 
   it("answers a spent hourly limit with 403 and remaining 0, and a burst of writes with a secondary limit", async () => {
