@@ -556,7 +556,9 @@ describe("files", () => {
     const seen = Object.fromEntries(Array.from({ length: 300_000 }, (_, i) => [deviceId(i + 1), 1]));
     const huge = { ...file, through: 0, seen, maxL: 1, state: encodeState(genesisState(emptyDocument())) };
     expect(check(SNAP, huge).ok).toBe(true);
-  });
+    // Robustness, not speed: building and checking 300,000 entries takes ~6 s
+    // on a loaded Windows machine, past vitest's 5 s default.
+  }, 30_000);
 
   // Only a genesis sets the categories (design section 2.2), and an op that
   // sets them is refused. A snap must not be a way round that: a joiner
