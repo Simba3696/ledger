@@ -1,0 +1,646 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bytesToBase64 } from "../base64";
+import { checkRepoFile } from "./codec";
+import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, entry, expectConverged, nextTask, plant, puts, quiesce, remarks, since, world, type Device, type World } from "./cycleTestkit";
+import type { RepoFile } from "./epoch";
+import { unseal } from "./records";
+import { repoPath } from "./repoFiles";
+import { genesisState, type Op } from "./state";
+import type { SyncEngine } from "./SyncEngine";
+import { Rng, deviceId, testEnv } from "./testkit";
+
+// Compaction, the gap check and cold start (design section 8), against the
+// fake GitHub: a device snapshots its own log with no agreement between
+// devices (8.1), a reader never joins a log across a snapshot it hasn't read
+// (8.2), a new or long-offline device catches up through snapshots and their
+// `joined` maps (8.3), and the device folds its saved tail into its base
+// (8.4). Acceptance item 12: no op is lost for any reader at any point, and
+// a device offline past several compactions catches up and publishes its
+// own offline writes. Fictional data only.
+
+const running: SyncEngine[] = [];
+let w: World;
+
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  w = await world();
+});
+
+afterEach(() => {
+  for (const engine of running.splice(0)) engine.stop();
+  vi.useRealTimers();
+});
+
+async function open(options: Parameters<typeof device>[1] = {}): Promise<Device> {
+  const d = await device(w, options);
+  running.push(d.engine);
+  return d;
+}
+
+/** Compacts once the own log holds `ops` ops. */
+const every = (ops: number) => ({ compaction: { logOps: ops } });
+
+const file = (d: Device, kind: "log" | "snap"): RepoFile => ({ kind, epoch: EPOCH, device: d.engine.deviceId! });
+const stored = (d: Device, kind: "log" | "snap") => w.fake.file(FULL, repoPath(file(d, kind)));
+
+interface LogContent {
+  snapThrough: number;
+  ops: Op[];
+}
+
+interface SnapContent {
+  through: number;
+  seen: Record<string, number>;
+  joined: Record<string, string>;
+}
+
+async function repoLog(d: Device): Promise<LogContent> {
+  return (await unseal(stored(d, "log")!.text, w.key)) as LogContent;
+}
+
+async function repoSnap(d: Device): Promise<SnapContent | null> {
+  const snap = stored(d, "snap");
+  return snap ? ((await unseal(snap.text, w.key)) as SnapContent) : null;
+}
+
+async function write(d: Device, ...texts: string[]): Promise<void> {
+  for (const text of texts) await d.backend.addEntry(entry(text));
+}
+
+/** Cycles `d` until its log is trimmed to its snapshot point (a log PUT,
+ * then the snap, then the trimmed log: section 7 steps 6 and 7, each a
+ * PUT spaced from the last). */
+async function compactNow(d: Device): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    await cycle(w, d);
+    const meta = d.store.meta();
+    if ((meta.K as number) > 0 && meta.ownLogK === meta.K && (await d.store.load())!.ownLog.length === 0) return;
+  }
+  throw new Error("the device did not compact");
+}
+
+/** Lets queued work (a local compaction) run until `condition` holds; the
+ * fake timers don't move. */
+async function until(condition: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; !(await condition()); i++) {
+    if (i > 10_000) throw new Error("timed out waiting");
+    await nextTask();
+  }
+}
+
+const blobReads = (from: number) => since(w, from).filter((r) => r.method === "GET" && r.path.includes("/git/blobs/"));
+const readsOf = (from: number, sha: string) => blobReads(from).filter((r) => r.path.endsWith(sha)).length;
+const status = (d: Device) => d.engine.getState().status;
+
+describe("compaction: own log only, with no agreement between devices (section 8.1)", () => {
+  it("snapshots once the log holds the op limit: the snap first, then the log trimmed to it, each its own PUT", async () => {
+    const a = await open(every(3));
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a);
+    expect(stored(a, "snap")).toBeNull();
+    await cycle(w, a);
+    // The snap is in; the log still holds the ops it covers (S1 duplicates).
+    const snap = (await repoSnap(a))!;
+    expect(snap.through).toBe(4);
+    expect(snap.seen[a.engine.deviceId!]).toBe(4);
+    expect((await repoLog(a)).ops.map((op) => op.L)).toEqual([2, 3, 4]);
+    expect(a.store.meta()).toMatchObject({ K: 4, ownSnapSha: stored(a, "snap")!.sha });
+    expect((await a.store.load())!.ownLog).toEqual([]);
+    await cycle(w, a);
+    expect(await repoLog(a)).toMatchObject({ snapThrough: 4, ops: [] });
+    const dev8 = a.engine.deviceId!.slice(1, 9);
+    expect(w.fake.commits.map((c) => c.message)).toEqual([`Sync ${dev8}`, `Snapshot ${dev8}`, `Sync ${dev8}`]);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    // Idle again: no further snapshot or PUT.
+    const before = puts(w).length;
+    await cycle(w, a, a, a);
+    expect(puts(w).length).toBe(before);
+    expect(w.fake.violations).toEqual([]);
+    expect(w.fake.requests.some((r) => r.method === "DELETE")).toBe(false);
+  });
+
+  it("snapshots once the log's text reaches the size limit, though it holds few ops", async () => {
+    const a = await open({ compaction: { logOps: 1000, logBytes: 1 } });
+    await write(a, "One");
+    await compactNow(a);
+    expect((await repoSnap(a))!.through).toBe(2);
+    expect(remarks(await open({ login: "sam" }))).toEqual(["One"]);
+  });
+
+  it("the snapshot is the device's whole state at K: other devices' data and the files it holds, checked as every reader checks it", async () => {
+    const b = await open({ login: "sam" });
+    await write(b, "From Sam");
+    await cycle(w, b);
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await compactNow(a);
+    const snapText = stored(a, "snap")!.text;
+    expect(snapText).not.toContain("From Sam");
+    const snap = (await unseal(snapText, w.key)) as SnapContent & Record<string, unknown>;
+    expect(snap.joined).toMatchObject({ [GENESIS]: w.fake.file(FULL, `ledger/${GENESIS}`)!.sha, [`${EPOCH}.${b.engine.deviceId}.log.enc`]: stored(b, "log")!.sha });
+    expect(checkRepoFile(file(a, "snap"), snap, genesisState(w.doc)).ok).toBe(true);
+    expect((snap.state as { rec: { e: unknown[] } }).rec.e).toHaveLength(3);
+  });
+
+  it("never snapshots while an own op is unconfirmed: a push that fails, or is refused 4 times, holds the snapshot back", async () => {
+    const a = await open(every(1));
+    await write(a, "One");
+    w.fake.failNext({ method: "PUT", network: true });
+    await cycle(w, a);
+    for (let i = 0; i < 4; i++) w.fake.failNext({ method: "PUT", status: 409, message: "is at 0000000000000000000000000000000000000000 but expected 1111111111111111111111111111111111111111" });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "pending", pendingCount: 1 });
+    expect(stored(a, "snap")).toBeNull();
+    expect(puts(w).filter((r) => r.path.endsWith(".snap.enc"))).toHaveLength(0);
+    await compactNow(a);
+    expect((await repoSnap(a))!.through).toBe(2);
+  });
+
+  it("a branch-race 409 on the snapshot PUT sends the same snapshot again, and it lands once", async () => {
+    const a = await open(every(1));
+    await write(a, "One");
+    await cycle(w, a);
+    w.fake.failNext({ method: "PUT", path: /\.snap\.enc$/, status: 409, message: "is at 0000000000000000000000000000000000000000 but expected 1111111111111111111111111111111111111111" });
+    await compactNow(a);
+    const sent = puts(w).filter((r) => r.path.endsWith(".snap.enc"));
+    expect(sent).toHaveLength(2);
+    expect(sent[1].body).toBe(sent[0].body);
+    expect(w.fake.commits.filter((c) => c.message.startsWith("Snapshot"))).toHaveLength(1);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+  });
+
+  it("writes made while the snapshot is in flight stay in the log above K and are pushed", async () => {
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await cycle(w, a);
+    // "Three" commits after the snapshot was taken, before it is confirmed.
+    const put = a.client.putFile.bind(a.client);
+    vi.spyOn(a.client, "putFile").mockImplementation(async (write_) => {
+      if (write_.path.endsWith(".snap.enc")) await write(a, "Three");
+      return put(write_);
+    });
+    await cycle(w, a);
+    expect(a.store.meta().K).toBe(3);
+    expect((await a.store.load())!.ownLog.map(([L]) => L)).toEqual([4]);
+    expect(a.engine.getState().pendingCount).toBe(1);
+    await cycle(w, a);
+    expect(await repoLog(a)).toMatchObject({ snapThrough: 3, ops: [expect.objectContaining({ L: 4 })] });
+    const b = await open({ login: "sam" });
+    expect(remarks(b)).toEqual(["One", "Two", "Three"]);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+  });
+});
+
+describe("compaction crash points: no reader ever loses an op (AC12)", () => {
+  /** A device that has seen nothing of `a` yet, and a fresh one: both
+   * must show everything `a` has published so far. */
+  async function readersSee(texts: string[]): Promise<void> {
+    const fresh = await open({ login: "sam" });
+    expect(remarks(fresh)).toEqual(texts);
+  }
+
+  it("the snap lands but its answer is lost and the tab closes: the next start confirms it by its listed sha, then trims", async () => {
+    const store = new MemoryStore();
+    const behind = await open({ login: "sam" });
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a);
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.snap\.enc$/ });
+    await cycle(w, a);
+    expect(stored(a, "snap")).not.toBeNull();
+    expect(store.meta()).toMatchObject({ K: 0, lastSentSnapSha: stored(a, "snap")!.sha, lastSentSnapThrough: 4 });
+    await readersSee(["One", "Two", "Three"]);
+    a.engine.stop();
+    const again = await open({ ...every(3), store });
+    await cycle(w, again);
+    expect(store.meta()).toMatchObject({ K: 4, ownSnapSha: stored(again, "snap")!.sha });
+    expect(await repoLog(again)).toMatchObject({ snapThrough: 4, ops: [] });
+    // One snapshot PUT in all: the confirmation needed no second one.
+    expect(puts(w).filter((r) => r.path.endsWith(".snap.enc"))).toHaveLength(1);
+    await readersSee(["One", "Two", "Three"]);
+    await cycle(w, behind);
+    expect(remarks(behind)).toEqual(["One", "Two", "Three"]);
+  });
+
+  it("a snap that landed unseen, whose send a reload then replaced, is confirmed by reading it back: its chain is this device's", async () => {
+    const store = new MemoryStore();
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a);
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.snap\.enc$/ });
+    await cycle(w, a);
+    const landed = stored(a, "snap")!.sha;
+    a.engine.stop();
+    // Reads by branch lag one commit: the new tab doesn't see the snap, and
+    // sends a snapshot of its own (new bytes), which the repo refuses.
+    w.fake.staleReads(1);
+    const again = await open({ ...every(3), store });
+    await cycle(w, again);
+    expect(store.meta()).toMatchObject({ K: 0 });
+    expect(store.meta().lastSentSnapSha).not.toBe(landed);
+    w.fake.staleReads(0);
+    await cycle(w, again, again);
+    expect(store.meta()).toMatchObject({ K: 4, ownSnapSha: landed });
+    expect(stored(again, "snap")!.sha).toBe(landed);
+    expect(await repoLog(again)).toMatchObject({ snapThrough: 4, ops: [] });
+    expect(again.engine.deviceId).toBe(a.engine.deviceId);
+    await readersSee(["One", "Two", "Three"]);
+  });
+
+  it("the snap never lands and the tab closes: the next start sends it again", async () => {
+    const store = new MemoryStore();
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a);
+    w.fake.failNext({ method: "PUT", path: /\.snap\.enc$/, network: true });
+    await cycle(w, a);
+    expect(stored(a, "snap")).toBeNull();
+    a.engine.stop();
+    const again = await open({ ...every(3), store });
+    await compactNow(again);
+    await readersSee(["One", "Two", "Three"]);
+  });
+
+  it("killed after the snap is confirmed, before the trim: the next start sends the trimmed log", async () => {
+    const store = new MemoryStore();
+    const behind = await open({ login: "sam" });
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a, a);
+    expect(store.meta().K).toBe(4);
+    expect((await repoLog(a)).snapThrough).toBe(0);
+    await readersSee(["One", "Two", "Three"]);
+    a.engine.stop();
+    const again = await open({ ...every(3), store });
+    await cycle(w, again);
+    expect(await repoLog(again)).toMatchObject({ snapThrough: 4, ops: [] });
+    await readersSee(["One", "Two", "Three"]);
+    await cycle(w, behind);
+    expect(remarks(behind)).toEqual(["One", "Two", "Three"]);
+  });
+
+  it("the trim lands but its answer is lost: the next cycle recognises it, and nothing is sent again", async () => {
+    const a = await open(every(3));
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a, a);
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.log\.enc$/ });
+    await cycle(w, a);
+    expect(await repoLog(a)).toMatchObject({ snapThrough: 4, ops: [] });
+    const before = puts(w).length;
+    await cycle(w, a, a);
+    expect(puts(w).length).toBe(before);
+    expect(a.store.meta()).toMatchObject({ ownLogK: 4, ownLogSha: stored(a, "log")!.sha });
+    await readersSee(["One", "Two", "Three"]);
+  });
+
+  it("a trim that landed unseen, whose send a reload then replaced, is recognised by reading it back: its snapThrough is newer", async () => {
+    const store = new MemoryStore();
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a, a);
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.log\.enc$/ });
+    await cycle(w, a);
+    const trimmed = stored(a, "log")!.sha;
+    expect(store.meta()).toMatchObject({ ownLogK: 0, lastSentLogSha: trimmed });
+    a.engine.stop();
+    // The new tab doesn't see the trim, and sends one of its own (new
+    // bytes, the same ops and snapThrough), which the repo refuses.
+    w.fake.staleReads(1);
+    const again = await open({ ...every(3), store });
+    expect(store.meta().lastSentLogSha).not.toBe(trimmed);
+    w.fake.staleReads(0);
+    await cycle(w, again);
+    expect(store.meta()).toMatchObject({ ownLogSha: trimmed, ownLogThrough: 4, ownLogK: 4 });
+    // Settled: nothing more is sent.
+    const before = puts(w).length;
+    await cycle(w, again, again);
+    expect(puts(w).length).toBe(before);
+    expect(again.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    await readersSee(["One", "Two", "Three"]);
+  });
+
+  it("after the trim, a reload changes nothing and readers see everything", async () => {
+    const store = new MemoryStore();
+    const a = await open({ ...every(3), store });
+    await write(a, "One", "Two", "Three");
+    await compactNow(a);
+    a.engine.stop();
+    const before = puts(w).length;
+    const again = await open({ ...every(3), store });
+    await cycle(w, again);
+    expect(puts(w).length).toBe(before);
+    expect(remarks(again)).toEqual(["One", "Two", "Three"]);
+    await write(again, "Four");
+    await cycle(w, again);
+    expect(await repoLog(again)).toMatchObject({ snapThrough: 4, ops: [expect.objectContaining({ L: 5 })] });
+    await readersSee(["One", "Two", "Three", "Four"]);
+  });
+});
+
+describe("the gap check (section 8.2)", () => {
+  it("a reader behind K reads the snapshot first, then the log above it", async () => {
+    const a = await open(every(3));
+    const b = await open({ login: "sam" });
+    await write(a, "One", "Two", "Three");
+    await compactNow(a);
+    await write(a, "Four");
+    await cycle(w, a);
+    const from = w.fake.requests.length;
+    await cycle(w, b);
+    expect(readsOf(from, stored(a, "snap")!.sha)).toBe(1);
+    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four"]);
+    expect(b.engine.getState()).toMatchObject({ status: "idle" });
+    expect(b.store.meta().joined).toMatchObject({ [`${EPOCH}.${a.engine.deviceId}.snap.enc`]: stored(a, "snap")!.sha });
+  });
+
+  it("a reader already past K never reads the snapshot", async () => {
+    const a = await open(every(3));
+    const b = await open({ login: "sam" });
+    await write(a, "One", "Two", "Three");
+    await cycle(w, a);
+    await cycle(w, b);
+    await compactNow(a);
+    await write(a, "Four");
+    await cycle(w, a);
+    const from = w.fake.requests.length;
+    await cycle(w, b);
+    expect(readsOf(from, stored(a, "snap")!.sha)).toBe(0);
+    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four"]);
+  });
+
+  it("a snapshot older than the log's snapThrough (a stale read) is joined, the log waits, saving, until the newer snapshot is read", async () => {
+    const a = await open(every(2));
+    const b = await open({ login: "sam" });
+    await write(a, "One", "Two");
+    await compactNow(a);
+    const older = stored(a, "snap")!.text;
+    await write(a, "Three", "Four");
+    await compactNow(a);
+    const newer = stored(a, "snap")!.text;
+    await plant(w, file(a, "snap"), older);
+    await cycle(w, b);
+    expect(status(b)).toBe("saving");
+    expect(remarks(b)).toEqual(["One", "Two"]);
+    // The stale snap's joined map names an older version of a's log; the
+    // listed one is not joined across the gap.
+    const joined = b.store.meta().joined as Record<string, string>;
+    expect(joined[`${EPOCH}.${a.engine.deviceId}.log.enc`]).not.toBe(stored(a, "log")!.sha);
+    await cycle(w, b);
+    expect(status(b)).toBe("saving");
+    await plant(w, file(a, "snap"), newer);
+    await cycle(w, b);
+    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four"]);
+    expect(b.engine.getState()).toMatchObject({ status: "idle" });
+    // The device whose snapshot was set back is not misled by it.
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+  });
+
+  it("a snapshot that can't be read halts only its stream; it heals once a valid one is listed", async () => {
+    const a = await open(every(2));
+    const c = await open({ login: "sam" });
+    const b = await open({ login: "sam" });
+    await write(a, "One", "Two");
+    await compactNow(a);
+    const good = stored(a, "snap")!.text;
+    await plant(w, file(a, "snap"), { fv: 1, kind: "snap", epoch: EPOCH, device: a.engine.deviceId });
+    await write(c, "From c");
+    await cycle(w, c);
+    await cycle(w, b);
+    expect(status(b)).toBe("needsAttention");
+    expect(remarks(b)).toEqual(["From c"]);
+    await plant(w, file(a, "snap"), good);
+    await cycle(w, b);
+    expect(remarks(b).sort()).toEqual(["From c", "One", "Two"]);
+    expect(status(b)).toBe("idle");
+  });
+});
+
+describe("cold start and offline catch-up (section 8.3)", () => {
+  it("a new device reads the genesis, one snapshot and only the logs changed since it; a retired device's log is skipped through `joined`", async () => {
+    const retired = await open({ login: "sam" });
+    await write(retired, "Retired");
+    await cycle(w, retired);
+    retired.engine.stop();
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await compactNow(a);
+    await write(a, "Three");
+    await cycle(w, a);
+    const from = w.fake.requests.length;
+    const fresh = await open({ login: "sam" });
+    const read = blobReads(from).map((r) => r.path.split("/").at(-1));
+    expect(read.sort()).toEqual([w.fake.file(FULL, `ledger/${GENESIS}`)!.sha, stored(a, "snap")!.sha, stored(a, "log")!.sha].sort());
+    expect(readsOf(from, stored(retired, "log")!.sha)).toBe(0);
+    expect(remarks(fresh).sort()).toEqual(["One", "Retired", "Three", "Two"]);
+    expectConverged(a, fresh);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("a cold start whose largest snapshot can't be read takes the next, and still converges", async () => {
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await compactNow(a);
+    // Larger than a's: random padding doesn't compress.
+    const X = deviceId(0xc);
+    const padding = bytesToBase64(crypto.getRandomValues(new Uint8Array(20_000)));
+    const garbage = await plant(w, { kind: "snap", epoch: EPOCH, device: X }, { fv: 1, kind: "snap", epoch: EPOCH, device: X, padding });
+    const from = w.fake.requests.length;
+    const fresh = await open({ login: "sam" });
+    expect(readsOf(from, garbage)).toBe(1);
+    expect(readsOf(from, stored(a, "snap")!.sha)).toBe(1);
+    expect(remarks(fresh)).toEqual(["One", "Two"]);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("a device offline past 5 compactions catches up, and its offline writes are published (AC12)", async () => {
+    const a = await open(every(2));
+    const b = await open({ login: "sam" });
+    await write(b, "Offline 1");
+    for (let round = 1; round <= 5; round++) {
+      await write(a, `Round ${round}a`, `Round ${round}b`);
+      await compactNow(a);
+    }
+    expect(w.fake.commits.filter((c) => c.message.startsWith("Snapshot")).length).toBe(5);
+    await write(b, "Offline 2");
+    await quiesce(w, a, b);
+    expectConverged(a, b);
+    expect(remarks(a)).toEqual(expect.arrayContaining(["Offline 1", "Offline 2", "Round 1a", "Round 5b"]));
+    expect(remarks(a)).toHaveLength(12);
+    for (const d of [a, b]) expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  it("two devices both compacting converge, each joining the other through its snapshot when behind", async () => {
+    const a = await open({ ...every(2), login: "alex" });
+    const b = await open({ ...every(2), login: "sam" });
+    for (let round = 1; round <= 3; round++) {
+      await write(a, `A${round}x`, `A${round}y`);
+      await write(b, `B${round}x`, `B${round}y`);
+      await compactNow(a);
+      await compactNow(b);
+    }
+    await quiesce(w, a, b);
+    expectConverged(a, b);
+    expect(remarks(a)).toHaveLength(12);
+    const fresh = await open({ login: "sam" });
+    expectConverged(a, fresh);
+  });
+});
+
+describe("forks across compaction (section 10.3)", () => {
+  it("a clone that compacts under the shared id: the original finds the fork from the snapshot, rehomes through it, and nothing is lost", async () => {
+    const a = await open(every(2));
+    await write(a, "Before");
+    await cycle(w, a);
+    const twin = await open({ ...every(2), store: a.store.clone() });
+    await write(twin, "Copy 1", "Copy 2");
+    await compactNow(twin);
+    const old = a.engine.deviceId;
+    await write(a, "Original");
+    await cycle(w, a);
+    expect(a.engine.deviceId).not.toBe(old);
+    expect(a.logs.some((l) => l.includes("own snapshot in the repo is not its history"))).toBe(true);
+    const b = await open({ login: "sam" });
+    await quiesce(w, a, twin, b);
+    expectConverged(a, twin, b);
+    expect(remarks(b).sort()).toEqual(["Before", "Copy 1", "Copy 2", "Original"]);
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  it("a device that compacted and is then cloned: the rehome's cold join reads the old id's snapshot, so only the forked op is re-issued", async () => {
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await compactNow(a);
+    const twin = await open({ ...every(2), store: a.store.clone() });
+    await write(a, "Original");
+    await cycle(w, a);
+    await write(twin, "Copy");
+    await cycle(w, twin);
+    expect(twin.engine.deviceId).not.toBe(a.engine.deviceId);
+    const reissued = await repoLog(twin);
+    // Only the copy's own op at L 4 differs from the rebuilt state; the
+    // compacted ops at L 2 and 3 came back through the snapshot.
+    expect(reissued.ops.map((op) => op.L)).toEqual([4]);
+    await quiesce(w, a, twin);
+    expectConverged(a, twin);
+    expect(remarks(a).sort()).toEqual(["Copy", "One", "Original", "Two"]);
+  });
+});
+
+describe("local compaction (section 8.4)", () => {
+  it("folds the tail into the base once it passes the limit, in one transaction; a reload shows the same document", async () => {
+    const store = new MemoryStore();
+    const a = await open({ store, compaction: { tailEntries: 3 } });
+    await write(a, "One", "Two", "Three", "Four");
+    const folds = () => store.mutations.filter((m) => m.clearTail && m.base !== undefined);
+    await until(() => folds().length > 0);
+    expect(folds()).toHaveLength(1);
+    expect((await store.load())!.tail).toHaveLength(0);
+    await write(a, "Five");
+    expect((await store.load())!.tail).toHaveLength(1);
+    a.engine.stop();
+    const again = await open({ store, compaction: { tailEntries: 3 } });
+    expect(remarks(again)).toEqual(["One", "Two", "Three", "Four", "Five"]);
+  });
+
+  it("a long tail saved by an earlier build is folded on load", async () => {
+    const store = new MemoryStore();
+    const a = await open({ store });
+    await write(a, "One", "Two", "Three");
+    a.engine.stop();
+    const again = await open({ store, compaction: { tailEntries: 2 } });
+    await until(async () => (await store.load())!.tail.length === 0);
+    expect(remarks(again)).toEqual(["One", "Two", "Three"]);
+  });
+
+  it("a fold that fails only waits for the next one: no write was refused, so the device isn't flagged", async () => {
+    const store = new MemoryStore();
+    const a = await open({ store, compaction: { tailEntries: 2 } });
+    const mutate = store.mutate.bind(store);
+    let failed = 0;
+    vi.spyOn(store, "mutate").mockImplementation(async (m) => {
+      if (m.clearTail && failed++ === 0) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return mutate(m);
+    });
+    await write(a, "One", "Two", "Three");
+    await until(() => failed === 1 && a.logs.some((l) => l.includes("will be tried again")));
+    expect(a.engine.getState().deviceSaveFailed).toBe(false);
+    expect((await store.load())!.tail).toHaveLength(3);
+    await write(a, "Four");
+    await until(async () => (await store.load())!.tail.length === 0);
+    a.engine.stop();
+    const again = await open({ store });
+    expect(remarks(again)).toEqual(["One", "Two", "Three", "Four"]);
+  });
+});
+
+describe("randomised: compaction, catch-up and local folds under faults and reloads", () => {
+  // Seeded schedules of three devices that compact every few ops and fold
+  // their tail often: random adds, edits and deletes, cycles, lost or failed
+  // PUTs (snapshots and trims included), and reloads at rest. At quiescence
+  // every device, and a device started afresh, shows exactly the entries
+  // added and not deleted. The seed is in every failure message.
+  const SEEDS = Number(testEnv("LEDGER_COMPACTION_SEEDS") ?? 12);
+  const STEPS = 40;
+
+  it(`converges with nothing lost over ${SEEDS} seeds x ${STEPS} steps`, async () => {
+    // What the schedules exercised, so the test can't pass vacuously.
+    const seen = { snapshots: 0, snapReads: 0, folds: 0 };
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      for (const engine of running.splice(0)) engine.stop();
+      w = await world();
+      const rng = new Rng(seed);
+      const where = `seed ${seed}`;
+      const options = (login: string) => ({ login, compaction: { logOps: 2 + rng.int(3), tailEntries: 3 + rng.int(5) } });
+      const logins = ["alex", "sam", "alex"];
+      const devices: Device[] = [];
+      for (const login of logins) devices.push(await open(options(login)));
+      const added = new Set<string>();
+      const deleted = new Set<string>();
+      let n = 0;
+      for (let step = 0; step < STEPS; step++) {
+        const i = rng.int(devices.length);
+        const d = devices[i];
+        const roll = rng.next();
+        if (roll < 0.35) {
+          const text = `S${seed}-${n++}`;
+          await write(d, text);
+          added.add(text);
+        } else if (roll < 0.45 && remarks(d).length > 0) {
+          const text = remarks(d)[rng.int(remarks(d).length)];
+          await d.backend.updateEntry(2026, 5, (await d.backend.getMonth(2026, 5)).find((e) => e.remarks === text)!.row, { amount: 1 + rng.int(90), remarks: text, category: "food", isCard: false });
+        } else if (roll < 0.52 && remarks(d).length > 0) {
+          const text = remarks(d)[rng.int(remarks(d).length)];
+          await d.backend.deleteEntry(2026, 5, (await d.backend.getMonth(2026, 5)).find((e) => e.remarks === text)!.row);
+          deleted.add(text);
+        } else if (roll < 0.58) {
+          w.fake.landThenDropResponse({ method: "PUT" });
+        } else if (roll < 0.62) {
+          w.fake.failNext({ method: "PUT", network: true });
+        } else if (roll < 0.67) {
+          d.engine.stop();
+          devices[i] = await open({ ...options(d.login), store: d.store });
+        } else {
+          await cycle(w, d);
+        }
+      }
+      w.fake.landPending();
+      await quiesce(w, ...devices);
+      const expected = [...added].filter((text) => !deleted.has(text)).sort();
+      expectConverged(...devices);
+      expect([...remarks(devices[0])].sort(), where).toEqual(expected);
+      const fresh = await open({ login: "sam" });
+      expect([...remarks(fresh)].sort(), where).toEqual(expected);
+      for (const d of devices) expect(d.engine.getState(), where).toMatchObject({ status: "idle", pendingCount: 0 });
+      expect(w.fake.violations, where).toEqual([]);
+      const snapShas = new Set(w.fake.commits.filter((c) => c.message.startsWith("Snapshot")).map((c) => c.sha));
+      seen.snapshots += snapShas.size;
+      seen.snapReads += w.fake.requests.filter((r) => r.path.includes("/git/blobs/") && snapShas.has(r.path.split("/").at(-1)!)).length;
+      seen.folds += devices.reduce((sum, d) => sum + d.store.mutations.filter((m) => m.clearTail && m.base !== undefined).length, 0);
+    }
+    expect(seen.snapshots).toBeGreaterThan(SEEDS);
+    expect(seen.snapReads).toBeGreaterThan(0);
+    expect(seen.folds).toBeGreaterThan(SEEDS);
+  }, 300_000);
+});
