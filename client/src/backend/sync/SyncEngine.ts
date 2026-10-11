@@ -12,6 +12,7 @@ import {
   ShaConflictError,
   deviceCommitMessage,
   gitBlobSha,
+  putFileBody,
   type GitHubClient,
   type RefRead,
 } from "../github/contents";
@@ -199,8 +200,10 @@ export const SYNC_TIMING = {
   /** The longest wait after a rate limit: GitHub's primary window. A reset
    * further off means this device's clock is behind GitHub's. */
   rateLimitCapMs: 60 * 60 * 1000,
-  /** The largest own log text sent on pagehide: a keepalive request's body
-   * must stay under 64 KiB. */
+  /** The largest request body of a PUT sent on pagehide. Browsers refuse a
+   * keepalive request whose body would take the page's keepalive bodies in
+   * flight past 64 KiB. The body carries the log text as base64 inside JSON,
+   * about 4/3 of the text, so this is about 45 KiB of text. */
   keepaliveMaxBytes: 60 * 1024,
 };
 
@@ -761,11 +764,12 @@ export class SyncEngine {
     const through = this.#ownLog.at(-1)?.L ?? meta.K;
     const ready = this.#logReady;
     if (through <= meta.ownLogThrough || !ready || ready.through !== through || ready.device !== meta.deviceId) return;
-    if (ready.text.length > SYNC_TIMING.keepaliveMaxBytes) return;
+    const write = { path: repoPath(ready.file), text: ready.text, sha: meta.ownLogSha, message: deviceCommitMessage("Sync", ready.device) };
+    // Measured as sent: a body the browser would refuse never goes, nor
+    // counts against the hourly cap. The next start pushes it instead.
+    if (new TextEncoder().encode(putFileBody(write)).length > SYNC_TIMING.keepaliveMaxBytes) return;
     this.#putTimes.push(this.#monotonic());
-    this.#remote!.client.putFile({ path: repoPath(ready.file), text: ready.text, sha: meta.ownLogSha, message: deviceCommitMessage("Sync", ready.device), keepalive: true }).catch(
-      () => undefined,
-    );
+    this.#remote!.client.putFile({ ...write, keepalive: true }).catch(() => undefined);
   }
 
   // --- The network half: the cycle ------------------------------------------

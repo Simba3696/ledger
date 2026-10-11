@@ -325,6 +325,42 @@ describe("triggers and spacing (section 7)", () => {
     expect(puts(w)).toHaveLength(1);
   });
 
+  it("pagehide sends no keepalive PUT whose request body would pass the 64 KiB keepalive limit; the next cycle pushes it", async () => {
+    // The log text is built in the background, its blob sha last: wait for
+    // that hash of a large text, so pagehide finds the text built.
+    let hashed!: () => void;
+    const built = new Promise<void>((resolve) => (hashed = resolve));
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+      const done = await digest(algorithm, data);
+      if (algorithm === "SHA-1" && data.byteLength > 50_000) hashed();
+      return done;
+    });
+    try {
+      const win = new EventTarget();
+      const a = await open({ events: { window: win } });
+      // Random hex compresses poorly: a log text of about 58 KB, under the
+      // 60 KiB of text the engine once checked, whose base64-in-JSON body
+      // is about 78 KB.
+      const bytes = crypto.getRandomValues(new Uint8Array(40_000));
+      await a.backend.addEntry(entry([...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")));
+      await built;
+      await settle();
+      win.dispatchEvent(new Event("pagehide"));
+      await settle();
+      expect(puts(w)).toEqual([]);
+      await cycle(w, a);
+      const [put] = puts(w);
+      expect(put.keepalive).toBeUndefined();
+      const content = (JSON.parse(put.body!) as { content: string }).content;
+      expect((content.length / 4) * 3).toBeLessThan(60 * 1024);
+      expect(new TextEncoder().encode(put.body!).length).toBeGreaterThan(64 * 1024);
+      expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("a failed write is never pushed: only ops on the device go out (B17)", async () => {
     const store = new MemoryStore();
     const a = await open({ store });
