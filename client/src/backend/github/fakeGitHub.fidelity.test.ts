@@ -117,6 +117,9 @@ describe("fake GitHub fidelity: empty repository (section 1)", () => {
         continue;
       }
       expect(got.status, expected.path).toBe(expected.status);
+      if (expected.path.endsWith("(no Authorization)")) {
+        expect(got.headers.get("x-ratelimit-limit"), expected.path).toBe(String(recorded.rateLimit.unauthenticatedLimit));
+      }
       expect(got.body, expected.path).toEqual({
         message: expected.message,
         documentation_url: expected.documentation_url,
@@ -732,6 +735,21 @@ describe("fake GitHub fidelity: rate limits (section 14)", () => {
     expect((await call("GET", "{r}")).headers.get("x-ratelimit-remaining")).toBe("0");
   });
 
+  it("sends anonymous requests the unauthenticated limit, on a counter of their own", async () => {
+    await call("GET", "{r}/git/ref/heads/main");
+    const first = await call("GET", "{r}/git/ref/heads/main", { token: null });
+    const second = await call("GET", "{r}/contents/nope", { token: null });
+    for (const a of [first, second]) {
+      expect(a.status).toBe(404);
+      for (const header of recorded.rateLimit.headersOnEveryAuthenticatedResponse) expect(a.headers.has(header), header).toBe(true);
+      expect(a.headers.get("x-ratelimit-limit")).toBe(String(recorded.rateLimit.unauthenticatedLimit));
+    }
+    expect([first, second].map(used)).toEqual([1, 2]);
+    expect(second.headers.get("x-ratelimit-remaining")).toBe(String(recorded.rateLimit.unauthenticatedLimit - 2));
+    // The token's counter is untouched.
+    expect(used(await call("GET", "{r}/git/ref/heads/main"))).toBe(2);
+  });
+
   it("answers a spent hourly limit with 403 and remaining 0, and a burst of writes with a secondary limit", async () => {
     const tight = newFake({ rateLimit: 2 });
     await call("GET", "{r}", { via: tight });
@@ -790,6 +808,9 @@ describe("fake GitHub fidelity: errors (section 16)", () => {
         continue;
       }
       expect(got.status, expected.path).toBe(expected.status);
+      if (expected.path.endsWith("(no Authorization)")) {
+        expect(got.headers.get("x-ratelimit-limit"), expected.path).toBe(String(recorded.rateLimit.unauthenticatedLimit));
+      }
       expect(got.body, expected.path).toEqual({
         message: expected.message,
         documentation_url: expected.documentation_url,

@@ -241,6 +241,8 @@ const LISTING_CAP = 1000;
 const TREE_ENTRY_LIMIT = 100_000;
 /** Content-creating requests before GitHub's secondary limit answers. */
 const SECONDARY_PER_MINUTE = 80;
+/** GitHub's hourly limit for requests with no token (recorded, section 14). */
+const UNAUTHENTICATED_LIMIT = 60;
 const SECONDARY_PER_HOUR = 500;
 const BRANCH = "main";
 
@@ -500,6 +502,8 @@ export function createFakeGitHub({
   const repoStates = new Map<string, RepoState>();
   const grants = new Map<string, FakeToken>();
   const budgets = new Map<string, Budget>();
+  /** Requests with no token. GitHub counts them by IP; the fake has one. */
+  const anonymous: Counter = { used: 0, reset: 0 };
   const faults: Fault[] = [];
   const late: { request: RecordedRequest; remaining: number }[] = [];
   const requests: RecordedRequest[] = [];
@@ -625,6 +629,19 @@ export function createFakeGitHub({
       }
     }
     return budget;
+  }
+
+  /** Counts one request with no token and returns its rate headers. Ledger
+   * always sends a token, so running past the limit is not modelled. */
+  function anonymousHeaders(): Record<string, string> {
+    const now = Math.floor(Date.now() / 1000);
+    if (now >= anonymous.reset) {
+      anonymous.used = 0;
+      anonymous.reset = now + 3600;
+    }
+    anonymous.used++;
+    const remaining = Math.max(0, UNAUTHENTICATED_LIMIT - anonymous.used);
+    return rateLimitHeaders(remaining, anonymous.used, anonymous.reset, UNAUTHENTICATED_LIMIT);
   }
 
   const counterHeaders = (counter: Counter) =>
@@ -759,11 +776,12 @@ export function createFakeGitHub({
 
     // Authentication, as GitHub: no token is anonymous, which can't see a
     // private repo (404, recorded) or a public one (not recorded; Ledger
-    // never reads one). An unknown, revoked or expired token is 401.
+    // never reads one), and is counted against the unauthenticated limit of
+    // 60. An unknown, revoked or expired token is 401.
     const authorization = request.headers.authorization;
     if (authorization === undefined) {
-      if (target.kind === "user") return toResponse(error(401, "Requires authentication", DOCS.rest), {});
-      return toResponse(error(404, "Not Found", docsFor(target, method)), {});
+      if (target.kind === "user") return toResponse(error(401, "Requires authentication", DOCS.rest), anonymousHeaders());
+      return toResponse(error(404, "Not Found", docsFor(target, method)), anonymousHeaders());
     }
     const grant = validGrant(authorization);
     if (!grant) return toResponse(error(401, "Bad credentials", DOCS.rest), {});
