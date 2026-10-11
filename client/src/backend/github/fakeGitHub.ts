@@ -18,7 +18,8 @@ import { parseRepoFileName } from "../sync/epoch";
 // Repos are pre-seeded (standing in for the person creating one on
 // github.com), have one branch, `main`, and start empty; there is no
 // repo-create endpoint, and any request it doesn't model fails with 501 and
-// is recorded in `unhandled`. Tokens are an allow-list. Blob and tree shas
+// is recorded in `unhandled`: the `{commitSha}:{path}` tree form, and a PUT
+// onto a directory or under a file (GitHub's answer not recorded), included. Tokens are an allow-list. Blob and tree shas
 // are real git object ids (a tree is hashed as git hashes it), commits form
 // a history the branch ref moves along, and contents come back as base64
 // with a newline every 60 characters.
@@ -733,7 +734,11 @@ export function createFakeGitHub({
     }
     if (method !== "GET" || segments[3] !== "git") return null;
     if (segments[4] === "blobs" && segments.length === 6) return { kind: "blob", repo, sha: segments[5] };
-    if (segments[4] === "trees" && segments.length === 6) return { kind: "tree", repo, ref: segments[5] };
+    // GitHub also accepts `{commitSha}:{path}` (section 9); Ledger never
+    // sends it, so it is left unmodelled rather than answered as a bad ref.
+    if (segments[4] === "trees" && segments.length === 6 && !segments[5].includes(":")) {
+      return { kind: "tree", repo, ref: segments[5] };
+    }
     if (segments[4] === "ref" && segments[5] === "heads" && segments.length > 6) {
       return { kind: "ref", repo, branch: segments.slice(6).join("/") };
     }
@@ -1019,6 +1024,13 @@ export function createFakeGitHub({
       }
       parent = head;
     }
+    // Git can't hold a file and a directory at one path. GitHub's answer to
+    // such a PUT was never recorded, so it fails as unmodelled rather than
+    // committing a tree that contradicts its own file map.
+    if (pathClashes(state, based, path) || pathClashes(state, parent, path)) {
+      unhandled.push(request);
+      return { status: 501, json: { message: `fakeGitHub does not model a PUT whose path is a directory or under a file: ${path}` } };
+    }
     const sha = storeBlob(state, bytes);
     const made = commit(state, parent, new Map([[path, sha]]), payload.message);
     commits.push({ repo: fullName, path, message: payload.message, sha, commit: made.sha, parent });
@@ -1045,6 +1057,15 @@ export function createFakeGitHub({
         },
       },
     };
+  }
+
+  /** Whether `path` is a directory, or lies under a file, at `at`. */
+  function pathClashes(state: RepoState, at: string | null, path: string): boolean {
+    if (at === null) return false;
+    const { files, dirs } = state.commitObjects.get(at)!;
+    if (dirs.has(path)) return true;
+    const parts = path.split("/");
+    return parts.slice(1).some((_, i) => files.has(parts.slice(0, i + 1).join("/")));
   }
 
   /** Design section 6: a device writes only `ledger/<epoch>.<its id>.*`,

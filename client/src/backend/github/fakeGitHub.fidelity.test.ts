@@ -226,6 +226,33 @@ describe("fake GitHub fidelity: PUT (sections 2 and 3)", () => {
   }
 });
 
+describe("fake GitHub fidelity: PUTs git can't hold (not recorded)", () => {
+  // Git can't hold a file and a directory at one path, so GitHub must refuse
+  // these, but its status was never probed (github-api-behaviour.md section
+  // 19). The fake answers 501 and records the request in `unhandled` rather
+  // than guessing a status or committing a tree that contradicts its files.
+  it("refuses a PUT onto a directory, leaving the branch where it was", async () => {
+    await put(LOG, "log v1");
+    const head = fake.head(REPO);
+    const got = await put("ledger", "a file where a directory is");
+    expect(got.status).toBe(501);
+    expect(fake.unhandled.map((r) => r.path)).toEqual(["/repos/alex/ledger-data/contents/ledger"]);
+    expect(fake.head(REPO)).toBe(head);
+    const tree = await call("GET", "{r}/git/trees/main?recursive=1");
+    expect(tree.body.tree.map((e: { path: string }) => e.path)).toEqual(["ledger", LOG]);
+  });
+
+  it("refuses a PUT under a path that is a file", async () => {
+    await put(LOG, "log v1");
+    const head = fake.head(REPO);
+    const got = await put(`${LOG}/inside`, "a file under a file");
+    expect(got.status).toBe(501);
+    expect(fake.unhandled).toHaveLength(1);
+    expect(fake.head(REPO)).toBe(head);
+    expect(fake.file(REPO, LOG)?.text).toBe("log v1");
+  });
+});
+
 describe("fake GitHub fidelity: concurrent PUTs race on the branch ref (section 4)", () => {
   const race = new RegExp(recorded.concurrency.branchRaceMessagePattern);
 
@@ -556,6 +583,16 @@ describe("fake GitHub fidelity: git trees (section 9)", () => {
     expect(byTree.body.tree.map((e: { path: string }) => e.path)).toEqual(["README.md", "ledger"]);
     const old = await call("GET", `{r}/git/trees/${v1.body.commit.sha}?recursive=1`);
     expect(old.body.tree.map((e: { path: string }) => e.path)).toEqual(["ledger", LOG]);
+  });
+
+  it("fails loudly on the commitSha:path form, which GitHub accepts but the fake doesn't model (section 17)", async () => {
+    expect(recorded.trees.acceptsCommitColonPath).toBe(true);
+    await put(LOG, "log v1");
+    for (const ref of [`${fake.head(REPO)}%3Aledger`, `${fake.head(REPO)}:ledger`]) {
+      const got = await call("GET", `{r}/git/trees/${ref}`);
+      expect(got.status, ref).toBe(501);
+    }
+    expect(fake.unhandled).toHaveLength(2);
   });
 
   it("lists all 1,005 entries of a directory the contents API cuts at 1,000, each with its size", async () => {

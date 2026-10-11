@@ -358,7 +358,7 @@ All have the body `{"message": …, "documentation_url": …, "status": "<code a
 
 ## 17. Fake fidelity gaps (for §16.3)
 
-The fake should be corrected or extended to match. **Done in step 2:** `fakeGitHub.ts` models all eight, and `fakeGitHub.fidelity.test.ts` checks it against the fixture. Not modelled, because Ledger never calls them: the plural `git/refs`, `git/commits`, the `commitSha:path` tree form, and commits no branch points at.
+The fake should be corrected or extended to match. **Done in step 2:** `fakeGitHub.ts` models all eight, and `fakeGitHub.fidelity.test.ts` checks it against the fixture. Not modelled, because Ledger never calls them: the plural `git/refs`, `git/commits`, the `commitSha:path` tree form, and commits no branch points at. Each fails with 501 and is recorded in `unhandled`, so a test that reaches one fails loudly instead of seeing a GitHub-shaped 404. So does a PUT whose path is a directory or lies under a file (see §19).
 
 1. **Inline boundary.** Inline content only when `size < 1048576`. Today it inlines when `<= 1048576`.
 2. **PUT with a `sha` for an absent path.** Real GitHub gives 201 and ignores the sha. The fake gives 409.
@@ -401,6 +401,7 @@ In `samples`, `download_url` tokens, `temp_clone_token` and the committer's iden
 - **Keepalive PUT on `pagehide` (§7, §16.5 item 5).** The PUT needs a CORS preflight (it sends `Authorization` and `Content-Type: application/json` with method `PUT`). Whether a browser will run a preflight for a `keepalive` request while the page unloads has varied between browsers and versions. A cached preflight (`max-age=86400`, capped lower by browsers) usually avoids the question. If it fails, the push is a lost send, and step 5 already recovers it on the next start. Needs iOS Safari and Android Chrome.
 - **Secondary rate limits.** Not provoked, on purpose. The response shape `contents.ts` expects (403 or 429 with `retry-after`, or a message naming the rate limit) is as documented, but was not observed.
 - **Two first commits at once on an empty repo.** Not probed. The loser presumably gets a 409, but GitHub can't name a head it expected, and its message is unknown. The fake answers `is at <head> but expected 0000000000000000000000000000000000000000` (git's null id), which keeps the recorded branch-race shape, so `ShaConflictError` classifies it as a branch race.
+- **A PUT onto a directory, or under a file.** Git can't hold a file and a directory at one path, so GitHub must refuse a PUT to `contents/ledger` while `ledger/` holds files, or to `contents/ledger/x.enc/y` while `ledger/x.enc` is a file. The status and message were not probed. Ledger never sends either (a device writes only its own files). The fake answers 501 and records the request in `unhandled` rather than guess.
 - **ETag across token refreshes.** `Vary` includes `Authorization`, so a refreshed GitHub App token may get a different ETag. The cost would be one 200 instead of a 304. Not testable with one token.
 - **The 100 MB and 7 MB / 100,000-entry ceilings.** Far above Ledger's sizes. Not exercised.
 - **Staleness across regions** (§13). One client, one edge.
