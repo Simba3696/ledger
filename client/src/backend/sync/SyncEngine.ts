@@ -1511,13 +1511,24 @@ export class SyncEngine {
    * reused, so every send of one snapshot is the same bytes. Checked as
    * every reader checks it, against the epoch's genesis, before it is
    * published: null, remembered for that snapshot point, when it would be
-   * refused. */
+   * refused. Null, not remembered, when an own op is not yet in the
+   * confirmed log. */
   async #ownSnapText(genesis: SyncState): Promise<SnapText | null> {
     const view = await this.#enqueue(async () => {
       this.#assertWritable();
-      return { meta: this.#meta!, state: cloneState(this.#state!), chain: this.#chainHead };
+      const meta = this.#meta!;
+      // An own op committed since the trigger check (while the log text or
+      // the genesis was read, or queued ahead of this view) is in no
+      // published log. A snapshot holding it would reach only devices that
+      // start from it, never those that joined the log, if the trim never
+      // lands. So it waits: the push sends that op, and the next cycle
+      // compacts. A snapshot never holds an own op its log doesn't.
+      if (meta.ownMaxL !== meta.ownLogThrough || meta.ownLogK !== meta.K) return null;
+      return { meta, state: cloneState(this.#state!), chain: this.#chainHead };
     });
+    if (view === null) return null;
     const { meta, state, chain } = view;
+
     const through = meta.ownMaxL;
     const key = `${meta.epochKey}.${meta.deviceId}.${through}.${chain}`;
     if (this.#snapText?.key === key) return this.#snapText.value;

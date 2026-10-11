@@ -189,6 +189,80 @@ describe("compaction: own log only, with no agreement between devices (section 8
     expect(remarks(b)).toEqual(["One", "Two", "Three"]);
     expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
   });
+
+  it("an op committed while the snapshot is being taken waits for the next cycle: a snapshot never holds an own op no published log holds", async () => {
+    const a = await open(every(2));
+    const r = await open({ login: "sam" });
+    await write(a, "One", "Two");
+    await cycle(w, a); // the log [2, 3] lands; compaction waits out the PUT spacing
+    await a.engine.sync();
+    await cycle(w, r);
+    let release!: () => void;
+    a.store.hold = new Promise<void>((resolve) => (release = resolve));
+    // "Three"'s transaction is in flight when the compaction checks the log.
+    const three = a.backend.addEntry(entry("Three"));
+    for (let i = 0; i < 50; i++) await nextTask();
+    w.clock.mono += 10_000;
+    const sync = a.engine.sync();
+    for (let i = 0; i < 50; i++) await nextTask();
+    a.store.hold = null;
+    release();
+    await sync;
+    await three;
+    const snap = await repoSnap(a);
+    const log = await repoLog(a);
+    expect(snap === null || snap.through <= (log.ops.at(-1)?.L ?? log.snapThrough)).toBe(true);
+    expect(a.engine.getState().pendingCount).toBe(1);
+    // Closed before anything more is sent: every reader, old or new, holds
+    // the same history from it.
+    a.engine.stop();
+    const c = await open({ login: "sam" });
+    await quiesce(w, r, c);
+    expectConverged(r, c);
+    expect(remarks(c)).toEqual(["One", "Two"]);
+    // Back again, it publishes "Three", then compacts.
+    const again = await open({ ...every(2), store: a.store });
+    await compactNow(again);
+    await quiesce(w, r, c, again);
+    expectConverged(r, c, again);
+    expect(remarks(c)).toEqual(["One", "Two", "Three"]);
+  });
+
+  it("an op committed while a reloaded tab reads the genesis for its snapshot waits for the next cycle", async () => {
+    const a = await open({ compaction: { logOps: 1000 } });
+    await write(a, "One", "Two");
+    await cycle(w, a);
+    const b = await open({ login: "sam" });
+    expect(remarks(b)).toEqual(["One", "Two"]);
+    a.engine.stop();
+    const genesisSha = w.fake.file(FULL, `ledger/${GENESIS}`)!.sha;
+    let ready!: (d: Device) => void;
+    const opened = new Promise<Device>((resolve) => (ready = resolve));
+    let armed = true;
+    const wrapFetch =
+      (inner: typeof fetch): typeof fetch =>
+      async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (armed && (init?.method ?? "GET") === "GET" && url.includes("/git/blobs/") && url.endsWith(genesisSha)) {
+          armed = false;
+          await write(await opened, "Three");
+        }
+        return inner(input, init);
+      };
+    w.clock.mono += 10_000;
+    const a2 = await open({ store: a.store, ...every(2), wrapFetch, noSettle: true });
+    ready(a2);
+    await a2.engine.sync();
+    expect(armed).toBe(false);
+    const snap = await repoSnap(a2);
+    const log = await repoLog(a2);
+    expect(snap === null || snap.through <= (log.ops.at(-1)?.L ?? log.snapThrough)).toBe(true);
+    // Retired now: whatever it published, old and new readers hold the same.
+    a2.engine.stop();
+    const c = await open({ login: "sam" });
+    await quiesce(w, b, c);
+    expectConverged(b, c);
+  });
 });
 
 describe("compaction crash points: no reader ever loses an op (AC12)", () => {
