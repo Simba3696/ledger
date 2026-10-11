@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decryptDocument, DEFAULT_ITERATIONS, deriveKey, encryptDocument, newSalt, WrongPassphraseError } from "../crypto";
+import recorded from "./__fixtures__/github-behaviour.json";
 import {
   classifyToken,
   createGitHubClient,
+  deviceCommitMessage,
+  EmptyRepoError,
   getLogin,
+  gitBlobSha,
   GitHubAuthError,
   GitHubError,
   GitHubForbiddenError,
@@ -168,6 +172,7 @@ describe("contents client", () => {
       RepoNotFoundError,
       PublicRepoError,
       ShaConflictError,
+      EmptyRepoError,
       GitHubNetworkError,
     ];
     for (const ErrorType of typed) {
@@ -329,6 +334,203 @@ describe("contents client", () => {
       expect(sent).not.toContain(passphrase);
       expect(sent).not.toContain("Groceries");
       if (request.body) expect(atob(JSON.parse(request.body).content)).not.toContain("Groceries");
+    }
+    expect(fake.unhandled).toEqual([]);
+  });
+});
+
+// The calls the sync cycle makes (design section 7), as adjusted by
+// docs/architecture/github-api-behaviour.md.
+describe("contents client: sync calls", () => {
+  const EPOCH = "e000001-9c1f22aa";
+  const DEVICE = "d0123456789abcdef";
+  const LOG = `ledger/${EPOCH}.${DEVICE}.log.enc`;
+  const GENESIS = `ledger/${EPOCH}.genesis.enc`;
+  const SYNC = deviceCommitMessage("Sync", DEVICE);
+
+  it("names the default branch from verifyRepo", async () => {
+    expect(await client().verifyRepo()).toEqual({ defaultBranch: "main" });
+  });
+
+  it("getRef: an empty repo is 'empty', not a sha conflict", async () => {
+    const gh = client();
+    expect(await gh.getRef("main")).toEqual({ kind: "empty" });
+    // The same 409 from any other git/* read is EmptyRepoError.
+    const err = await rejection(gh.listDir("main"));
+    expect(err).toBeInstanceOf(EmptyRepoError);
+    expect(err).not.toBeInstanceOf(ShaConflictError);
+    expect((err as EmptyRepoError).status).toBe(409);
+  });
+
+  it("getRef: the head and its ETag, then 'unchanged' on a 304 until a write lands", async () => {
+    const gh = client();
+    const first = await gh.putFile({ path: GENESIS, text: "genesis", sha: null, message: "Create ledger" });
+    const head = await gh.getRef("main");
+    expect(head).toMatchObject({ kind: "head", commitSha: first.commitSha });
+    const etag = head.kind === "head" ? head.etag : null;
+    expect(etag).toMatch(/^W\/"[0-9a-f]{64}"$/);
+
+    expect(await gh.getRef("main", etag)).toEqual({ kind: "unchanged" });
+    expect(await gh.getRef("main", etag)).toEqual({ kind: "unchanged" });
+    const second = await gh.putFile({ path: LOG, text: "log", sha: null, message: SYNC });
+    expect(await gh.getRef("main", etag)).toMatchObject({ kind: "head", commitSha: second.commitSha });
+
+    // Every poll sends one Accept (the ETag varies with it), and the ETag
+    // only when it has one.
+    const polls = fake.requests.filter((r) => r.path.includes("/git/ref/"));
+    expect(new Set(polls.map((r) => r.headers.accept))).toEqual(new Set(["application/vnd.github+json"]));
+    expect(polls.map((r) => r.headers["if-none-match"])).toEqual([undefined, etag, etag, etag]);
+    // The 304s were free.
+    expect(polls).toHaveLength(4);
+
+    await expect(gh.getRef("nobranch")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("getRef: a 304 is 'unchanged' even though fetch reports ok false", async () => {
+    const notModified: typeof fetch = async () => new Response(null, { status: 304 });
+    expect(await client({ fetch: notModified }).getRef("main", 'W/"x"')).toEqual({ kind: "unchanged" });
+  });
+
+  it("listDir: every file directly in ledger/ with its sha and size, past the contents API's 1,000 cap", async () => {
+    const names = Array.from({ length: 1005 }, (_, i) => `${EPOCH}.d${i.toString(16).padStart(16, "0")}.log.enc`);
+    const shas = await fake.seedFiles(REPO, {
+      ...Object.fromEntries(names.map((n) => [`ledger/${n}`, n])),
+      "ledger/old/nested.enc": "ignored",
+      "README.md": "ignored",
+    });
+    const gh = client();
+    const head = await gh.getRef("main");
+    const listing = await gh.listDir(head.kind === "head" ? head.commitSha : "");
+    expect(listing.truncated).toBe(false);
+    expect(listing.files).toHaveLength(1005);
+    expect(listing.files.map((f) => f.name).sort()).toEqual([...names].sort());
+    for (const file of listing.files) {
+      expect(file.sha).toBe(shas[`ledger/${file.name}`]);
+      expect(file.size).toBe(file.name.length);
+    }
+    expect(fake.requests.filter((r) => r.path.includes("/git/trees/"))).toHaveLength(1);
+  });
+
+  it("listDir: no ledger/ lists nothing, and a truncated tree says so", async () => {
+    const readmeOnly = await fake.seedFile(REPO, "README.md", "hello");
+    expect(readmeOnly).toMatch(/^[0-9a-f]{40}$/);
+    expect(await client().listDir(fake.head(REPO)!)).toEqual({ files: [], truncated: false });
+
+    const small = createFakeGitHub({
+      repos: [{ owner: "alex", name: "ledger-data", private: true }],
+      tokens: { [WRITE]: { login: "alex", repos: [REPO], permission: "write" } },
+      treeEntryLimit: 2,
+    });
+    await small.seedFiles(REPO, { "ledger/a.enc": "a", "ledger/b.enc": "b", "ledger/c.enc": "c" });
+    const listing = await client({ fetch: small.fetch }).listDir(small.head(REPO)!);
+    expect(listing.truncated).toBe(true);
+  });
+
+  it("listDir: a commit's listing, not the branch's, by commit sha", async () => {
+    const gh = client();
+    const first = await gh.putFile({ path: GENESIS, text: "genesis", sha: null, message: "Create ledger" });
+    await gh.putFile({ path: LOG, text: "log", sha: null, message: SYNC });
+    expect((await gh.listDir(first.commitSha)).files.map((f) => f.name)).toEqual([`${EPOCH}.genesis.enc`]);
+  });
+
+  it("readBlob: the exact bytes by sha, through the raw media type, above 1 MiB", async () => {
+    const big = "y".repeat(1_500_000);
+    const sha = await fake.seedFile(REPO, LOG, big);
+    expect((await client().readBlob(sha)) === big).toBe(true);
+    expect(fake.requests.at(-1)?.headers.accept).toBe("application/vnd.github.raw+json");
+  });
+
+  it("readFile: inline below 1 MiB, through the blob from exactly 1 MiB", async () => {
+    const inline = recorded.contents.inline.inlineIffSizeBelow;
+    for (const size of [inline - 1, inline]) {
+      const path = `big/${size}.enc`;
+      await fake.seedFile(REPO, path, "z".repeat(size));
+      fake.requests.length = 0;
+      const file = await client().readFile(path);
+      expect(file?.text.length).toBe(size);
+      expect(fake.requests.some((r) => r.path.includes("/git/blobs/"))).toBe(size >= inline);
+    }
+  });
+
+  it("putFile: any path; the new sha is gitBlobSha(text), with the commit and its parent", async () => {
+    const gh = client();
+    const first = await gh.putFile({ path: GENESIS, text: "genesis", sha: null, message: "Create ledger" });
+    expect(first.sha).toBe(await gitBlobSha("genesis"));
+    expect(first.parentSha).toBeNull();
+    expect(first.commitSha).toBe(fake.head(REPO));
+
+    const log = await gh.putFile({ path: LOG, text: "log v1", sha: null, message: SYNC });
+    expect(log.parentSha).toBe(first.commitSha);
+    const next = await gh.putFile({ path: LOG, text: "log v2", sha: log.sha, message: SYNC });
+    expect(next).toEqual({ sha: await gitBlobSha("log v2"), commitSha: fake.head(REPO), parentSha: log.commitSha });
+    expect(await gh.readFile(LOG)).toEqual({ text: "log v2", sha: next.sha });
+    expect(fake.commits.map((c) => [c.path, c.message])).toEqual([
+      [GENESIS, "Create ledger"],
+      [LOG, "Sync 01234567"],
+      [LOG, "Sync 01234567"],
+    ]);
+  });
+
+  it("gitBlobSha: git's blob id of the UTF-8 bytes", async () => {
+    expect(await gitBlobSha("first version")).toBe("bde942a2105e7746b71aea43d5b29f539937d18e");
+    expect(await gitBlobSha("")).toBe("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+  });
+
+  it("putFile: tells a lost branch race from a stale sha", async () => {
+    const gh = client();
+    const a = await gh.putFile({ path: LOG, text: "a", sha: null, message: SYNC });
+    const otherLog = `ledger/${EPOCH}.dfedcba9876543210.log.enc`;
+    const b = await gh.putFile({ path: otherLog, text: "b", sha: null, message: "Sync fedcba98" });
+
+    // Two devices pushing their own logs at once: GitHub applies one.
+    const results = await Promise.allSettled([
+      gh.putFile({ path: LOG, text: "a2", sha: a.sha, message: SYNC }),
+      gh.putFile({ path: otherLog, text: "b2", sha: b.sha, message: "Sync fedcba98" }),
+    ]);
+    const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(lost.reason).toBeInstanceOf(ShaConflictError);
+    expect((lost.reason as ShaConflictError).reason).toBe("branch-race");
+
+    const stale = await rejection(gh.putFile({ path: LOG, text: "a3", sha: "6abd7d5cdfbf9c44a806872d2e0f200e39cf70c5", message: SYNC }));
+    expect((stale as ShaConflictError).reason).toBe("stale-sha");
+    const unsupplied = await rejection(gh.putFile({ path: LOG, text: "a3", sha: null, message: SYNC }));
+    expect(unsupplied).toBeInstanceOf(ShaConflictError);
+    expect((unsupplied as ShaConflictError).reason).toBe("stale-sha");
+  });
+
+  it("putFile: refuses a commit message outside the fixed set without sending anything", async () => {
+    const gh = client();
+    for (const message of ["Sync groceries 40", "Snapshot 0123", "Update ledger", "Sync 01234567\nAmount 12.00"]) {
+      await expect(gh.putFile({ path: LOG, text: "x", sha: null, message: message as "Create ledger" })).rejects.toBeInstanceOf(TypeError);
+    }
+    expect(fake.requests).toEqual([]);
+    expect(deviceCommitMessage("Snapshot", DEVICE)).toBe("Snapshot 01234567");
+    expect(() => deviceCommitMessage("Sync", "alex")).toThrow(TypeError);
+  });
+
+  it("putFile: keepalive only when asked", async () => {
+    const gh = client();
+    const v1 = await gh.putFile({ path: LOG, text: "v1", sha: null, message: SYNC });
+    await gh.putFile({ path: LOG, text: "v2", sha: v1.sha, message: SYNC, keepalive: true });
+    expect(fake.requests.map((r) => r.keepalive)).toEqual([undefined, true]);
+  });
+
+  it("sends only headers GitHub's CORS preflight allows, never Cache-Control or Pragma, always no-store", async () => {
+    const allowed = new Set([...recorded.cors.preflight.allowHeaders, "Accept"].map((h) => h.toLowerCase()));
+    const gh = client();
+    await gh.verifyRepo();
+    const first = await gh.putFile({ path: LOG, text: "v1", sha: null, message: SYNC });
+    const head = await gh.getRef("main");
+    await gh.getRef("main", head.kind === "head" ? head.etag : null);
+    await gh.listDir(first.commitSha);
+    await gh.readBlob(first.sha);
+    await gh.readFile(LOG);
+    expect(fake.requests).toHaveLength(7);
+    for (const request of fake.requests) {
+      for (const name of Object.keys(request.headers)) expect(allowed.has(name), name).toBe(true);
+      for (const name of recorded.cors.preflight.notAllowedRequestHeaders) expect(request.headers[name.toLowerCase()]).toBeUndefined();
+      expect(request.cache).toBe("no-store");
     }
     expect(fake.unhandled).toEqual([]);
   });
