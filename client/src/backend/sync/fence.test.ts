@@ -1,13 +1,191 @@
-import { describe, expect, it } from "vitest";
+import "fake-indexeddb/auto";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { DocumentBackend } from "../document/DocumentBackend";
 import { Fence } from "./fence";
+import { testKey } from "./localTestkit";
+import { clearSyncState, openSyncStore } from "./persist";
+import { unseal, type DeviceKey } from "./records";
 import { applyOp, cloneState, genesisState, opState, type Op } from "./state";
-import { deviceId, emptyDocument } from "./testkit";
+import { SyncEngine } from "./SyncEngine";
+import { SyncedHost } from "./SyncedHost";
+import { Replica, deviceId, emptyDocument } from "./testkit";
 
-// The stale-UI fence (design section 3.4) on its own: a register a join
-// replaced while the view lagged is dropped from an op that sets it back to
-// what the user saw, and applied when the user typed something else.
+// The stale-UI fence (design section 3.4, AC8). A form submits every field;
+// after a remote change that was joined but not rendered, an untouched field
+// would set it back. With a view attached (SyncHost), such a field is
+// dropped from the op and the remote value stands; a field the user changed
+// is applied; both make a notice, saved with the op. Without a view (unit
+// tests, the engine alone) every revision counts as rendered.
 
+const EPOCH = "e000001-0000000a";
 const X = deviceId(0xb);
+const ENTRY = { year: 2026, month: 5, amount: 40, remarks: "Groceries", category: "food", isCard: false };
+let key: DeviceKey;
+let factory: IDBFactory;
+
+beforeAll(async () => {
+  key = await testKey();
+});
+
+beforeEach(() => {
+  factory = new IDBFactory();
+  vi.stubGlobal("indexedDB", factory);
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.stubGlobal("indexedDB", factory);
+  await clearSyncState();
+  vi.unstubAllGlobals();
+});
+
+/** This device (with an expense, its row handle and, unless `view` is
+ * false, an attached view) and Sam, who has joined it. */
+async function world(view = true) {
+  const engine = new SyncEngine({ key, actor: "alex", locks: null, log: () => {}, store: openSyncStore({ sleep: async () => {} }) });
+  await engine.start();
+  await engine.initialize(EPOCH, genesisState(emptyDocument()));
+  const backend = new DocumentBackend({ host: new SyncedHost(engine), now: () => Date.UTC(2026, 4, 10), actor: "alex", newId: () => crypto.randomUUID() });
+  const entry = await backend.addEntry(ENTRY);
+  const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+  for (const op of engine.pushableOps()) sam.receive(engine.deviceId!, op);
+  if (view) engine.attachView(engine.getState().revision);
+  /** Sam's next write, joined here and not rendered. */
+  const samWrites = async (write: (b: DocumentBackend, row: number) => Promise<unknown>): Promise<Op> => {
+    const [samsEntry] = await sam.backend.getMonth(2026, 5);
+    await write(sam.backend, samsEntry.row);
+    const op = sam.ops.at(-1)!;
+    await engine.join({ ops: [[X, op]] });
+    return op;
+  };
+  const amount = () => engine.current().expenses["2026-05"][0].amount;
+  const lastOp = () => engine.pushableOps().at(-1)!;
+  const notices = async () => {
+    const records = (await openSyncStore().load())!;
+    expect(records.noticeCount).toBe(engine.getState().noticeCount);
+    return records;
+  };
+  return { engine, backend, row: entry.row, sam, samWrites, amount, lastOp, notices };
+}
+
+describe("an unrendered remote change", () => {
+  it("is kept when the user's form left that field as it was: the field is dropped from the op, with a 'kept' notice", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    expect(w.engine.getState().revision).toBe(1);
+    const before = w.engine.pushableOps().length;
+    // The form still shows 40.00, and the user changed only the remarks.
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, remarks: "Groceries, weekly" });
+    expect(w.amount()).toBe("12.00");
+    expect(w.engine.current().expenses["2026-05"][0].remarks).toBe("Groceries, weekly");
+    expect(w.engine.pushableOps()).toHaveLength(before + 1);
+    expect(w.lastOp().set.map(([k]) => k.split("/")[2])).toEqual(["remarks", "_s"]);
+    expect(w.engine.getState().noticeCount).toBe(1);
+    await w.notices();
+  });
+
+  it("is replaced when the user typed a new value, with a 'replaced' notice", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, amount: 15 });
+    expect(w.amount()).toBe("15.00");
+    expect(w.lastOp().set.map(([k]) => k.split("/")[2])).toEqual(["amount", "_s"]);
+    const records = await w.notices();
+    expect(records.noticeCount).toBe(1);
+  });
+
+  it("leaves no op at all when only untouched fields remain (stamps alone say nothing), but still saves the notice", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    const ops = w.engine.pushableOps().length;
+    await w.backend.updateEntry(2026, 5, w.row, ENTRY);
+    expect(w.amount()).toBe("12.00");
+    expect(w.engine.pushableOps()).toHaveLength(ops);
+    expect(w.engine.getState().noticeCount).toBe(1);
+    const stored = (await w.notices()).noticeCount;
+    expect(stored).toBe(1);
+  });
+
+  it("stops being fenced once rendered: the user's value is then a deliberate edit", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    w.engine.rendered(w.engine.getState().revision);
+    await w.backend.updateEntry(2026, 5, w.row, ENTRY);
+    expect(w.amount()).toBe("40.00");
+    expect(w.engine.getState().noticeCount).toBe(0);
+  });
+
+  it("isn't fenced without a view: every revision counts as rendered", async () => {
+    const w = await world(false);
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    await w.backend.updateEntry(2026, 5, w.row, ENTRY);
+    expect(w.amount()).toBe("40.00");
+    expect(w.engine.getState().noticeCount).toBe(0);
+  });
+
+  it("guards a whole unit: a stale setMonthIncome that changes nothing the user saw keeps the remote month", async () => {
+    const w = await world();
+    await w.backend.setMonthIncome(2026, 5, { salary: 100, otherIncome: null, savings: [] });
+    for (const op of w.engine.pushableOps().slice(-1)) w.sam.receive(w.engine.deviceId!, op);
+    await w.samWrites((b) => b.setMonthIncome(2026, 5, { salary: 250, otherIncome: null, savings: [] }));
+    await w.backend.setMonthIncome(2026, 5, { salary: 100, otherIncome: null, savings: [] });
+    expect(w.engine.current().financeMonths["2026-05"].salary).toBe("250.00");
+    await w.backend.setMonthIncome(2026, 5, { salary: 300, otherIncome: null, savings: [] });
+    expect(w.engine.current().financeMonths["2026-05"].salary).toBe("300.00");
+    expect(w.engine.getState().noticeCount).toBe(2);
+  });
+
+  it("stamps vv with what was rendered, so the remote author still gets an edit/edit notice", async () => {
+    const w = await world();
+    const samsOp = await w.samWrites((b) => b.setMonthLock(2026, 6, true));
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, amount: 15 });
+    expect(w.lastOp().vv[X]).toBeUndefined();
+    w.engine.rendered(w.engine.getState().revision);
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, amount: 16 });
+    expect(w.lastOp().vv[X]).toBe(samsOp.L);
+    // The device's own ops are always seen.
+    expect(w.lastOp().vv[w.engine.deviceId!]).toBe(w.lastOp().L - 1);
+  });
+
+  it("a delete joined but not rendered can't be undone: the update is a 404 and makes no op", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.deleteEntry(2026, 5, row));
+    const ops = w.engine.pushableOps().length;
+    await expect(w.backend.updateEntry(2026, 5, w.row, ENTRY)).rejects.toMatchObject({ status: 404 });
+    expect(w.engine.pushableOps()).toHaveLength(ops);
+    expect(w.engine.current().expenses["2026-05"]).toBeUndefined();
+  });
+
+  it("an own write supersedes the unseen value: a later stale submit of that field is an edit", async () => {
+    const w = await world();
+    await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, amount: 15 });
+    await w.backend.updateEntry(2026, 5, w.row, ENTRY);
+    expect(w.amount()).toBe("40.00");
+  });
+
+  it("saves fence notices encrypted, keyed by (winner op, loser op)", async () => {
+    const w = await world();
+    const samsOp = await w.samWrites((b, row) => b.updateEntry(2026, 5, row, { ...ENTRY, amount: 12 }));
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, remarks: "Groceries, weekly" });
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const req = indexedDB.open("ledger:sync");
+      req.onsuccess = () => resolve(req.result);
+    });
+    const [keys, values] = await new Promise<[IDBValidKey[], string[]]>((resolve) => {
+      const store = db.transaction("notices").objectStore("notices");
+      const k = store.getAllKeys();
+      const v = store.getAll();
+      v.onsuccess = () => resolve([k.result, v.result]);
+    });
+    db.close();
+    const mine = w.lastOp().L;
+    expect(keys).toEqual([`${samsOp.L}.${X}/${mine}.${w.engine.deviceId}`]);
+    expect(values[0]).not.toContain("12.00");
+    expect(await unseal(values[0], key)).toMatchObject({ kind: "kept", theirs: [samsOp.L, X], registers: [{ theirs: "12.00", mine: "40.00" }] });
+  });
+});
 
 describe("Fence (pure)", () => {
   it("drops a field group (an EMI's balance pair) whole, or keeps it whole", async () => {
