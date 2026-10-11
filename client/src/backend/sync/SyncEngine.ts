@@ -1129,7 +1129,9 @@ export class SyncEngine {
         const listed = listing.files.get(name);
         return listed ? [listed] : [];
       },
-      cold: this.#state!.seen.size === 0,
+      // Nothing joined from any other device: an own write made before the
+      // first cycle joined anything doesn't count.
+      cold: [...this.#state!.seen.keys()].every((device) => device === meta.deviceId),
     });
     for (const name of streams.healthy) this.#halted.delete(name);
     for (const [name, halt] of streams.halted) this.#halted.set(name, halt);

@@ -511,6 +511,43 @@ describe("cold start and offline catch-up (section 8.3)", () => {
     expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
   });
 
+  it("a write made before the first cycle joins anything still starts cold: no retired device's files are read", async () => {
+    const retired: Device[] = [];
+    for (let i = 0; i < 3; i++) {
+      const d = await open({ ...every(1), login: "sam" });
+      await write(d, `Retired ${i}`);
+      await compactNow(d);
+      retired.push(d);
+    }
+    const a = await open(every(1));
+    await write(a, "A");
+    await compactNow(a);
+    for (const d of retired) d.engine.stop();
+    const retiredShas = retired.flatMap((d) => [stored(d, "log")!.sha, stored(d, "snap")!.sha]);
+    const from = w.fake.requests.length;
+    let ready!: (d: Device) => void;
+    const opened = new Promise<Device>((resolve) => (ready = resolve));
+    let armed = true;
+    const wrapFetch =
+      (inner: typeof fetch): typeof fetch =>
+      async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (armed && url.includes("/git/trees/")) {
+          armed = false;
+          // The user adds an entry while the first listing is in flight.
+          await write(await opened, "Fresh");
+        }
+        return inner(input, init);
+      };
+    const fresh = await open({ login: "sam", noSettle: true, wrapFetch });
+    ready(fresh);
+    await fresh.engine.sync();
+    expect(armed).toBe(false);
+    expect(retiredShas.reduce((n, sha) => n + readsOf(from, sha), 0)).toBe(0);
+    expect(blobReads(from)).toHaveLength(3);
+    expect(remarks(fresh).sort()).toEqual(["A", "Fresh", "Retired 0", "Retired 1", "Retired 2"]);
+  });
+
   it("a cold start whose largest snapshot can't be read takes the next, and still converges", async () => {
     const a = await open(every(2));
     await write(a, "One", "Two");
