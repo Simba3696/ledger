@@ -808,7 +808,25 @@ describe("nothing on the device is plaintext (AC15)", () => {
     expect(dump).not.toContain("Groceries");
     const { meta } = await saved();
     expect(Object.keys(meta).sort()).toEqual(
-      ["K", "deviceId", "epochKey", "formatVersion", "joined", "lastSeenCommit", "lastSentLogSha", "lastSentSnapSha", "maxL", "ownLogSha", "ownMaxL", "ownSnapSha", "refEtag", "seen", "writerToken"].sort(),
+      [
+        "K",
+        "deviceId",
+        "epochKey",
+        "formatVersion",
+        "joined",
+        "lastSeenCommit",
+        "lastSentLogSha",
+        "lastSentLogThrough",
+        "lastSentSnapSha",
+        "maxL",
+        "ownLogSha",
+        "ownLogThrough",
+        "ownMaxL",
+        "ownSnapSha",
+        "refEtag",
+        "seen",
+        "writerToken",
+      ].sort(),
     );
   });
 });
