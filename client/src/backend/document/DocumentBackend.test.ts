@@ -251,6 +251,22 @@ describe("DocumentBackend writes", () => {
     expect(log.slice(-3)).toEqual(["begin 4", "commit 4", "end 4"]);
     expect(host.commits).toBe(1);
   });
+
+  it("reads the document for a write only once its handle is ready: the host's other writers go first", async () => {
+    const { host, backend } = setup();
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => (release = resolve));
+    Object.assign(host, { begin: () => ({ ready, commit: (next: LedgerDocument) => host.commit(next), end: () => {} }) });
+    const write = backend.addEntry(entry("Lunch"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(host.commits).toBe(0);
+    // Another writer of the host commits meanwhile; the write runs on it.
+    host.doc = { ...host.current(), monthLocks: { [monthKey(2026, 6)]: true } };
+    release();
+    await write;
+    expect(host.current().monthLocks).toEqual({ [monthKey(2026, 6)]: true });
+    expect(host.current().expenses[monthKey(2026, 5)].map((e) => e.remarks)).toEqual(["Lunch"]);
+  });
 });
 
 describe("DocumentBackend order and handles", () => {

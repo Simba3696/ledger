@@ -9,7 +9,9 @@ import type { SyncEngine } from "./SyncEngine";
  * on screen when it was submitted, so the stale-UI fence (section 3.4)
  * judges it by what the user saw, however long it waits in the queue.
  * `amend(run)` is the same write pattern for notice actions and re-apply
- * (sections 4.1 and 9.4), which don't go through DocumentBackend. */
+ * (sections 4.1 and 9.4), which don't go through DocumentBackend; it takes
+ * its turn among DocumentBackend's writes, which wait for it through the
+ * handle's `ready`. */
 export class SyncedHost implements DocumentHost {
   readonly #engine: SyncEngine;
 

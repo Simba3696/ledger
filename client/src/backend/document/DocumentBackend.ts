@@ -63,6 +63,12 @@ export interface DocumentHost {
 
 /** One submitted write, from `DocumentHost.begin()`. */
 export interface HostWrite {
+  /** Optional: settles when the write may read the document, once the
+   * host's other writers that came first have settled. The sync engine has
+   * writes that don't go through DocumentBackend (design section 3.5,
+   * `amend`), and a write that read the document while one of those was
+   * still saving would set back a whole-unit register it changed. */
+  ready?: Promise<void>;
   commit(next: LedgerDocument): Promise<void>;
   end(): void;
 }
@@ -148,7 +154,8 @@ class Session {
    * store's per-month advisory locks). It runs on a clone of the current
    * document and commits that clone once; if anything throws, nothing is
    * committed and the current document is untouched. A host with begin()
-   * hears of the write at the call, before it waits in the queue. */
+   * hears of the write at the call, before it waits in the queue, and the
+   * write reads the document only once the handle is ready. */
   write<T>(module: ModuleName, run: (ctx: ops.WriteContext) => T): Promise<T> {
     const { host, now, actor, newId } = this.#options;
     let submitted: HostWrite | undefined;
@@ -159,6 +166,7 @@ class Session {
     }
     const result = this.#queue.then(async () => {
       try {
+        if (submitted?.ready) await submitted.ready;
         const current = host.current();
         assertModuleEnabled(current.settings.modules, module);
         const doc = structuredClone(current);

@@ -200,6 +200,102 @@ describe("commit path (section 3.5)", () => {
     expect(d.engine.current().monthLocks).toEqual({ "2026-05": true });
   });
 
+  describe("amend() and a DocumentBackend write to one whole-unit register, submitted while the other saves, end as if made one after the other", () => {
+    let row = 0;
+    const cases = [
+      {
+        unit: "a month's income (fm)",
+        setup: async (d: Device) => {
+          await d.backend.setMonthIncome(2026, 5, { salary: 1000, otherIncome: null, savings: [] });
+        },
+        write: (d: Device) => d.backend.setMonthIncome(2026, 5, { salary: 2000, otherIncome: null, savings: [] }),
+        amend: (d: Device) =>
+          d.host.amend((doc) => {
+            doc.financeMonths["2026-05"].otherIncome = "50.00";
+          }),
+        pick: (d: Device) => d.engine.current().financeMonths["2026-05"],
+      },
+      {
+        unit: "a month's card bills (cb)",
+        setup: async (d: Device) => {
+          await d.backend.setMonthBills(2026, 5, [{ name: "Card A", due: 900, paid: 0, dueDate: "2026-05-25", settled: false }]);
+        },
+        write: (d: Device) => d.backend.setMonthBills(2026, 5, [{ name: "Card A", due: 950, paid: 0, dueDate: "2026-05-25", settled: false }]),
+        amend: (d: Device) =>
+          d.host.amend((doc) => {
+            doc.cardBills["2026-05"][0].settled = true;
+          }),
+        pick: (d: Device) => d.engine.current().cardBills["2026-05"].map(({ name, due, settled }) => ({ name, due, settled })),
+      },
+      {
+        unit: "an EMI's balance pair",
+        setup: async (d: Device) => {
+          row = (await d.backend.addEmi({ cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 9000, interestRate: 9.5, foreclosureCharge: null })).row;
+        },
+        write: (d: Device) => d.backend.payEmi(row, 1000),
+        amend: (d: Device) =>
+          d.host.amend((doc) => {
+            doc.emis[0].remainingAsOf = "7000.00";
+          }),
+        pick: (d: Device) => d.engine.current().emis.map(({ remainingAsOf, asOfDate }) => ({ remainingAsOf, asOfDate })),
+      },
+    ];
+
+    for (const { unit, setup, write, amend, pick } of cases) {
+      for (const order of ["write first", "amend first"] as const) {
+        it(`${unit}, ${order}`, async () => {
+          const [one, two] = order === "write first" ? [write, amend] : [amend, write];
+
+          // The same two writes, one after the other, on a device of its own.
+          vi.stubGlobal("indexedDB", new IDBFactory());
+          const reference = await device();
+          await setup(reference);
+          await one(reference);
+          await two(reference);
+          const expected = pick(reference);
+          reference.engine.stop();
+          vi.stubGlobal("indexedDB", factory);
+
+          const { store, held } = holdingStore("before");
+          const d = await device({ store });
+          await setup(d);
+          expect(pick(d)).not.toEqual(expected);
+          held.on = true;
+          const first = one(d);
+          await held.reached.promise;
+          held.on = false;
+          // Submitted while the first one's transaction is still open.
+          const second = two(d);
+          held.release.resolve();
+          await Promise.all([first, second]);
+
+          expect(pick(d)).toEqual(expected);
+          const Ls = d.engine.pushableOps().map((op) => op.L);
+          expect(Ls).toEqual([...Ls].sort((a, b) => a - b));
+          expect(pick(await reload(d))).toEqual(expected);
+        });
+      }
+    }
+  });
+
+  it("amend() runs at its turn, on what earlier writes committed, and one that its run refuses still ends its turn", async () => {
+    const d = await device();
+    const write = d.backend.addEntry(ENTRY);
+    let seen: string[] = [];
+    await d.host.amend((doc) => {
+      seen = doc.expenses["2026-05"].map((e) => e.remarks);
+      doc.monthLocks["2026-05"] = true;
+    });
+    await write;
+    expect(seen).toEqual(["Groceries"]);
+    await expect(d.host.amend(() => {
+      throw new Error("refused by run");
+    })).rejects.toThrow("refused by run");
+    // A refused amend ends its turn: later writes still run.
+    await d.backend.setMonthLock(2026, 5, false);
+    expect(d.engine.current().monthLocks["2026-05"]).toBeUndefined();
+  });
+
   it("builds current() from the state, so a remote join that commits while a write is in flight is kept", async () => {
     const { store, held } = holdingStore("before");
     const d = await device({ store });

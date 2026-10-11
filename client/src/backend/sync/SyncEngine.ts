@@ -29,6 +29,13 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from 
 //      the write; nothing is held only in tab memory). The allocated L was
 //      never persisted or pushed, so its reuse after a reload is harmless.
 //
+// Local writes, DocumentBackend's and amend()'s alike, take turns in the
+// order they were submitted (beginWrite): each reads current() only once
+// every earlier one has settled, so its diff holds them all. Step 1's diff
+// is against current(), which shows an own op only after step 3, so two
+// writes diffed at once would each carry a whole-unit register as it was
+// before the other, and the later L would set the earlier write back.
+//
 // Every mutation, a local op or a remote join, runs through one queue and
 // is one transaction. A load that fails is never a first start: the engine
 // shows `unreadable`, writes nothing, and leaves the records as they are.
@@ -148,6 +155,8 @@ export class SyncEngine {
   /** The load in flight, so "Try again" twice runs one load. */
   #loading: Promise<void> | null = null;
   #queue: Promise<unknown> = Promise.resolve();
+  /** Settles once every write begun so far has ended (beginWrite). */
+  #writesSettled: Promise<void> = Promise.resolve();
 
   #status: SyncStatus = "idle";
   #unreadable: UnreadableReason | null = null;
@@ -265,7 +274,9 @@ export class SyncEngine {
 
   /** Commits one write as one op (section 3.5). Resolves only once the op is
    * saved on this device; rejects with a 500 "couldn't save" when it isn't,
-   * and the document is then unchanged. */
+   * and the document is then unchanged. It diffs at the call and takes no
+   * turn (beginWrite), so it is for a caller with no other write saving;
+   * DocumentBackend's writes and amend() take turns. */
   commit(next: LedgerDocument): Promise<void> {
     try {
       return this.#commit(next, this.#fence.renderedRevision);
@@ -276,10 +287,21 @@ export class SyncEngine {
 
   /** A write submitted now, which commits later (SyncedHost.begin): the
    * fence judges it by the revision rendered at this call, not at its
-   * commit (section 3.4). end() once it has settled. */
-  beginWrite(): HostWrite {
+   * commit (section 3.4). It may read the document once `ready` settles,
+   * when every write begun before it has ended; end() once it has settled.
+   * Writes take turns in the order they were begun, whichever path they
+   * came by (DocumentBackend or amend), so each one is diffed against a
+   * document that holds every earlier one. Diffed alongside an earlier
+   * write still saving, a whole-unit register would carry the unit as it
+   * was before that write, and win with the later L. */
+  beginWrite(): HostWrite & { ready: Promise<void> } {
     const pin = this.#fence.pin();
+    const ready = this.#writesSettled;
+    let ended!: () => void;
+    const end = new Promise<void>((resolve) => (ended = resolve));
+    this.#writesSettled = ready.then(() => end);
     return {
+      ready,
       commit: (next) => {
         try {
           return this.#commit(next, pin.asOf);
@@ -287,20 +309,27 @@ export class SyncEngine {
           return Promise.reject(err);
         }
       },
-      end: () => pin.release(),
+      end: () => {
+        pin.release();
+        ended();
+      },
     };
   }
 
   /** A write made directly on a copy of the document (notice actions and
-   * re-apply, sections 4.1 and 9.4): the same synchronous pattern as
-   * DocumentBackend's writes. `run` makes its own checks (operations.ts). */
-  amend(run: (doc: LedgerDocument) => void): Promise<void> {
+   * re-apply, sections 4.1 and 9.4): DocumentBackend's pattern, taking its
+   * turn among DocumentBackend's writes. At its turn, it clones current(),
+   * runs `run` on the clone and commits it. `run` makes its own checks
+   * (operations.ts). */
+  async amend(run: (doc: LedgerDocument) => void): Promise<void> {
+    const write = this.beginWrite();
     try {
+      await write.ready;
       const next = structuredClone(this.current());
       run(next);
-      return this.#commit(next, this.#fence.renderedRevision);
-    } catch (err) {
-      return Promise.reject(err);
+      await write.commit(next);
+    } finally {
+      write.end();
     }
   }
 
