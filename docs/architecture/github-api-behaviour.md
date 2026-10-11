@@ -358,7 +358,7 @@ All have the body `{"message": …, "documentation_url": …, "status": "<code a
 
 ## 17. Fake fidelity gaps (for §16.3)
 
-The fake should be corrected or extended to match:
+The fake should be corrected or extended to match. **Done in step 2:** `fakeGitHub.ts` models all eight, and `fakeGitHub.fidelity.test.ts` checks it against the fixture. Not modelled, because Ledger never calls them: the plural `git/refs`, `git/commits`, the `commitSha:path` tree form, and commits no branch points at.
 
 1. **Inline boundary.** Inline content only when `size < 1048576`. Today it inlines when `<= 1048576`.
 2. **PUT with a `sha` for an absent path.** Real GitHub gives 201 and ignores the sha. The fake gives 409.
