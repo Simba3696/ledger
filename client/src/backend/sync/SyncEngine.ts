@@ -25,7 +25,7 @@ import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import { LOCAL_FORMAT_VERSION, checkMeta, decodeDelta, decodeStoredState, isChainValue, seal, storedState, unseal, type Delta, type DeviceKey, type SyncMeta } from "./records";
 import { rehomeReissue } from "./rehome";
-import { LEDGER_DIR, REPO_FILE_MAX_BYTES, openRepoFile, repoPath, type FileRead } from "./repoFiles";
+import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds, type FileRead } from "./repoFiles";
 import { applyOp, cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
 import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from "./tags";
 
@@ -201,6 +201,10 @@ export interface SyncEngineOptions {
   monotonic?: () => number;
   /** When the device compacts. Default COMPACTION. */
   compaction?: Partial<CompactionLimits>;
+  /** The bounds this build reads repo files within. Default READ_BOUNDS.
+   * Own files are written within half of them and read back within twice
+   * them (repoFiles.ts). */
+  fileBounds?: FileBounds;
 }
 
 /** When the device compacts (design sections 8.1 and 8.4). Counts and
@@ -393,6 +397,9 @@ function noticeKey(notice: FenceNotice, mine: Tag): string {
 /** A record didn't decrypt with this key or this build. */
 class Undecryptable extends Error {}
 
+/** The own log is larger than every reader allows: it is never sent. */
+class OwnLogTooLarge extends Error {}
+
 export class SyncEngine {
   readonly #key: DeviceKey;
   readonly #actor: string;
@@ -491,6 +498,9 @@ export class SyncEngine {
    * once per tab, by its blob sha. */
   #genesis: { name: string; sha: string; state: SyncState } | null = null;
   readonly #compaction: CompactionLimits;
+  /** Repo file bounds: for other devices' files, for the own files this
+   * device writes, and for its own files read back (ADR-0008). */
+  readonly #bounds: { read: FileBounds; write: FileBounds; own: FileBounds };
   /** Entries in `tail`, and whether a local compaction is queued. */
   #tailCount = 0;
   #compactingLocal = false;
@@ -512,6 +522,12 @@ export class SyncEngine {
     this.#sleep = options.sleep ?? realSleep;
     this.#monotonic = options.monotonic ?? (() => performance.now());
     this.#compaction = { ...COMPACTION, ...options.compaction };
+    const read = options.fileBounds ?? READ_BOUNDS;
+    this.#bounds = {
+      read,
+      write: { bytes: Math.floor(read.bytes / 2), plainBytes: Math.floor(read.plainBytes / 2) },
+      own: { bytes: read.bytes * 2, plainBytes: read.plainBytes * 2 },
+    };
     this.#snapshot = this.#makeSnapshot();
   }
 
@@ -1079,8 +1095,9 @@ export class SyncEngine {
       };
     }
     // Neither: a send whose sha was overwritten by a later send, an older
-    // version in a stale listing, or another instance of this device.
-    const read = await this.#read(name, listed);
+    // version in a stale listing, or another instance of this device. Read
+    // within the own bounds: a size says nothing about whose history it is.
+    const read = await this.#read(name, listed, undefined, this.#bounds.own);
     if (!read.ok) return { fork: `it can't be read: ${read.detail}` };
     const file = read.read.file;
     if (file.kind !== "log") return { fork: "it is not a log" };
@@ -1240,18 +1257,19 @@ export class SyncEngine {
   }
 
   /** Reads and checks the blob a listing names (a snap against `genesis`,
-   * its epoch's genesis state). A refused one is remembered by name and
-   * sha: the sha names its bytes for good, and the name is what they are
-   * checked against (with the epoch's genesis, which the name fixes). One
-   * listed larger than any real file is refused without being downloaded. */
-  async #read(name: string, listed: Listed, genesis?: SyncState): Promise<FileRead> {
-    const at = `${name}@${listed.sha}`;
+   * its epoch's genesis state), within `bounds`. A refused one is
+   * remembered by name and sha (and the bounds it was read within): the
+   * sha names its bytes for good, and the name is what they are checked
+   * against (with the epoch's genesis, which the name fixes). One listed
+   * larger than `bounds` allow is refused without being downloaded. */
+  async #read(name: string, listed: Listed, genesis?: SyncState, bounds: FileBounds = this.#bounds.read): Promise<FileRead> {
+    const at = bounds === this.#bounds.read ? `${name}@${listed.sha}` : `${name}@${listed.sha}@${bounds.bytes}`;
     const known = this.#refused.get(at);
     if (known) return known;
     const read: FileRead =
-      listed.size > REPO_FILE_MAX_BYTES
-        ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${REPO_FILE_MAX_BYTES}` }
-        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key, genesis);
+      listed.size > bounds.bytes
+        ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${bounds.bytes}` }
+        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key, genesis, bounds);
     if (!read.ok) {
       this.#refused.set(at, read);
       this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);
@@ -1277,7 +1295,16 @@ export class SyncEngine {
       this.#putLater(wait);
       return true;
     }
-    const out = await this.#ownLogText();
+    let out: LogText;
+    try {
+      out = await this.#ownLogText();
+    } catch (err) {
+      if (!(err instanceof OwnLogTooLarge)) throw err;
+      // Every reader would refuse it: nothing is sent, and the device
+      // still pulls. Local writes go on (section 12: never a 500).
+      this.#blocker = "needsAttention";
+      return false;
+    }
     const landed = () => this.#meta!.ownLogThrough >= out.through && this.#meta!.ownLogK >= out.K;
     // The repo holds these exact bytes: a PUT would only add an empty commit.
     if (out.sha === listedOwn) {
@@ -1385,9 +1412,17 @@ export class SyncEngine {
     // Never publish what every other device would refuse.
     const check = checkRepoFile(file, content);
     if (!check.ok) return Promise.reject(new Error(`This device's own log would be refused: ${check.detail}`));
+    const bounds = this.#bounds.write;
+    const tooLarge = (detail: string) => {
+      this.#log(`this device's own log would be refused (${detail}); it is not sent`);
+      return new OwnLogTooLarge(`This device's own log would be refused: ${detail}`);
+    };
     let entry: { key: string; value: Promise<LogText> } | undefined;
     const value = (async (): Promise<LogText> => {
+      const plain = plainSize(content);
+      if (plain > bounds.plainBytes) throw tooLarge(`${plain} bytes of JSON, more than ${bounds.plainBytes}`);
       const text = await seal(content, this.#key);
+      if (text.length > bounds.bytes) throw tooLarge(`${text.length} bytes, more than ${bounds.bytes}`);
       const built = { text, sha: await gitBlobSha(text), through, K, device: meta.deviceId, file };
       // Only the newest text is kept for pagehide.
       if (this.#logText === entry) this.#logReady = built;
@@ -1395,8 +1430,10 @@ export class SyncEngine {
     })();
     entry = { key, value };
     this.#logText = entry;
-    value.catch(() => {
-      if (this.#logText === entry) this.#logText = null;
+    // A log too large stays refused for this content: it isn't sealed (or
+    // logged) again each cycle.
+    value.catch((err: unknown) => {
+      if (this.#logText === entry && !(err instanceof OwnLogTooLarge)) this.#logText = null;
     });
     return value;
   }
@@ -1479,7 +1516,7 @@ export class SyncEngine {
     const listed = listing.files.get(name);
     if (!listed || listed.sha === meta.ownSnapSha) return {};
     if (listed.sha === meta.lastSentSnapSha) return { confirm: { sha: listed.sha, through: meta.lastSentSnapThrough } };
-    const read = await this.#read(name, listed, await this.#epochGenesis(listing));
+    const read = await this.#read(name, listed, await this.#epochGenesis(listing), this.#bounds.own);
     if (!read.ok) return { fork: `it can't be read: ${read.detail}` };
     const file = read.read.file;
     if (file.kind !== "snap") return { fork: "it is not a snapshot" };
@@ -1510,11 +1547,11 @@ export class SyncEngine {
   /** The own snap file (section 6) as text: the state, seen, maxL and chain
    * as of the device's greatest own L, taken between two mutations, with
    * the file versions that state holds. Built once per snapshot point and
-   * reused, so every send of one snapshot is the same bytes. Checked as
-   * every reader checks it, against the epoch's genesis, before it is
-   * published: null, remembered for that snapshot point, when it would be
-   * refused. Null, not remembered, when an own op is not yet in the
-   * confirmed log. */
+   * reused, so every send of one snapshot is the same bytes. Checked with
+   * every reader's validator, against the epoch's genesis, and against the
+   * write bounds before it is published: null, remembered for that
+   * snapshot point, when it would be refused. Null, not remembered, when an
+   * own op is not yet in the confirmed log. */
   async #ownSnapText(genesis: SyncState): Promise<SnapText | null> {
     const view = await this.#enqueue(async () => {
       this.#assertWritable();
@@ -1530,7 +1567,6 @@ export class SyncEngine {
     });
     if (view === null) return null;
     const { meta, state, chain } = view;
-
     const through = meta.ownMaxL;
     const key = `${meta.epochKey}.${meta.deviceId}.${through}.${chain}`;
     if (this.#snapText?.key === key) return this.#snapText.value;
@@ -1553,13 +1589,19 @@ export class SyncEngine {
     };
     let entry: { key: string; value: Promise<SnapText | null> } | undefined;
     const value = (async (): Promise<SnapText | null> => {
-      // Never publish what every other device would refuse.
-      const check = checkRepoFile(file, content, genesis);
-      if (!check.ok) {
-        this.#log(`this device's snapshot would be refused (${check.detail}); its log is not compacted`);
+      // Never publish what every other device would refuse: invalid, or
+      // past the bounds this device writes within.
+      const refused = (detail: string) => {
+        this.#log(`this device's snapshot would be refused (${detail}); its log is not compacted`);
         return null;
-      }
+      };
+      const check = checkRepoFile(file, content, genesis);
+      if (!check.ok) return refused(check.detail);
+      const bounds = this.#bounds.write;
+      const plain = plainSize(content);
+      if (plain > bounds.plainBytes) return refused(`${plain} bytes of JSON, more than ${bounds.plainBytes}`);
       const text = await seal(content, this.#key);
+      if (text.length > bounds.bytes) return refused(`${text.length} bytes, more than ${bounds.bytes}`);
       return { text, sha: await gitBlobSha(text), through, device: meta.deviceId, file };
     })();
     entry = { key, value };

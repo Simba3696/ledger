@@ -35,6 +35,7 @@ const FORBIDDEN_IN_DEFAULT = [
   'Ledger was updated on another device',
   'own snapshot in the repo is not its history',
   'its log is not compacted',
+  'own log would be refused',
 ]
 
 // No file in the default build may have these in its name.

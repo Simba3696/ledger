@@ -659,6 +659,107 @@ describe("forks across compaction (section 10.3)", () => {
   });
 });
 
+describe("file bounds: a device never publishes an own file every reader would refuse", () => {
+  /** `n` characters that don't compress, so a file's size follows them. */
+  function noise(n: number): string {
+    const abc = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const bytes = crypto.getRandomValues(new Uint8Array(n));
+    let out = "";
+    for (const b of bytes) out += abc[b % 62];
+    return out;
+  }
+  /** A build that reads repo files up to 80 KB: it writes its own up to
+   * 40 KB, and reads its own back up to 160 KB. */
+  const small = { fileBounds: { bytes: 80_000, plainBytes: 640_000 } };
+
+  it("a snapshot past the bound is not published and the log not trimmed: a new device still gets every op", async () => {
+    const a = await open({ ...small, ...every(1) });
+    await write(a, "Big1 " + noise(25_000));
+    await compactNow(a);
+    const first = stored(a, "snap")!;
+    const K = a.store.meta().K;
+    await write(a, "Big2 " + noise(20_000), "Small");
+    for (let i = 0; i < 6; i++) await cycle(w, a);
+    // The state now holds more than a snapshot may: the log stays as it is.
+    expect(stored(a, "snap")!.sha).toBe(first.sha);
+    expect(a.store.meta().K).toBe(K);
+    expect((await repoLog(a)).ops).toHaveLength(2);
+    expect(a.logs.some((l) => l.includes("snapshot would be refused"))).toBe(true);
+    for (const kind of ["log", "snap"] as const) expect(stored(a, kind)!.text.length).toBeLessThanOrEqual(40_000);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    const c = await open({ ...small, login: "sam" });
+    expect(remarks(c).map((r) => r.split(" ")[0])).toEqual(["Big1", "Big2", "Small"]);
+    expect(c.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("an own log past the bound is never sent: needsAttention, local writes go on, and other devices' changes still arrive", async () => {
+    const a = await open(small);
+    const r = await open({ ...small, login: "sam" });
+    await write(a, "Huge " + noise(50_000));
+    const before = puts(w).length;
+    await cycle(w, a);
+    expect(puts(w).length).toBe(before);
+    expect(stored(a, "log")).toBeNull();
+    expect(a.engine.getState()).toMatchObject({ status: "needsAttention", pendingCount: 1 });
+    expect(a.logs.some((l) => l.includes("own log would be refused"))).toBe(true);
+    await write(a, "Still saved");
+    await write(r, "From sam");
+    await cycle(w, r, a);
+    expect(remarks(a).map((x) => x.split(" ")[0]).sort()).toEqual(["From", "Huge", "Still"]);
+    expect(a.engine.getState()).toMatchObject({ status: "needsAttention", pendingCount: 2 });
+    expect(puts(w).length).toBe(before + 1);
+  });
+
+  it("an own snapshot larger than this build reads, sent by a build that writes larger ones, is read back as its own: no rehome", async () => {
+    const store = new MemoryStore();
+    const a = await open({ ...every(1), store });
+    await write(a, "Big " + noise(30_000));
+    await cycle(w, a);
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.snap\.enc$/ });
+    await cycle(w, a);
+    const landed = stored(a, "snap")!;
+    expect(landed.text.length).toBeGreaterThan(24_000);
+    const id = a.engine.deviceId;
+    a.engine.stop();
+    // A reload that doesn't see it sends a snapshot of its own (new bytes),
+    // which the repo refuses.
+    w.fake.staleReads(1);
+    const again = await open({ ...every(1), store });
+    expect(store.meta().lastSentSnapSha).not.toBe(landed.sha);
+    again.engine.stop();
+    w.fake.staleReads(0);
+    // Then a build that reads files only up to 24 KB.
+    const older = await open({ ...every(1), store, fileBounds: { bytes: 24_000, plainBytes: 640_000 } });
+    await cycle(w, older);
+    expect(older.engine.deviceId).toBe(id);
+    expect(store.meta()).toMatchObject({ K: 2, ownSnapSha: landed.sha });
+    expect(older.logs.some((l) => l.includes("not its history"))).toBe(false);
+  });
+
+  it("an own log larger than this build reads, sent by a build that writes larger ones, is read back as its own: no rehome", async () => {
+    const store = new MemoryStore();
+    const off = { compaction: { logOps: 1000, logBytes: 10_000_000 } };
+    const a = await open({ ...off, store });
+    await write(a, "Big " + noise(30_000));
+    w.fake.landThenDropResponse({ method: "PUT", path: /\.log\.enc$/ });
+    await cycle(w, a);
+    const landed = stored(a, "log")!;
+    expect(landed.text.length).toBeGreaterThan(24_000);
+    const id = a.engine.deviceId;
+    a.engine.stop();
+    w.fake.staleReads(1);
+    const again = await open({ ...off, store });
+    expect(store.meta().lastSentLogSha).not.toBe(landed.sha);
+    again.engine.stop();
+    w.fake.staleReads(0);
+    const older = await open({ ...off, store, fileBounds: { bytes: 24_000, plainBytes: 640_000 } });
+    await cycle(w, older);
+    expect(older.engine.deviceId).toBe(id);
+    expect(store.meta()).toMatchObject({ ownLogSha: landed.sha, ownLogThrough: 2 });
+    expect(older.engine.getState()).toMatchObject({ pendingCount: 0 });
+  });
+});
+
 describe("local compaction (section 8.4)", () => {
   it("folds the tail into the base once it passes the limit, in one transaction; a reload shows the same document", async () => {
     const store = new MemoryStore();
