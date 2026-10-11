@@ -526,6 +526,26 @@ describe("forks across compaction (section 10.3)", () => {
     expectConverged(a, twin);
     expect(remarks(a).sort()).toEqual(["Copy", "One", "Original", "Two"]);
   });
+  it("a clone's op under the shared id, carried in a third device's snapshot, is found as a fork before that snapshot is joined: the original's own write at the same L is kept", async () => {
+    const a = await open({ login: "alex" });
+    await write(a, "Before");
+    await cycle(w, a);
+    const twin = await open({ login: "alex", store: a.store.clone() });
+    await write(twin, "Copy");
+    await cycle(w, twin);
+    const x = await open({ ...every(1), login: "sam" });
+    await write(x, "From x");
+    await compactNow(x);
+    expect(JSON.stringify((await repoSnap(x))!.seen)).toContain(a.engine.deviceId!);
+    // The original writes at the same L as the clone did: an equal tag.
+    await write(a, "Original");
+    expect(a.engine.pushableOps().at(-1)!.L).toBe(twin.engine.pushableOps().at(-1)!.L);
+    await cycle(w, a);
+    expect(a.logs.some((l) => l.includes("syncs on as a new device"))).toBe(true);
+    await quiesce(w, a, twin, x);
+    expectConverged(a, twin, x);
+    expect(remarks(x).sort()).toEqual(["Before", "Copy", "From x", "Original"]);
+  });
 });
 
 describe("local compaction (section 8.4)", () => {
