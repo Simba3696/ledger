@@ -201,6 +201,31 @@ export class Fence {
     return changes;
   }
 
+  /** The state was replaced by `after` whole, not joined (a rehome, section
+   * 10.3: registers this device wrote may now carry another tag, and the
+   * other instance's values may win). `changed` says whether the document
+   * changed. Like a join that changed it, this bumps the revision and keeps
+   * the pre-image of every visible register whose value it changed, so a
+   * form that was on screen before is fenced against what the rehome did. */
+  replace(before: SyncState, after: SyncState, changed: boolean): void {
+    if (!changed) return;
+    this.#revision++;
+    if (this.#rendered === null) return;
+    this.#seenAt.set(this.#revision, vectorOf(after.seen));
+    for (const [key, regs] of before.rec) {
+      if (!regs.has(CREATE) || before.del.has(key)) continue;
+      const now = after.rec.get(key);
+      for (const [field, reg] of regs) {
+        const next = now?.get(field);
+        if (!next || !sameValue(next.v, reg.v)) this.#keep(`${key}/${field}`, reg.v);
+      }
+    }
+    for (const key of new Set([...before.unit.keys(), ...after.unit.keys()])) {
+      const was = readValue(key, before.unit.get(key));
+      if (!sameValue(readValue(key, after.unit.get(key)), was)) this.#keep(key, was);
+    }
+  }
+
   #keep(key: string, value: unknown): void {
     const list = this.#pre.get(key);
     if (!list) this.#pre.set(key, [{ value, rev: this.#revision }]);
