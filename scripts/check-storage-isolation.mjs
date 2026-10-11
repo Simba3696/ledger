@@ -31,6 +31,8 @@ const FORBIDDEN_IN_DEFAULT = [
   'Git Repository is empty.',
   'ledger:sync',
   'Ledger is open in another tab',
+  'sync identity was in use elsewhere',
+  'Ledger was updated on another device',
 ]
 
 // No file in the default build may have these in its name.
