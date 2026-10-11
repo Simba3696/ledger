@@ -29,6 +29,8 @@ const FORBIDDEN_IN_DEFAULT = [
   'ledger:document-backend',
   '.genesis.enc',
   'Git Repository is empty.',
+  'ledger:sync',
+  'Ledger is open in another tab',
 ]
 
 // No file in the default build may have these in its name.
