@@ -13,21 +13,33 @@ const DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const ZERO = DIGITS[0];
 const SMALLEST_INTEGER = `A${ZERO.repeat(26)}`;
 
-function midpoint(a: string, b: string | null): string {
-  if (b !== null && a >= b) throw new Error(`${a} >= ${b}`);
-  if (a.slice(-1) === ZERO || (b !== null && b.slice(-1) === ZERO)) throw new Error("trailing zero");
+// A loop, not the reference implementation's recursion: that recursed once
+// per digit while the leading digits stayed consecutive, so a synced key
+// ending in a long run of "z" (keys have no length limit) overflowed the
+// stack, and every append or move beside it failed. The result is the same.
+function midpoint(lower: string, upper: string | null): string {
+  if (upper !== null && lower >= upper) throw new Error(`${lower} >= ${upper}`);
+  if (lower.slice(-1) === ZERO || (upper !== null && upper.slice(-1) === ZERO)) throw new Error("trailing zero");
+  let a = lower;
+  let b = upper;
+  let result = "";
   if (b !== null) {
     // The common prefix, then the midpoint of what follows it.
     let n = 0;
     while ((a[n] ?? ZERO) === b[n]) n++;
-    if (n > 0) return b.slice(0, n) + midpoint(a.slice(n), b.slice(n));
+    result = b.slice(0, n);
+    a = a.slice(n);
+    b = b.slice(n);
   }
-  const digitA = a ? DIGITS.indexOf(a[0]) : 0;
-  const digitB = b !== null ? DIGITS.indexOf(b[0]) : DIGITS.length;
-  if (digitB - digitA > 1) return DIGITS[Math.round(0.5 * (digitA + digitB))];
-  // The first digits are consecutive.
-  if (b !== null && b.length > 1) return b.slice(0, 1);
-  return DIGITS[digitA] + midpoint(a.slice(1), null);
+  for (let i = 0; ; i++) {
+    const digitA = i < a.length ? DIGITS.indexOf(a[i]) : 0;
+    const digitB = b !== null ? DIGITS.indexOf(b[0]) : DIGITS.length;
+    if (digitB - digitA > 1) return result + DIGITS[Math.round(0.5 * (digitA + digitB))];
+    // The first digits are consecutive.
+    if (b !== null && b.length > 1) return result + b.slice(0, 1);
+    result += DIGITS[digitA];
+    b = null;
+  }
 }
 
 function integerLength(head: string): number {
@@ -46,6 +58,20 @@ function validate(key: string): void {
   if (key === SMALLEST_INTEGER) throw new Error(`invalid sort key: ${key}`);
   const fraction = key.slice(integerPart(key).length);
   if (fraction.slice(-1) === ZERO) throw new Error(`invalid sort key: ${key}`);
+}
+
+/** Whether `value` is a key keyBetween accepts: base-62 digits only, a
+ * valid head with its whole integer part, not the smallest integer, and no
+ * trailing "0" in the fraction. A key read from elsewhere (a sync op, a
+ * backup) must pass this, or the next append or move in its month throws. */
+export function isSortKey(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || [...value].some((c) => !DIGITS.includes(c))) return false;
+  try {
+    validate(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function incrementInteger(x: string): string | null {
@@ -104,7 +130,9 @@ export function keyBetween(a: string | null, b: string | null): string {
     if (ib < b) return ib;
     const decremented = decrementInteger(ib);
     if (decremented === null) throw new Error("cannot decrement any more");
-    return decremented;
+    // Below the integer just above the smallest is only the smallest, which
+    // is no key: a fraction under it is the key below b.
+    return decremented === SMALLEST_INTEGER ? decremented + midpoint("", null) : decremented;
   }
   const ia = integerPart(a);
   const fa = a.slice(ia.length);

@@ -82,6 +82,19 @@ function toApiError(err: unknown): ApiError {
   return new ApiError(500, "Internal server error");
 }
 
+/** "Today" in the document's time zone, or in UTC when this runtime's Intl
+ * doesn't know that zone. The document check holds a zone only to its shape
+ * (zone lists differ between builds, ADR-0008), so a synced zone this build
+ * can't use must not fail every call that needs today. */
+function documentToday(now: Date, timeZone: string): Date {
+  try {
+    return todayInAppZone(now, timeZone);
+  } catch (err) {
+    if (err instanceof RangeError) return todayInAppZone(now, "UTC");
+    throw err;
+  }
+}
+
 /** The state behind one DocumentBackend: its host, clock, row handles and
  * write queue. Kept apart from the class so the class has exactly the
  * LedgerBackend methods. */
@@ -102,7 +115,7 @@ class Session {
       doc,
       handles: this.handles,
       get today() {
-        today ??= todayInAppZone(new Date(now), doc.settings.timeZone);
+        today ??= documentToday(new Date(now), doc.settings.timeZone);
         return today;
       },
     };

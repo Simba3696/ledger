@@ -49,12 +49,14 @@ import {
   monthLocked,
   monthName,
   noEntry,
+  storableDate,
   subscriptionNotFound,
   validateCardYear,
   validateCardYearMonth,
   validateCards,
   validateDebt,
   validateEmi,
+  validateEmiBalance,
   validateEmiPayment,
   validateEntryFields,
   validateFinanceYearMonth,
@@ -582,7 +584,8 @@ export function recordEmiPayment(ctx: WriteContext, row: number, amountPaid: num
   const record = byHandle(ctx.doc.emis, ctx.handles, row);
   if (!record) throw emiNotFound(row);
   const { dueToSettle, newRemainingAsOf } = settleEmiPayment(toEmi(record, ctx.handles), amountPaid, ctx.today);
-  applyChanges(record, { remainingAsOf: money(newRemainingAsOf), asOfDate: formatDate(startOfDay(dueToSettle)) }, ctx);
+  validateEmiBalance(newRemainingAsOf);
+  applyChanges(record, { remainingAsOf: money(newRemainingAsOf), asOfDate: storableDate(startOfDay(dueToSettle)) }, ctx);
   // Computed relative to the settled due date, as the store returns it.
   return emiWithComputed(toEmi(record, ctx.handles), dueToSettle);
 }

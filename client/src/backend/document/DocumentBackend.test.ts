@@ -366,14 +366,23 @@ describe("DocumentBackend gate and errors", () => {
     await expect(backend.addEntry(entry("Lunch"))).resolves.toMatchObject({ remarks: "Lunch" });
   });
 
-  it("maps an unexpected failure to a 500 and logs it with the ledger:document-backend tag", async () => {
+  it("works out today in UTC when this runtime does not know the document's time zone", async () => {
     const doc = createEmptyDocument({ modules: [...ALL], timeZone: "Not/AZone" });
+    const { backend, clock } = setup(doc);
+    clock.now = Date.UTC(2026, 4, 10, 22, 0); // 10 May in UTC, 11 May in Asia/Kolkata
+    await expect(backend.addEmi({ ...emiEdits, durationMonths: null })).resolves.toMatchObject({ asOfDate: "2026-05-10" });
+    await expect(backend.getOverview()).resolves.toBeDefined();
+  });
+
+  it("maps an unexpected failure to a 500 and logs it with the ledger:document-backend tag", async () => {
+    const doc = createEmptyDocument({ modules: [...ALL], timeZone: "Asia/Kolkata" });
+    (doc as unknown as { emis: null }).emis = null;
     const { backend } = setup(doc);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const failure = backend.getOverview();
     await expect(failure).rejects.toBeInstanceOf(ApiError);
     await expect(failure).rejects.toMatchObject({ status: 500, message: "Internal server error" });
-    expect(error).toHaveBeenCalledWith("ledger:document-backend", expect.any(RangeError));
+    expect(error).toHaveBeenCalledWith("ledger:document-backend", expect.any(TypeError));
     // A store-style failure is not logged.
     error.mockClear();
     await expect(backend.getMonth(2017, 1)).rejects.toEqual(new ApiError(400, "Invalid year: 2017"));

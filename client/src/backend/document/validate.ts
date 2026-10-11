@@ -1,5 +1,7 @@
-import { daysInMonth } from "@ledger/shared/dateMath";
+import { daysInMonth, formatDate } from "@ledger/shared/dateMath";
 import { LedgerError } from "@ledger/shared/errors";
+import { isSortKey } from "./sortKey";
+import type { LedgerDocument } from "./types";
 
 // The SQL store's input checks, ported (not moved: server/src is what the
 // Supabase deployment ships) with identical messages, statuses and order:
@@ -42,7 +44,9 @@ function assertMoney(amount: number, opts: { positive: boolean }): void {
   if (absCents >= MONEY_LIMIT_CENTS) throw new LedgerError("Amount is too large", 400);
 }
 
-/** A real YYYY-MM-DD calendar date. */
+/** A real YYYY-MM-DD calendar date. What every stored date must be: the
+ * user's dates are checked with it, formatDate() only makes such dates, and
+ * the document shape check below holds a remote value to it too. */
 function isRealDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [y, m, d] = value.split("-").map(Number);
@@ -213,6 +217,28 @@ export function validateEmiPayment(amountPaid: number): void {
   }
 }
 
+/** The balance a payment is about to store, held to the bound every local
+ * amount passes (numeric(14,2)). The payment computes it from stored
+ * values, and a remote op may store any 15-digit amount, of either sign (a
+ * negative EMI amount is added back for each passed due date): a balance
+ * past the bound is refused with a 400 and the document untouched, instead
+ * of a 500 from the diff. Editing the EMI fixes it. */
+export function validateEmiBalance(remaining: number): void {
+  if (!Number.isFinite(remaining) || Math.round(Math.abs(remaining) * 100) >= MONEY_LIMIT_CENTS) {
+    throw new LedgerError("Remaining after this payment is too large; edit the EMI", 400);
+  }
+}
+
+/** `date` as the EMI write path stores it. A payment settles the first due
+ * date after the stored asOfDate, so an asOfDate late in 9999 (which a remote
+ * op may set) would move to year 10000, which no stored date can hold: that
+ * payment is refused, and editing the EMI re-anchors it at today. */
+export function storableDate(date: Date): string {
+  const text = formatDate(date);
+  if (!isRealDate(text)) throw new LedgerError(`Date out of range: ${text}`, 400);
+  return text;
+}
+
 export function emiNotFound(row: number): LedgerError {
   return new LedgerError(`No EMI entry at row ${row}`, 404);
 }
@@ -230,4 +256,163 @@ export function validateSubscription(service: string, amount: number, duration: 
 
 export function subscriptionNotFound(row: number): LedgerError {
   return new LedgerError(`No subscription at row ${row}`, 404);
+}
+
+// --- Document shape (GitHub mode) -------------------------------------------
+// Not a SQL-store port: the structural checks GitHub mode applies to a whole
+// document it did not just build (a genesis, a backup to restore, and the
+// sync engine's own self-check, ADR-0008), and that sync's op validator
+// applies to each register value. Structural only: formats and types, never
+// business rules such as positive amounts or known categories, which ran at
+// the origin. Sync replays a file only if every build agrees it is valid, so
+// within one sync format version these checks may be loosened, never
+// tightened (ADR-0008).
+
+type Check = (value: unknown) => boolean;
+
+const isString: Check = (value) => typeof value === "string";
+const isFiniteNumber: Check = (value) => typeof value === "number" && Number.isFinite(value);
+const isBoolean: Check = (value) => typeof value === "boolean";
+const orNull = (check: Check): Check => (value) => value === null || check(value);
+const matches = (pattern: RegExp): Check => (value) => typeof value === "string" && pattern.test(value);
+
+/** Money: toDecimalString(_, 2). Rates: toDecimalString(_, 3). */
+const isMoneyText = matches(/^-?\d{1,15}\.\d{2}$/);
+const isRateText = matches(/^-?\d{1,15}\.\d{3}$/);
+const isDateText: Check = (value) => typeof value === "string" && isRealDate(value);
+const isDueDay: Check = (value) => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 31;
+
+/** monthKey()'s output: the year unpadded, the month zero-padded. */
+export const isMonthKey = matches(/^[1-9]\d{0,9}-(0[1-9]|1[0-2])$/);
+
+/** An IANA time zone name's shape: "UTC", "EST5EDT", "Asia/Kolkata",
+ * "America/Argentina/Buenos_Aires", "Etc/GMT+5". Only the shape, never
+ * whether this runtime's Intl knows the zone: zone lists differ between
+ * builds, and every build must agree on what is valid (ADR-0008). A
+ * well-shaped zone this runtime doesn't know counts as UTC
+ * (DocumentBackend's today). */
+export const isTimeZoneName = matches(/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z][A-Za-z0-9_+-]*){0,2}$/);
+
+/** A record id: crypto.randomUUID()'s form. */
+export const isRecordId = matches(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+/** The stamps every record carries (BaseRecord minus the id). */
+export const isRecordStamp = (at: unknown, by: unknown): boolean => isFiniteNumber(at) && isString(by);
+
+/** Each record collection's own fields (BaseRecord aside), with the check
+ * each value must pass. */
+export const RECORD_FIELDS = {
+  expenses: {
+    sortKey: isSortKey,
+    amount: isMoneyText,
+    remarks: isString,
+    category: orNull(isString),
+    cardNote: orNull(isString),
+  },
+  debts: { name: isString, amount: isMoneyText },
+  emis: {
+    cardOrBank: isString,
+    emiAmount: isMoneyText,
+    dueDay: isDueDay,
+    totalAmount: isMoneyText,
+    remarks: isString,
+    remainingAsOf: isMoneyText,
+    asOfDate: isDateText,
+    untilTarget: orNull(isDateText),
+    interestRate: orNull(isRateText),
+    foreclosureCharge: orNull(isRateText),
+  },
+  subscriptions: {
+    service: isString,
+    amount: isMoneyText,
+    duration: (value: unknown) => value === "Monthly" || value === "Yearly",
+    expiryAnchor: isDateText,
+    cardOrBank: isString,
+  },
+} as const satisfies Record<string, Record<string, Check>>;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** An object with exactly these keys, each passing its check. */
+function isShape(value: unknown, shape: Record<string, Check>): boolean {
+  if (!isPlainObject(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== Object.keys(shape).length) return false;
+  return keys.every((key) => Object.hasOwn(shape, key) && shape[key](value[key]));
+}
+
+const BASE_RECORD: Record<string, Check> = { id: isRecordId, updatedAt: isFiniteNumber, updatedBy: isString };
+
+/** A list of records of one shape, no id twice in `ids` (shared across calls
+ * for a collection split over months). */
+function isRecordList(value: unknown, fields: Record<string, Check>, ids: Set<string>): boolean {
+  if (!Array.isArray(value)) return false;
+  const shape = { ...BASE_RECORD, ...fields };
+  for (const record of value) {
+    if (!isShape(record, shape)) return false;
+    const id = (record as { id: string }).id;
+    if (ids.has(id)) return false;
+    ids.add(id);
+  }
+  return true;
+}
+
+const SAVINGS_LINE: Record<string, Check> = { name: isString, amount: isMoneyText };
+
+/** One financeMonths value: what setMonthIncome writes. */
+export function isFinanceMonth(value: unknown): boolean {
+  return isShape(value, {
+    salary: orNull(isMoneyText),
+    otherIncome: orNull(isMoneyText),
+    savings: (savings) => Array.isArray(savings) && savings.every((line) => isShape(line, SAVINGS_LINE)),
+  });
+}
+
+const CARD_FIELDS: Record<string, Check> = { name: isString, due: isMoneyText, paid: isMoneyText, dueDate: orNull(isDateText), settled: isBoolean };
+
+/** One cardBills value: what setMonthBills writes, card ids unique. */
+export function isCardBillList(value: unknown): boolean {
+  return isRecordList(value, CARD_FIELDS, new Set());
+}
+
+const CATEGORY: Record<string, Check> = { id: isString, label: isString, bg: isString, fg: orNull(isString), position: isFiniteNumber };
+
+/** The categories list: only a genesis sets it. Ids unique. */
+export function isCategoryList(value: unknown): boolean {
+  if (!Array.isArray(value) || !value.every((c) => isShape(c, CATEGORY))) return false;
+  return new Set(value.map((c: { id: string }) => c.id)).size === value.length;
+}
+
+/** settings.modules: plain strings (canonicalModules drops unknown names). */
+export const isModuleList: Check = (value) => Array.isArray(value) && value.every(isString);
+
+/** A month-keyed map whose every value passes `check`. */
+function isMonthMap(value: unknown, check: Check): boolean {
+  return isPlainObject(value) && Object.entries(value).every(([key, v]) => isMonthKey(key) && check(v));
+}
+
+/** Whether a value is a LedgerDocument this version writes, checked all the
+ * way down: version 1, exactly the document's keys, every record exactly its
+ * collection's fields with well-formed values, month keys as monthKey()
+ * writes them, and no record id twice in one collection (expenses across all
+ * their months). What a genesis, a backup to restore and every materialised
+ * sync document must pass. */
+export function isWritableDocument(value: unknown): value is LedgerDocument {
+  if (!isPlainObject(value) || value.version !== 1) return false;
+  const expenseIds = new Set<string>();
+  return isShape(value, {
+    version: () => true,
+    settings: (settings) => isShape(settings, { modules: isModuleList, timeZone: isTimeZoneName }),
+    categories: isCategoryList,
+    expenses: (months) => isMonthMap(months, (list) => isRecordList(list, RECORD_FIELDS.expenses, expenseIds)),
+    monthLocks: (locks) => isMonthMap(locks, (locked) => locked === true),
+    financeMonths: (months) => isMonthMap(months, isFinanceMonth),
+    debts: (list) => isRecordList(list, RECORD_FIELDS.debts, new Set()),
+    emis: (list) => isRecordList(list, RECORD_FIELDS.emis, new Set()),
+    subscriptions: (list) => isRecordList(list, RECORD_FIELDS.subscriptions, new Set()),
+    cardBills: (months) => isMonthMap(months, isCardBillList),
+    tombstones: (list) => Array.isArray(list) && list.every((t) => isShape(t, { id: isString, deletedAt: isFiniteNumber })),
+  });
 }

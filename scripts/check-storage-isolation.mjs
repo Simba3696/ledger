@@ -27,6 +27,7 @@ const FORBIDDEN_IN_DEFAULT = [
   'PBKDF2',
   'ledger:github',
   'ledger:document-backend',
+  '.genesis.enc',
 ]
 
 // No file in the default build may have these in its name.
