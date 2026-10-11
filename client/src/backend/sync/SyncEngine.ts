@@ -361,7 +361,7 @@ export class SyncEngine {
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
       this.#ownLog.push(op);
       this.#chainHead = chain;
-      this.#fence.wrote(op.set.map(([key]) => key));
+      this.#fence.wrote(this.#state!, me, op);
     }
     this.#noticeCount += notices.length;
     this.#emit();

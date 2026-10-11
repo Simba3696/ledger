@@ -2,7 +2,7 @@ import { sameValue } from "./canonical";
 import { vectorOf } from "./codec";
 import type { OpBody } from "./diff";
 import { CREATE, STAMP, TOGETHER, parseRegisterKey } from "./keys";
-import { joinInto, type Changes, type Register, type SyncState } from "./state";
+import { joinInto, type Changes, type Op, type Register, type SyncState } from "./state";
 import type { Tag, VersionVector } from "./tags";
 
 // The stale-UI fence (design section 3.4). A form submits every field, and
@@ -28,6 +28,9 @@ import type { Tag, VersionVector } from "./tags";
 //   - The op's vv is the seen vector as of the write's revision, so a
 //     remote author whose change this user hadn't seen still gets their
 //     edit/edit notice (section 4.2).
+//   - Once an own op commits, a register it now holds shows the user's own
+//     value, so its pre-images go (wrote()). A register where a remote
+//     write it hadn't seen beat it keeps them: that write is still unseen.
 //
 // Without an attached view (engine and unit tests) everything is rendered
 // at once: no pre-images are kept, and the op passes unchanged. A delete or
@@ -263,9 +266,15 @@ export class Fence {
     return { body: kept, notices: [...notices.values()] };
   }
 
-  /** This device committed an op setting `keys`: its own write supersedes
-   * what the user hadn't seen there. */
-  wrote(keys: readonly string[]): void {
-    for (const key of keys) this.#pre.delete(key);
+  /** This device committed `op` (as device `me`), already joined into
+   * `state`. Where the op's register now stands, the user's own write
+   * superseded what they hadn't seen there, so its pre-images go. Where a
+   * remote write it never saw beat it (a later tag), that write is still
+   * unseen, and a stale form must still be fenced against it. */
+  wrote(state: SyncState, me: string, op: Pick<Op, "L" | "set">): void {
+    for (const [key, value] of op.set) {
+      const reg = registerOf(state, key);
+      if (reg && reg.t[0] === op.L && reg.t[1] === me && sameValue(reg.v, value)) this.#pre.delete(key);
+    }
   }
 }

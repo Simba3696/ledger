@@ -165,6 +165,31 @@ describe("an unrendered remote change", () => {
     expect(w.amount()).toBe("40.00");
   });
 
+  it("an own write that lost to the unseen value supersedes nothing: a later stale submit of that field is still fenced", async () => {
+    const w = await world();
+    const groceries = () => w.engine.current().expenses["2026-05"].find((e) => e.remarks.startsWith("Groceries"))!;
+    // Sam's change gets a later L than this device's next write: Sam adds an
+    // entry first, then sets the amount to 12.00.
+    await w.sam.backend.addEntry({ ...ENTRY, remarks: "Bus" });
+    const [samsRow] = (await w.sam.backend.getMonth(2026, 5)).filter((e) => e.remarks === "Groceries");
+    await w.sam.backend.updateEntry(2026, 5, samsRow.row, { ...ENTRY, amount: 12 });
+    const joining = w.engine.join({ ops: w.sam.ops.slice(-2).map((op): [string, Op] => [X, op]) });
+    // This device sets the amount to 15.00, diffed before Sam's join lands
+    // and committed after it. Sam's tag wins, and nothing renders it.
+    const next = structuredClone(w.engine.current());
+    next.expenses["2026-05"][0].amount = "15.00";
+    const mine = w.engine.commit(next);
+    await Promise.all([joining, mine]);
+    expect(groceries().amount).toBe("12.00");
+    expect(w.engine.getState().revision).toBe(1);
+
+    // A form still showing 40.00, where the user changed only the remarks.
+    const before = w.engine.getState().noticeCount;
+    await w.backend.updateEntry(2026, 5, w.row, { ...ENTRY, remarks: "Groceries, weekly" });
+    expect(groceries()).toMatchObject({ amount: "12.00", remarks: "Groceries, weekly" });
+    expect(w.engine.getState().noticeCount - before).toBe(1);
+  });
+
   it("is fenced by what was rendered when the write was submitted, though it runs after a later render", async () => {
     const w = await world();
     // SyncHost: the layout effect reports the revision once the re-keyed
