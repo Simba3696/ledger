@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bytesToBase64 } from "../base64";
 import { checkRepoFile } from "./codec";
-import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, entry, expectConverged, nextTask, plant, puts, quiesce, remarks, since, world, type Device, type World } from "./cycleTestkit";
+import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, edits, entry, expectConverged, nextTask, plant, puts, quiesce, remarks, row, since, world, type Device, type World } from "./cycleTestkit";
 import type { RepoFile } from "./epoch";
 import { unseal } from "./records";
 import { repoPath } from "./repoFiles";
@@ -757,6 +757,43 @@ describe("file bounds: a device never publishes an own file every reader would r
     expect(older.engine.deviceId).toBe(id);
     expect(store.meta()).toMatchObject({ ownLogSha: landed.sha, ownLogThrough: 2 });
     expect(older.engine.getState()).toMatchObject({ pendingCount: 0 });
+  });
+
+  it("a confirmed own log past this build's write bound is due for compaction, not a failed cycle: a snapshot past it too leaves the device idle", async () => {
+    const store = new MemoryStore();
+    const a = await open({ store, compaction: { logOps: 1000, logBytes: 10_000_000 } });
+    await write(a, "Big " + noise(30_000));
+    await cycle(w, a);
+    expect(stored(a, "log")!.text.length).toBeGreaterThan(24_000);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    a.engine.stop();
+    // A build that writes files only up to 24 KB, with the default limits.
+    const older = await open({ store, fileBounds: { bytes: 48_000, plainBytes: 640_000 } });
+    for (let i = 0; i < 3; i++) await cycle(w, older);
+    expect(older.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    expect(older.logs.some((l) => l.includes("sync failed"))).toBe(false);
+    expect(older.logs.filter((l) => l.includes("snapshot would be refused"))).toHaveLength(1);
+    expect(stored(a, "snap")).toBeNull();
+  });
+
+  it("a confirmed own log past this build's write bound is compacted when its snapshot fits: the log is trimmed", async () => {
+    const store = new MemoryStore();
+    const a = await open({ store, compaction: { logOps: 1000, logBytes: 10_000_000 } });
+    await write(a, "Note");
+    for (let i = 0; i < 3; i++) await a.backend.updateEntry(2026, 5, await row(a, remarks(a)[0]), edits(`Note ${i} ${noise(12_000)}`, 10));
+    await cycle(w, a);
+    expect(stored(a, "log")!.text.length).toBeGreaterThan(24_000);
+    const last = store.meta().ownLogThrough;
+    a.engine.stop();
+    const older = await open({ store, fileBounds: { bytes: 48_000, plainBytes: 640_000 } });
+    for (let i = 0; i < 6; i++) await cycle(w, older);
+    expect(older.logs.some((l) => l.includes("sync failed"))).toBe(false);
+    expect(store.meta()).toMatchObject({ K: last, ownLogK: last, ownLogThrough: last });
+    expect((await repoLog(older)).ops).toHaveLength(0);
+    expect(stored(older, "snap")!.text.length).toBeLessThanOrEqual(24_000);
+    expect(older.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    const c = await open({ login: "sam" });
+    expect(remarks(c)).toEqual(remarks(older));
   });
 });
 

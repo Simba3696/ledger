@@ -1438,6 +1438,19 @@ export class SyncEngine {
     return value;
   }
 
+  /** The own log text's length, for the compaction trigger. A confirmed
+   * own log can be larger than this build writes (a build with larger
+   * bounds sent it), which only makes it due: compaction is the one way
+   * to shrink it, and the snapshot is measured on its own. */
+  async #ownLogSize(): Promise<number> {
+    try {
+      return (await this.#ownLogText()).text.length;
+    } catch (err) {
+      if (err instanceof OwnLogTooLarge) return Infinity;
+      throw err;
+    }
+  }
+
   // --- The network half: compaction (section 8.1) ---------------------------
 
   /** Step 7: compaction of the own log, with no agreement between devices.
@@ -1456,7 +1469,7 @@ export class SyncEngine {
   async #compact(): Promise<boolean> {
     if (!this.#canCycle() || this.#ownLog.length === 0 || this.#logDue()) return true;
     const limits = this.#compaction;
-    if (this.#ownLog.length < limits.logOps && (await this.#ownLogText()).text.length < limits.logBytes) return true;
+    if (this.#ownLog.length < limits.logOps && (await this.#ownLogSize()) < limits.logBytes) return true;
     const wait = this.#putWait();
     if (wait > 0) {
       this.#putLater(wait);
