@@ -2,6 +2,7 @@ import { InvalidFileError, WrongPassphraseError, parseHeader } from "../crypto";
 import { checkRepoFile, type FileCheck } from "./codec";
 import { repoFileName, type RepoFile } from "./epoch";
 import { unseal, type DeviceKey } from "./records";
+import type { SyncState } from "./state";
 
 // Reading a file from the data repo's ledger/ folder (design sections 6 and
 // 12): the header first, then the key, then the content. Each step that
@@ -52,20 +53,20 @@ export function repoPath(file: RepoFile): string {
   return `${LEDGER_DIR}/${repoFileName(file)}`;
 }
 
-/** Decrypts and checks the text listed as `name`. */
-export async function openRepoFile(name: RepoFile, text: string, key: DeviceKey): Promise<FileRead> {
-  // checkRepoFile needs the epoch's genesis state to check a snap, and the
-  // cycle reads none yet (the gap check and cold start read them, design
-  // step 5): asking for one is a caller error.
-  if (name.kind === "snap") throw new Error("A snap is checked against its epoch's genesis state");
+/** Decrypts and checks the text listed as `name`. A snap is checked
+ * against `genesis`, its epoch's genesis state (codec.ts), which a device
+ * always reads before any snap (section 8.3): reading one without it is a
+ * caller error. */
+export async function openRepoFile(name: RepoFile, text: string, key: DeviceKey, genesis?: SyncState): Promise<FileRead> {
+  if (name.kind === "snap" && !genesis) throw new Error("A snap is checked against its epoch's genesis state");
   try {
-    return await readRepoFile(name, text, key);
+    return await readRepoFile(name, text, key, genesis);
   } catch (err) {
     return { ok: false, problem: "malformed", detail: `the file can't be read: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-async function readRepoFile(name: RepoFile, text: string, key: DeviceKey): Promise<FileRead> {
+async function readRepoFile(name: RepoFile, text: string, key: DeviceKey, genesis: SyncState | undefined): Promise<FileRead> {
   const refuse = (problem: FileProblem, detail: string): FileRead => ({ ok: false, problem, detail });
   if (text.length > REPO_FILE_MAX_BYTES) return refuse("malformed", `the file is larger than ${REPO_FILE_MAX_BYTES} bytes`);
   const newline = text.indexOf("\n");
@@ -93,7 +94,7 @@ async function readRepoFile(name: RepoFile, text: string, key: DeviceKey): Promi
     if (err instanceof InvalidFileError) return refuse("malformed", err.message);
     throw err;
   }
-  const check = checkRepoFile(name, value);
+  const check = checkRepoFile(name, value, genesis);
   if (!check.ok) return refuse(check.problem, check.detail);
   return { ok: true, read: check };
 }
