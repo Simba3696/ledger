@@ -107,7 +107,7 @@ All against `ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc` unless noted:
 Error bodies are `{message, documentation_url, status}`, and `status` is a **string** (`"409"`).
 
 **Design should:**
-- Keep `toError`'s rule: 409, or 422 whose message mentions `sha`, means `ShaConflictError`.
+- Keep `toError`'s rule for the contents PUT: 409, or 422 whose message mentions `sha`, means `ShaConflictError`. Apply it to writes only: a read by a malformed sha gets a 422 that mentions `sha` too (§16), and a read writes nothing, so it is a plain `GitHubError`.
 - Not treat a 201 as proof that the path was new. A stale `sha` on a missing path still creates it.
 - Avoid identical re-PUTs (summary item 3).
 

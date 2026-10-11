@@ -236,8 +236,11 @@ async function errorMessage(res: Response): Promise<string> {
 
 /** Maps a non-2xx response to its typed error. 404 is the caller's to
  * interpret (a missing repo, or an empty one), so it gets a plain
- * GitHubError here. */
-async function toError(res: Response): Promise<GitHubError> {
+ * GitHubError here. A 409, or a 422 about the sha, is a ShaConflictError
+ * only for a `write`: a read writes nothing, and GitHub answers a read by a
+ * malformed sha with 422 "The sha parameter must be exactly 40 characters",
+ * which a caller recovering from a stale sha would retry forever. */
+async function toError(res: Response, { write = false }: { write?: boolean } = {}): Promise<GitHubError> {
   const message = await errorMessage(res);
   const rateLimited =
     res.status === 429 || (res.status === 403 && (res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after")));
@@ -250,7 +253,7 @@ async function toError(res: Response): Promise<GitHubError> {
   if (res.status === 401) return new GitHubAuthError();
   if (res.status === 403) return new GitHubForbiddenError(message);
   if (res.status === 409 && message === EMPTY_REPO_MESSAGE) return new EmptyRepoError();
-  if (res.status === 409 || (res.status === 422 && /\bsha\b/i.test(message))) return new ShaConflictError(res.status, message);
+  if (write && (res.status === 409 || (res.status === 422 && /\bsha\b/i.test(message)))) return new ShaConflictError(res.status, message);
   return new GitHubError(res.status, message);
 }
 
@@ -477,6 +480,7 @@ export function createGitHubClient({ owner, repo, path: defaultPath = DEFAULT_PA
     if (sha !== null) body.sha = sha;
     const res = await send("PUT", contentsPath(path), { body: JSON.stringify(body), keepalive });
     if (res.status === 404) throw new RepoNotFoundError();
+    if (!res.ok) throw await toError(res, { write: true });
     const result = await json<PutResponse>(res);
     const contentSha = result.content?.sha;
     const commitSha = result.commit?.sha;

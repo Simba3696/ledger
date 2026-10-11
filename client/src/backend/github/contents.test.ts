@@ -454,6 +454,21 @@ describe("contents client: sync calls", () => {
     expect(fake.requests.at(-1)?.headers.accept).toBe("application/vnd.github.raw+json");
   });
 
+  it("readBlob: a malformed sha is not a sha conflict, since a read writes nothing", async () => {
+    const gh = client();
+    await gh.writeFile("v1", null);
+    const err = await rejection(gh.readBlob("xyz"));
+    expect(err).toBeInstanceOf(GitHubError);
+    expect(err).not.toBeInstanceOf(ShaConflictError);
+    expect((err as GitHubError).status).toBe(422);
+    // Nor is a 409 on a read, other than the empty repo's.
+    fake.failNext({ method: "GET", status: 409, message: "Conflict" });
+    const conflict = await rejection(gh.readFile());
+    expect(conflict).toBeInstanceOf(GitHubError);
+    expect(conflict).not.toBeInstanceOf(ShaConflictError);
+    expect((conflict as GitHubError).status).toBe(409);
+  });
+
   it("readFile: inline below 1 MiB, through the blob from exactly 1 MiB", async () => {
     const inline = recorded.contents.inline.inlineIffSizeBelow;
     for (const size of [inline - 1, inline]) {
