@@ -217,6 +217,56 @@ describe("DocumentBackend writes", () => {
     expect([...keys].sort()).toEqual(keys);
     expect(new Set(keys).size).toBe(20);
   });
+
+  it("tells a host with begin() of each write at the call, commits it through that handle, and ends it once it settles, however it settles", async () => {
+    const { host, backend } = setup();
+    const log: string[] = [];
+    let n = 0;
+    Object.assign(host, {
+      begin: () => {
+        const id = ++n;
+        log.push(`begin ${id}`);
+        return {
+          commit: (next: LedgerDocument) => {
+            log.push(`commit ${id}`);
+            return host.commit(next);
+          },
+          end: () => log.push(`end ${id}`),
+        };
+      },
+    });
+    const first = backend.addEntry(entry("Lunch"));
+    const second = backend.addEntry(entry("", 1)); // rejected before any commit
+    host.failCommit = true;
+    const third = backend.addEntry(entry("Bus"));
+    // All three were begun before the first one ran.
+    expect(log).toEqual(["begin 1", "begin 2", "begin 3"]);
+    await expect(first).rejects.toMatchObject({ status: 500 });
+    await expect(second).rejects.toMatchObject({ status: 400 });
+    await expect(third).rejects.toMatchObject({ status: 500 });
+    expect(log).toEqual(["begin 1", "begin 2", "begin 3", "commit 1", "end 1", "end 2", "commit 3", "end 3"]);
+
+    host.failCommit = false;
+    await backend.addEntry(entry("Tea"));
+    expect(log.slice(-3)).toEqual(["begin 4", "commit 4", "end 4"]);
+    expect(host.commits).toBe(1);
+  });
+
+  it("reads the document for a write only once its handle is ready: the host's other writers go first", async () => {
+    const { host, backend } = setup();
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => (release = resolve));
+    Object.assign(host, { begin: () => ({ ready, commit: (next: LedgerDocument) => host.commit(next), end: () => {} }) });
+    const write = backend.addEntry(entry("Lunch"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(host.commits).toBe(0);
+    // Another writer of the host commits meanwhile; the write runs on it.
+    host.doc = { ...host.current(), monthLocks: { [monthKey(2026, 6)]: true } };
+    release();
+    await write;
+    expect(host.current().monthLocks).toEqual({ [monthKey(2026, 6)]: true });
+    expect(host.current().expenses[monthKey(2026, 5)].map((e) => e.remarks)).toEqual(["Lunch"]);
+  });
 });
 
 describe("DocumentBackend order and handles", () => {

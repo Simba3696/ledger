@@ -53,6 +53,24 @@ import type { LedgerDocument } from "./types";
 export interface DocumentHost {
   current(): LedgerDocument;
   commit(next: LedgerDocument): Promise<void>;
+  /** Optional: called synchronously when a write is submitted, before it
+   * waits behind earlier writes. The write then commits through the
+   * returned handle, and `end()` is called once it has settled, whether it
+   * committed, failed or made no commit. The sync engine uses it to judge a
+   * write by what was on screen when the user saved (design section 3.4). */
+  begin?(): HostWrite;
+}
+
+/** One submitted write, from `DocumentHost.begin()`. */
+export interface HostWrite {
+  /** Optional: settles when the write may read the document, once the
+   * host's other writers that came first have settled. The sync engine has
+   * writes that don't go through DocumentBackend (design section 3.5,
+   * `amend`), and a write that read the document while one of those was
+   * still saving would set back a whole-unit register it changed. */
+  ready?: Promise<void>;
+  commit(next: LedgerDocument): Promise<void>;
+  end(): void;
 }
 
 export interface DocumentBackendOptions {
@@ -135,20 +153,31 @@ class Session {
   /** Queues a write: one at a time, in call order (the stand-in for the
    * store's per-month advisory locks). It runs on a clone of the current
    * document and commits that clone once; if anything throws, nothing is
-   * committed and the current document is untouched. */
+   * committed and the current document is untouched. A host with begin()
+   * hears of the write at the call, before it waits in the queue, and the
+   * write reads the document only once the handle is ready. */
   write<T>(module: ModuleName, run: (ctx: ops.WriteContext) => T): Promise<T> {
     const { host, now, actor, newId } = this.#options;
+    let submitted: HostWrite | undefined;
+    try {
+      submitted = host.begin?.();
+    } catch (err) {
+      return Promise.reject(toApiError(err));
+    }
     const result = this.#queue.then(async () => {
       try {
+        if (submitted?.ready) await submitted.ready;
         const current = host.current();
         assertModuleEnabled(current.settings.modules, module);
         const doc = structuredClone(current);
         const at = now();
         const value = run(Object.assign(this.#context(doc, at), { now: at, actor, newId }));
-        await host.commit(doc);
+        await (submitted ? submitted.commit(doc) : host.commit(doc));
         return wire(value);
       } catch (err) {
         throw toApiError(err);
+      } finally {
+        submitted?.end();
       }
     });
     this.#queue = result.catch(() => undefined);
