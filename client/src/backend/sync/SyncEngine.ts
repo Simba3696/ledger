@@ -1496,7 +1496,9 @@ export class SyncEngine {
     return this.#enqueue(async () => {
       this.#assertWritable();
       const meta = this.#meta!;
-      const K = Math.max(meta.K, through);
+      // An older snapshot than the one confirmed is never taken for it.
+      if (through < meta.K) return;
+      const K = through;
       await this.#mutate({ ...meta, ...patch, ownSnapSha: sha, K }, { ownLog: { dropThrough: K } });
       this.#ownLog = this.#ownLog.filter((op) => op.L > K);
       this.#emit();
