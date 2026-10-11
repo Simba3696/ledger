@@ -202,6 +202,20 @@ describe("contents client", () => {
     }
   });
 
+  it("types a 403 or 429 that names a rate limit as GitHubRateLimitError even without retry-after, with the 60 s floor", async () => {
+    const secondsFromNow = (err: unknown) => (Date.parse((err as GitHubRateLimitError).resetAt!) - Date.now()) / 1000;
+    for (const status of [403, 429] as const) {
+      fake.failNext({ status, message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." });
+      const err = await rejection(client().readFile());
+      expect(err).toBeInstanceOf(GitHubRateLimitError);
+      expect(secondsFromNow(err)).toBeGreaterThan(55);
+      expect(secondsFromNow(err)).toBeLessThanOrEqual(60);
+    }
+    // A permission 403 stays a permission problem.
+    fake.failNext({ status: 403 });
+    await expect(client().readFile()).rejects.toBeInstanceOf(GitHubForbiddenError);
+  });
+
   it("types a failure while reading the response body as GitHubNetworkError", async () => {
     // fetch resolves at the headers; the body stream then fails, as it does
     // when the 30 s timeout fires mid-download or the connection drops.

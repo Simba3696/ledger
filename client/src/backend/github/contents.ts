@@ -24,6 +24,11 @@ const EMPTY_REPO_MESSAGE = "Git Repository is empty.";
 /** A PUT that lost the branch-ref compare-and-swap to another commit. */
 const BRANCH_RACE = /^is at [0-9a-f]{40} but expected [0-9a-f]{40}$/;
 const SHA = /^[0-9a-f]{40}$/;
+/** A 403 or 429 whose message says this is a rate limit. */
+const RATE_LIMIT_MESSAGE = /rate limit/i;
+/** How long to wait on a rate limit GitHub gave no time for: its documented
+ * floor for a secondary limit. */
+const RATE_LIMIT_FLOOR_MS = 60_000;
 
 /** The only commit messages this client writes, so no caller can put data
  * (amounts, remarks, counts) in commit metadata. "Sync <dev8>" and
@@ -96,8 +101,10 @@ export class GitHubForbiddenError extends GitHubError {
   }
 }
 
-/** 403 or 429 from GitHub's rate limiter. `resetAt` (ISO) is when it lifts,
- * or null when GitHub didn't say. */
+/** 403 or 429 from GitHub's rate limiter: one with `x-ratelimit-remaining:
+ * 0` or `retry-after`, or whose message names a rate limit. `resetAt` (ISO)
+ * is when it lifts; when GitHub didn't say, a minute from now, its
+ * documented floor for a secondary limit. */
 export class GitHubRateLimitError extends GitHubError {
   readonly resetAt: string | null;
   constructor(status: number, resetAt: string | null) {
@@ -234,7 +241,12 @@ async function toError(res: Response): Promise<GitHubError> {
   const message = await errorMessage(res);
   const rateLimited =
     res.status === 429 || (res.status === 403 && (res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after")));
-  if (rateLimited) return new GitHubRateLimitError(res.status, rateLimitReset(res));
+  // GitHub's docs allow a secondary limit with neither header ("otherwise,
+  // wait at least one minute"); its message names the rate limit.
+  const namesRateLimit = (res.status === 403 || res.status === 429) && RATE_LIMIT_MESSAGE.test(message);
+  if (rateLimited || namesRateLimit) {
+    return new GitHubRateLimitError(res.status, rateLimitReset(res) ?? new Date(Date.now() + RATE_LIMIT_FLOOR_MS).toISOString());
+  }
   if (res.status === 401) return new GitHubAuthError();
   if (res.status === 403) return new GitHubForbiddenError(message);
   if (res.status === 409 && message === EMPTY_REPO_MESSAGE) return new EmptyRepoError();

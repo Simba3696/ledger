@@ -305,7 +305,7 @@ Medians: PUT 1.49 s; each read about 1.0 s. Both include gh's start-up.
 - **Secondary limits were not hit:** 80 writes in about 25 minutes, with bursts of 3 at once.
 
 **Design should:**
-- Keep detecting rate limits from 403 or 429 plus `x-ratelimit-remaining: 0` or `retry-after`, as `contents.ts` does.
+- Keep detecting rate limits from 403 or 429 plus `x-ratelimit-remaining: 0` or `retry-after`, as `contents.ts` does. Also treat a 403 or 429 whose message names a rate limit (`/rate limit/i`) as one, waiting the documented 60 s floor: GitHub's docs allow a secondary limit with neither header ("otherwise, wait at least one minute"), and without this it would read as a token lacking permission.
 - Never poll `/rate_limit`.
 - Not assume one shared counter. The design's budget is far inside either.
 - Leave the secondary-limit handling (`retry-after`, the 60 s floor) as designed. It is still unverified against a real secondary-limit response.
@@ -399,7 +399,7 @@ In `samples`, `download_url` tokens, `temp_clone_token` and the committer's iden
 
 - **Fine-grained token permissions (§16.5 item 6).** Only an OAuth `repo`-scoped token was available. GitHub's documentation lists "Contents: read" for the refs, trees, blobs and commits endpoints, and "Contents: write" for the contents PUT. Verify with a real `github_pat_` token before release.
 - **Keepalive PUT on `pagehide` (§7, §16.5 item 5).** The PUT needs a CORS preflight (it sends `Authorization` and `Content-Type: application/json` with method `PUT`). Whether a browser will run a preflight for a `keepalive` request while the page unloads has varied between browsers and versions. A cached preflight (`max-age=86400`, capped lower by browsers) usually avoids the question. If it fails, the push is a lost send, and step 5 already recovers it on the next start. Needs iOS Safari and Android Chrome.
-- **Secondary rate limits.** Not provoked, on purpose. The response shape `contents.ts` expects (403 or 429 with `retry-after`) is as documented, but was not observed.
+- **Secondary rate limits.** Not provoked, on purpose. The response shape `contents.ts` expects (403 or 429 with `retry-after`, or a message naming the rate limit) is as documented, but was not observed.
 - **Two first commits at once on an empty repo.** Not probed. The loser presumably gets a 409, but GitHub can't name a head it expected, and its message is unknown. The fake answers `is at <head> but expected 0000000000000000000000000000000000000000` (git's null id), which keeps the recorded branch-race shape, so `ShaConflictError` classifies it as a branch race.
 - **ETag across token refreshes.** `Vary` includes `Authorization`, so a refreshed GitHub App token may get a different ETag. The cost would be one 200 instead of a 304. Not testable with one token.
 - **The 100 MB and 7 MB / 100,000-entry ceilings.** Far above Ledger's sizes. Not exercised.
