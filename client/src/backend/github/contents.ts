@@ -399,6 +399,17 @@ export interface FileWrite {
   keepalive?: boolean;
 }
 
+/** The JSON body putFile sends for `write`: the text as base64, so about
+ * 4/3 of its UTF-8 size. What a keepalive PUT is measured by. */
+export function putFileBody({ text, sha, message }: Pick<FileWrite, "text" | "sha" | "message">): string {
+  const body: { message: CommitMessage; content: string; sha?: string } = {
+    message,
+    content: bytesToBase64(new TextEncoder().encode(text)),
+  };
+  if (sha !== null) body.sha = sha;
+  return JSON.stringify(body);
+}
+
 export interface PutResult {
   /** The file's new blob sha (equal to gitBlobSha(text)). */
   sha: string;
@@ -473,12 +484,7 @@ export function createGitHubClient({ owner, repo, path: defaultPath = DEFAULT_PA
 
   async function putFile({ path, text, sha, message, keepalive }: FileWrite): Promise<PutResult> {
     if (!COMMIT_MESSAGE.test(message)) throw new TypeError("Refusing a commit message outside the fixed set");
-    const body: { message: CommitMessage; content: string; sha?: string } = {
-      message,
-      content: bytesToBase64(new TextEncoder().encode(text)),
-    };
-    if (sha !== null) body.sha = sha;
-    const res = await send("PUT", contentsPath(path), { body: JSON.stringify(body), keepalive });
+    const res = await send("PUT", contentsPath(path), { body: putFileBody({ text, sha, message }), keepalive });
     if (res.status === 404) throw new RepoNotFoundError();
     if (!res.ok) throw await toError(res, { write: true });
     const result = await json<PutResponse>(res);

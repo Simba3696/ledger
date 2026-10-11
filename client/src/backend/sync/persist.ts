@@ -97,6 +97,11 @@ export interface SyncStore {
    * WriterTokenMismatch when `meta` doesn't hold `expect`, or with the
    * browser's error (a full quota, an aborted transaction). */
   mutate(mutation: Mutation): Promise<void>;
+  /** The `chain` record at `L` (this device's hash chain after its op at L,
+   * section 3.1), or undefined when it holds none: what the fork check
+   * (section 10.3) compares an own repo file with. Rejects when it can't
+   * tell. */
+  chainEntry(L: number): Promise<string | undefined>;
   /** Leaves the current database untouched and makes the next load read a
    * new, empty generation: "Start as a new device" (section 10.1). */
   startNewGeneration(): Promise<void>;
@@ -358,6 +363,13 @@ function emptyMemory(): MemoryRecords {
 /** The tab's in-memory records, when the browser refuses IndexedDB. */
 let memory = emptyMemory();
 
+async function readChainEntry(db: IDBDatabase, L: number): Promise<string | undefined> {
+  const tx = db.transaction("chain", "readonly");
+  const done = finished(tx, () => null);
+  const [value] = await Promise.all([settle(tx.objectStore("chain").get(L)), done]);
+  return value as string | undefined;
+}
+
 function readMemory(): StoredRecords | null {
   if (memory.meta === undefined) return null;
   const ascending = <K extends number>(map: Map<K, string>) => [...map].sort(([a], [b]) => a - b);
@@ -491,6 +503,10 @@ export function openSyncStore(options: { sleep?: (ms: number) => Promise<void> }
         return;
       }
       await withDb((db) => writeAll(db, mutation));
+    },
+    async chainEntry(L) {
+      if (useMemory) return memory.chain.get(L);
+      return withDb((db) => readChainEntry(db, L));
     },
     async startNewGeneration() {
       if (useMemory) {

@@ -35,8 +35,16 @@ export interface SyncMeta {
   ownMaxL: number;
   /** The device's confirmed snapshot point: its log holds own ops above it. */
   K: number;
+  /** The own log's blob sha as last confirmed in the repo, and the greatest
+   * own L that version holds (K when it holds no op): every own op at or
+   * below it is known to be in the repo (section 7 step 5). */
   ownLogSha: string | null;
+  ownLogThrough: number;
+  /** The blob sha of the last own log text sent, persisted before the PUT,
+   * and the greatest own L it holds: a listed own sha equal to it means that
+   * send landed, whatever became of its response. */
   lastSentLogSha: string | null;
+  lastSentLogThrough: number;
   ownSnapSha: string | null;
   lastSentSnapSha: string | null;
   /** Repo file name to the blob sha this state already includes. */
@@ -64,7 +72,9 @@ const META_KEYS = [
   "ownMaxL",
   "K",
   "ownLogSha",
+  "ownLogThrough",
   "lastSentLogSha",
+  "lastSentLogThrough",
   "ownSnapSha",
   "lastSentSnapSha",
   "joined",
@@ -88,7 +98,7 @@ export function checkMeta(value: unknown): MetaCheck {
   const keys = Object.keys(value);
   if (keys.length !== META_KEYS.length || !META_KEYS.every((key) => Object.hasOwn(value, key))) return bad("meta has the wrong keys");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
-  if (!isLamportOrZero(value.maxL) || !isLamportOrZero(value.ownMaxL) || !isLamportOrZero(value.K)) return bad("meta counters are malformed");
+  if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
   if (!isTextOrNull(value.refEtag) || typeof value.writerToken !== "string") return bad("meta tokens are malformed");
   if (!isPlainObject(value.joined) || !Object.values(value.joined).every((sha) => isShaOrNull(sha) && sha !== null)) return bad("meta joined is malformed");
@@ -102,9 +112,9 @@ export function seal(value: unknown, key: DeviceKey): Promise<string> {
 }
 
 /** Decrypts a record. Throws (WrongPassphraseError, InvalidFileError) when
- * this key or this build can't read it. */
-export function unseal(text: string, key: DeviceKey): Promise<unknown> {
-  return decryptDocument(text, key.key);
+ * this key or this build can't read it, or it inflates past `maxPlainBytes`. */
+export function unseal(text: string, key: DeviceKey, options?: { maxPlainBytes?: number }): Promise<unknown> {
+  return decryptDocument(text, key.key, options);
 }
 
 // --- base: the joined state ------------------------------------------------
