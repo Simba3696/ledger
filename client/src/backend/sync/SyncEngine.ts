@@ -355,8 +355,11 @@ export class SyncEngine {
   #gapWait = false;
   /** Halted streams: file name to what halted it (section 12). */
   readonly #halted = new Map<string, "needsUpdate" | "needsAttention">();
-  /** Blob shas that were read and refused. A blob never changes, so it
-   * isn't read again in this tab; a new build reads it afresh. */
+  /** Files that were read and refused, by `<name>@<blob sha>`. A blob
+   * never changes, so it isn't read again in this tab; a new build reads it
+   * afresh. The name is part of the key because the verdict depends on it:
+   * a byte copy of a valid log under another device's name has the same
+   * sha, and is refused only because its content doesn't match its name. */
   readonly #refused = new Map<string, Extract<FileRead, { ok: false }>>();
   /** The epoch's genesis is newer than this build: writes are refused. */
   #genesisBlocked = false;
@@ -987,17 +990,19 @@ export class SyncEngine {
   }
 
   /** Reads and checks the blob a listing names. A refused one is
-   * remembered by sha, which names its bytes for good. One listed larger
-   * than any real file is refused without being downloaded. */
+   * remembered by name and sha: the sha names its bytes for good, and the
+   * name is what they are checked against. One listed larger than any real
+   * file is refused without being downloaded. */
   async #read(name: string, listed: Listed): Promise<FileRead> {
-    const known = this.#refused.get(listed.sha);
+    const at = `${name}@${listed.sha}`;
+    const known = this.#refused.get(at);
     if (known) return known;
     const read: FileRead =
       listed.size > REPO_FILE_MAX_BYTES
         ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${REPO_FILE_MAX_BYTES}` }
         : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key);
     if (!read.ok) {
-      this.#refused.set(listed.sha, read);
+      this.#refused.set(at, read);
       this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);
     }
     return read;

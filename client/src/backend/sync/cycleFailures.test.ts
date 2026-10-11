@@ -5,6 +5,7 @@ import { newSalt } from "../crypto";
 import {
   ENTRY,
   EPOCH,
+  FULL,
   MemoryStore,
   cycle,
   device,
@@ -25,7 +26,7 @@ import {
   type World,
 } from "./cycleTestkit";
 import { testKey } from "./localTestkit";
-import { REPO_FILE_MAX_BYTES, REPO_FILE_MAX_PLAIN_BYTES } from "./repoFiles";
+import { REPO_FILE_MAX_BYTES, REPO_FILE_MAX_PLAIN_BYTES, repoPath } from "./repoFiles";
 import type { Op } from "./state";
 import { LEDGER_UPDATED, REHOMED, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
@@ -369,6 +370,24 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
       await a.backend.addEntry(entry("Groceries"));
       await cycle(w, a);
       expect(a.engine.getState().pendingCount).toBe(0);
+    });
+
+    it("a byte copy of a valid log under another device's name halts only the copy: the original is still joined, and devices converge", async () => {
+      const b = await open({ login: "sam" });
+      const c = await open({ login: "alex" });
+      await b.backend.addEntry(entry("Bus"));
+      await cycle(w, b, c);
+      expect(remarks(c)).toEqual(["Bus"]);
+      b.engine.stop();
+      // The copy's name sorts before the original's, so it is read first.
+      const original = w.fake.file(FULL, repoPath({ kind: "log", epoch: EPOCH, device: b.engine.deviceId! }))!;
+      await plant(w, { kind: "log", epoch: EPOCH, device: deviceId(0) }, original.text);
+      const fresh = await open({ login: "alex" });
+      await cycle(w, fresh, c);
+      expect(remarks(fresh)).toEqual(["Bus"]);
+      expect(remarks(c)).toEqual(["Bus"]);
+      for (const d of [fresh, c]) expect(status(d)).toBe("needsAttention");
+      expectConverged(fresh, c);
     });
 
     it("a stream heals once its device writes a valid file", async () => {
