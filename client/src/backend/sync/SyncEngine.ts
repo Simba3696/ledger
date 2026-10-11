@@ -24,7 +24,7 @@ import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import { LOCAL_FORMAT_VERSION, checkMeta, decodeDelta, decodeStoredState, isChainValue, seal, storedState, unseal, type Delta, type DeviceKey, type SyncMeta } from "./records";
 import { rehomeReissue } from "./rehome";
-import { LEDGER_DIR, openRepoFile, repoPath, type FileRead } from "./repoFiles";
+import { LEDGER_DIR, REPO_FILE_MAX_BYTES, openRepoFile, repoPath, type FileRead } from "./repoFiles";
 import { applyOp, cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
 import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from "./tags";
 
@@ -987,12 +987,15 @@ export class SyncEngine {
   }
 
   /** Reads and checks the blob a listing names. A refused one is
-   * remembered by sha, which names its bytes for good. */
+   * remembered by sha, which names its bytes for good. One listed larger
+   * than any real file is refused without being downloaded. */
   async #read(name: string, listed: Listed): Promise<FileRead> {
     const known = this.#refused.get(listed.sha);
     if (known) return known;
-    const text = await this.#remote!.client.readBlob(listed.sha);
-    const read = await openRepoFile(listed.file, text, this.#key);
+    const read: FileRead =
+      listed.size > REPO_FILE_MAX_BYTES
+        ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${REPO_FILE_MAX_BYTES}` }
+        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key);
     if (!read.ok) {
       this.#refused.set(listed.sha, read);
       this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);

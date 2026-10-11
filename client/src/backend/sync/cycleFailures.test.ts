@@ -25,6 +25,7 @@ import {
   type World,
 } from "./cycleTestkit";
 import { testKey } from "./localTestkit";
+import { REPO_FILE_MAX_BYTES, REPO_FILE_MAX_PLAIN_BYTES } from "./repoFiles";
 import type { Op } from "./state";
 import { LEDGER_UPDATED, REHOMED, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
@@ -66,6 +67,21 @@ async function until(condition: () => boolean): Promise<void> {
 
 const status = (d: Device) => d.engine.getState().status;
 const ownLog = (d: Device) => `${EPOCH}.${d.engine.deviceId}.log.enc`;
+
+/** `plain` encrypted under the household key as a repo file, as is: a
+ * build that skips or garbles the gzip step can write this. */
+async function sealPlain(plain: Uint8Array<ArrayBuffer>): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const header = JSON.stringify({ v: 1, kdf: "PBKDF2-SHA256", iter: w.key.iter, salt: w.key.salt, iv: bytesToBase64(iv), alg: "AES-GCM-256", z: "gzip" });
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(header) }, w.key.key, plain);
+  return `${header}
+${bytesToBase64(new Uint8Array(cipher))}`;
+}
+
+/** `text` gzipped, as encryptDocument compresses a document. */
+async function gzip(text: string): Promise<Uint8Array<ArrayBuffer>> {
+  return new Uint8Array(await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+}
 
 /** A valid op from a real write, to plant in crafted files. */
 async function someOp(remark = "Planted"): Promise<Op> {
@@ -318,6 +334,10 @@ describe("failure handling (section 12)", () => {
       ["a tag at 2^50", async (op) => logFile(X, [{ ...op, L: MAX_L }])],
       ["content that doesn't match its name", async (op) => logFile(deviceId(0xd), [op])],
       ["a create missing a field", async (op) => logFile(X, [{ ...op, set: op.set.filter(([key]) => !key.endsWith("/amount")) }])],
+      // Decrypts with the household key, but the plaintext isn't gzip.
+      ["a body that isn't gzip", async (op) => sealPlain(new TextEncoder().encode(JSON.stringify(logFile(X, [op]))))],
+      // A small blob that would inflate past what any real file holds.
+      ["a body that inflates past the bound", async (op) => sealPlain(await gzip(" ".repeat(REPO_FILE_MAX_PLAIN_BYTES) + JSON.stringify(logFile(X, [op]))))],
     ];
     for (const [name, make] of cases) {
       it(`${name}: needsAttention, nothing joined, the sha not recorded; other devices keep syncing`, async () => {
@@ -338,6 +358,18 @@ describe("failure handling (section 12)", () => {
         expect(a.engine.getState().pendingCount).toBe(0);
       });
     }
+
+    it("a listed file larger than any real one is refused without being downloaded", async () => {
+      const a = await open();
+      const sha = await plant(w, { kind: "log", epoch: EPOCH, device: X }, `{"v":1}
+${"A".repeat(REPO_FILE_MAX_BYTES)}`);
+      await cycle(w, a);
+      expect(status(a)).toBe("needsAttention");
+      expect(w.fake.requests.filter((r) => r.path.endsWith(`/git/blobs/${sha}`))).toEqual([]);
+      await a.backend.addEntry(entry("Groceries"));
+      await cycle(w, a);
+      expect(a.engine.getState().pendingCount).toBe(0);
+    });
 
     it("a stream heals once its device writes a valid file", async () => {
       const op = await someOp("Planted");
@@ -400,6 +432,16 @@ describe("failure handling (section 12)", () => {
       await cycle(w, b);
       expect(status(b)).toBe("needsPassphrase");
       expect(puts(w)).toHaveLength(0);
+    });
+
+    it("one that decrypts but isn't gzip: needsAttention, no PUT, and it is read once", async () => {
+      const sha = await plant(w, { kind: "genesis", epoch: EPOCH }, await sealPlain(new TextEncoder().encode(JSON.stringify({ fv: 1, kind: "genesis", epoch: EPOCH, reason: "create", by: "alex", at: 1, basedOn: null, doc: w.doc }))));
+      const a = await open();
+      await a.backend.addEntry(ENTRY);
+      for (let i = 0; i < 3; i++) await cycle(w, a);
+      expect(status(a)).toBe("needsAttention");
+      expect(puts(w)).toHaveLength(0);
+      expect(w.fake.requests.filter((r) => r.path.endsWith(`/git/blobs/${sha}`))).toHaveLength(1);
     });
 
     it("a newer format: needsUpdate, no PUT, and writes are refused with a 503", async () => {

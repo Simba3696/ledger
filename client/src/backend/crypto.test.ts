@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { base64ToBytes } from "./base64";
+import { base64ToBytes, bytesToBase64 } from "./base64";
 import {
   checkEnvironment,
   decryptDocument,
@@ -142,6 +142,22 @@ describe("encryptDocument / decryptDocument", () => {
       expect(() => parseHeader(file), file.slice(0, 60)).toThrow(InvalidFileError);
       await expect(decryptDocument(file, key)).rejects.toBeInstanceOf(InvalidFileError);
     }
+  });
+
+  it("throws InvalidFileError for a body that decrypts but isn't gzip, and for one that inflates past maxPlainBytes", async () => {
+    const sealed = async (plain: Uint8Array<ArrayBuffer>) => {
+      const header = headerOf(await encryptDocument({}, key, { salt, iter: DEFAULT_ITERATIONS }));
+      const headerLine = JSON.stringify(header);
+      const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: base64ToBytes(header.iv as string), additionalData: new TextEncoder().encode(headerLine) }, key, plain);
+      return `${headerLine}
+${bytesToBase64(new Uint8Array(cipher))}`;
+    };
+    await expect(decryptDocument(await sealed(new TextEncoder().encode('{"a":1}')), key)).rejects.toBeInstanceOf(InvalidFileError);
+
+    const text = await encryptDocument({ remarks: " ".repeat(4096) }, key, { salt, iter: DEFAULT_ITERATIONS });
+    expect(text.length).toBeLessThan(1024);
+    await expect(decryptDocument(text, key, { maxPlainBytes: 4096 })).rejects.toBeInstanceOf(InvalidFileError);
+    expect(await decryptDocument(text, key, { maxPlainBytes: 4200 })).toEqual({ remarks: " ".repeat(4096) });
   });
 
   it("uses a fresh IV for every encryption", async () => {

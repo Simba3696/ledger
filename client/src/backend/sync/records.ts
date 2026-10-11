@@ -112,9 +112,9 @@ export function seal(value: unknown, key: DeviceKey): Promise<string> {
 }
 
 /** Decrypts a record. Throws (WrongPassphraseError, InvalidFileError) when
- * this key or this build can't read it. */
-export function unseal(text: string, key: DeviceKey): Promise<unknown> {
-  return decryptDocument(text, key.key);
+ * this key or this build can't read it, or it inflates past `maxPlainBytes`. */
+export function unseal(text: string, key: DeviceKey, options?: { maxPlainBytes?: number }): Promise<unknown> {
+  return decryptDocument(text, key.key, options);
 }
 
 // --- base: the joined state ------------------------------------------------

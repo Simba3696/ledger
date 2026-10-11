@@ -83,9 +83,12 @@ export async function deriveKey(passphrase: string, salt: Salt, iter: number): P
   );
 }
 
+/** `bytes` through `transform`. With `maxBytes`, stops reading and throws
+ * InvalidFileError once the output passes it, before it is all held. */
 async function pipeThrough(
   bytes: Uint8Array<ArrayBuffer>,
   transform: CompressionStream | DecompressionStream,
+  maxBytes = Infinity,
 ): Promise<Uint8Array<ArrayBuffer>> {
   const writer = transform.writable.getWriter();
   const written = writer.write(bytes).then(() => writer.close());
@@ -99,6 +102,10 @@ async function pipeThrough(
     if (done) break;
     chunks.push(value);
     total += value.length;
+    if (total > maxBytes) {
+      reader.cancel().catch(() => {});
+      throw new InvalidFileError(`The document is larger than ${maxBytes} bytes`);
+    }
   }
   await written;
   const out = new Uint8Array(total);
@@ -176,8 +183,11 @@ export function parseHeader(text: string): FileHeader {
 }
 
 /** Decrypts the file format back to the value it was made from. A key from
- * another passphrase, or any changed byte, throws WrongPassphraseError. */
-export async function decryptDocument(text: string, key: CryptoKey): Promise<unknown> {
+ * another passphrase, or any changed byte, throws WrongPassphraseError.
+ * Plaintext that isn't gzip, or that inflates past `maxPlainBytes`, throws
+ * InvalidFileError: gzip can inflate about 1000:1, so a reader of files it
+ * didn't write passes a bound. */
+export async function decryptDocument(text: string, key: CryptoKey, { maxPlainBytes }: { maxPlainBytes?: number } = {}): Promise<unknown> {
   const header = parseHeader(text);
   const { headerLine, body } = splitFile(text);
   let cipher: Uint8Array<ArrayBuffer>;
@@ -197,7 +207,14 @@ export async function decryptDocument(text: string, key: CryptoKey): Promise<unk
     if (err instanceof Error && err.name === "OperationError") throw new WrongPassphraseError();
     throw err;
   }
-  const json = new TextDecoder().decode(await pipeThrough(new Uint8Array(plain), new DecompressionStream("gzip")));
+  let inflated: Uint8Array<ArrayBuffer>;
+  try {
+    inflated = await pipeThrough(new Uint8Array(plain), new DecompressionStream("gzip"), maxPlainBytes);
+  } catch (err) {
+    if (err instanceof InvalidFileError) throw err;
+    throw new InvalidFileError("The file body is not gzip");
+  }
+  const json = new TextDecoder().decode(inflated);
   try {
     return JSON.parse(json);
   } catch {
