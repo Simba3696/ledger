@@ -207,12 +207,13 @@ export async function decryptDocument(text: string, key: CryptoKey): Promise<unk
 
 export type EnvironmentCheck =
   | { ok: true; warnings: "no-indexeddb"[] }
-  | { ok: false; reason: "insecure-context" | "no-compression-stream"; message: string };
+  | { ok: false; reason: "insecure-context" | "no-compression-stream" | "no-web-locks"; message: string };
 
 /** What this browser lacks for GitHub storage mode. A missing secure context
- * (plain http://, where crypto.subtle is absent) or CompressionStream stops
- * the app; missing IndexedDB (some private windows) only means the key is
- * held in memory for the tab. The messages are shown to the person as is. */
+ * (plain http://, where crypto.subtle is absent), CompressionStream or Web
+ * Locks (the one-tab lock the sync engine holds, #7) stops the app; missing
+ * IndexedDB (some private windows) only means the key is held in memory for
+ * the tab. The messages are shown to the person as is. */
 export function checkEnvironment(): EnvironmentCheck {
   if (globalThis.isSecureContext === false || !globalThis.crypto?.subtle) {
     return {
@@ -226,6 +227,13 @@ export function checkEnvironment(): EnvironmentCheck {
       ok: false,
       reason: "no-compression-stream",
       message: "This browser is too old to compress your data before encrypting it. Update it, or use a current browser.",
+    };
+  }
+  if (typeof globalThis.navigator?.locks?.request !== "function") {
+    return {
+      ok: false,
+      reason: "no-web-locks",
+      message: "This browser is too old to keep two tabs of Ledger from saving over each other. Update it, or use a current browser.",
     };
   }
   return { ok: true, warnings: typeof globalThis.indexedDB === "undefined" ? ["no-indexeddb"] : [] };

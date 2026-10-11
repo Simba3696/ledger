@@ -188,7 +188,13 @@ describe("checkEnvironment", () => {
     expect(checkEnvironment()).toMatchObject({ ok: false, reason: "no-compression-stream" });
   });
 
+  it("fails as no-web-locks without navigator.locks (Safari before 15.4)", () => {
+    vi.stubGlobal("navigator", {});
+    expect(checkEnvironment()).toMatchObject({ ok: false, reason: "no-web-locks" });
+  });
+
   it("only warns without IndexedDB", () => {
+    vi.stubGlobal("navigator", { locks: { request: () => Promise.resolve() } });
     vi.stubGlobal("indexedDB", undefined);
     expect(checkEnvironment()).toEqual({ ok: true, warnings: ["no-indexeddb"] });
     vi.stubGlobal("indexedDB", {});
