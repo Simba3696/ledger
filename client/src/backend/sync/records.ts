@@ -45,8 +45,17 @@ export interface SyncMeta {
    * send landed, whatever became of its response. */
   lastSentLogSha: string | null;
   lastSentLogThrough: number;
+  /** The `snapThrough` of the confirmed own log version and of the last
+   * own log text sent. A confirmed log naming a K below meta.K still holds
+   * ops the device's snapshot covers: the trim (section 8.1 step 4) is due. */
+  ownLogK: number;
+  lastSentLogK: number;
+  /** The own snap's blob sha as last confirmed in the repo (its `through`
+   * is K), the blob sha of the last own snap text sent, persisted before the
+   * PUT, and the `through` that text holds (section 8.1 step 3). */
   ownSnapSha: string | null;
   lastSentSnapSha: string | null;
+  lastSentSnapThrough: number;
   /** Repo file name to the blob sha this state already includes. */
   joined: Record<string, string>;
   seen: VersionVector;
@@ -75,8 +84,11 @@ const META_KEYS = [
   "ownLogThrough",
   "lastSentLogSha",
   "lastSentLogThrough",
+  "ownLogK",
+  "lastSentLogK",
   "ownSnapSha",
   "lastSentSnapSha",
+  "lastSentSnapThrough",
   "joined",
   "seen",
   "lastSeenCommit",
@@ -98,7 +110,7 @@ export function checkMeta(value: unknown): MetaCheck {
   const keys = Object.keys(value);
   if (keys.length !== META_KEYS.length || !META_KEYS.every((key) => Object.hasOwn(value, key))) return bad("meta has the wrong keys");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
-  if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
+  if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough, value.ownLogK, value.lastSentLogK, value.lastSentSnapThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
   if (!isTextOrNull(value.refEtag) || typeof value.writerToken !== "string") return bad("meta tokens are malformed");
   if (!isPlainObject(value.joined) || !Object.values(value.joined).every((sha) => isShaOrNull(sha) && sha !== null)) return bad("meta joined is malformed");

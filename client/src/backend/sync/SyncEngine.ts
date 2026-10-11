@@ -17,7 +17,7 @@ import {
   type RefRead,
 } from "../github/contents";
 import { canonicalJson } from "./canonical";
-import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, opHash, opProblem, vectorOf } from "./codec";
+import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
 import { epochMove, isEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
@@ -29,7 +29,7 @@ import { LEDGER_DIR, REPO_FILE_MAX_BYTES, openRepoFile, repoPath, type FileRead 
 import { applyOp, cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
 import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from "./tags";
 
-// The sync engine (design sections 3.4, 3.5, 7, 10, 11 and 12): the
+// The sync engine (design sections 3.4, 3.5, 7, 8, 10, 11 and 12): the
 // persisted state, the commit path and the stale-UI fence (the local half),
 // and the sync cycle against the household's GitHub repo (the network half,
 // further down).
@@ -77,14 +77,22 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from 
 //   4. Read every other device's log whose listed sha this device hasn't
 //      joined, by blob sha (never stale), and join each valid file whole;
 //      a malformed one halts only its own stream (section 12), and its sha
-//      is not recorded, so it is read again once its device writes anew.
-//   5. Settle this device's own log from the listed sha alone: the sha it
-//      knows, the one it last sent (that send landed), or anything else,
-//      which is read and either is this device's history (confirmed) or is
-//      a fork, which rehomes the device under a new id (section 10.3).
-//   6. PUT the own log, every own op above K, if any is unconfirmed: the
-//      sent sha is saved first, a 409 retries (at most 4 PUTs a cycle), and
-//      an identical text is never sent again.
+//      is not recorded, so it is read again once its device writes anew. A
+//      log whose snapshot point is past what this device holds from its
+//      device needs that device's snapshot first (section 8.2); a first
+//      start begins from the largest snapshot instead (section 8.3). A
+//      snapshot also vouches for the file versions in its `joined` map.
+//   5. Settle this device's own snap, then its own log, from the listed
+//      sha alone: the sha it knows, the one it last sent (that send
+//      landed), or anything else, which is read and either is this device's
+//      history (confirmed) or is a fork, which rehomes the device under a
+//      new id (section 10.3).
+//   6. PUT the own log, every own op above K, if any is unconfirmed or K
+//      moved: the sent sha is saved first, a 409 retries (at most 4 PUTs a
+//      cycle), and an identical text is never sent again.
+//   7. Once the own log is confirmed and long enough, PUT a snapshot of the
+//      device's state at K, its greatest own L; once that is confirmed, drop
+//      own ops at or below K and push the trimmed log (section 8.1).
 // Only ops whose transaction committed are ever sent. The bookkeeping a
 // cycle learns (files joined, the head handled, the own log confirmed) is
 // saved with the ops it joined, in one transaction. A head is recorded as
@@ -92,6 +100,9 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from 
 // or a failed read is retried by the next cycle, and an idle device makes
 // one uncounted request a poll. Nothing the cycle meets is fatal: any throw
 // ends it with `pending`, and the next trigger tries again.
+//
+// Separately, the device folds its saved `tail` into `base` once it grows
+// long (section 8.4), in one transaction.
 
 /** The engine's status (section 11). Only some are set by this half. */
 export type SyncStatus =
@@ -136,7 +147,17 @@ export interface EngineState {
 export type MetaPatch = Partial<
   Pick<
     SyncMeta,
-    "K" | "ownLogSha" | "ownLogThrough" | "lastSentLogSha" | "lastSentLogThrough" | "ownSnapSha" | "lastSentSnapSha" | "joined" | "lastSeenCommit" | "refEtag"
+    | "ownLogSha"
+    | "ownLogThrough"
+    | "ownLogK"
+    | "lastSentLogSha"
+    | "lastSentLogThrough"
+    | "lastSentLogK"
+    | "lastSentSnapSha"
+    | "lastSentSnapThrough"
+    | "joined"
+    | "lastSeenCommit"
+    | "refEtag"
   >
 >;
 
@@ -178,7 +199,23 @@ export interface SyncEngineOptions {
   /** A clock that never jumps, for the spacing of PUTs. Default
    * performance.now(). The wall clock (`now`) orders nothing. */
   monotonic?: () => number;
+  /** When the device compacts. Default COMPACTION. */
+  compaction?: Partial<CompactionLimits>;
 }
+
+/** When the device compacts (design sections 8.1 and 8.4). Counts and
+ * sizes only, never time. */
+interface CompactionLimits {
+  /** Snapshot once the own log holds this many ops... */
+  logOps: number;
+  /** ...or its text is this long: a re-PUT body then stays under about
+   * 55 KB, and a keepalive push within SYNC_TIMING.keepaliveMaxBytes. */
+  logBytes: number;
+  /** Fold `tail` into `base` once it holds more entries than this. */
+  tailEntries: number;
+}
+
+const COMPACTION: CompactionLimits = { logOps: 200, logBytes: 40 * 1024, tailEntries: 500 };
 
 /** The engine's waits and limits (section 7 and 12). */
 export const SYNC_TIMING = {
@@ -242,16 +279,57 @@ interface Listing {
   truncated: boolean;
 }
 
+/** What halts a device's stream (section 12). */
+type Halt = "needsUpdate" | "needsAttention";
+
 /** The epoch rebuilt by a rehome's cold join, with what it couldn't join:
- * listed logs halted (by file name, with what halted each) and whether a
- * listed log waits for its snapshot. `complete` says every listed file was
+ * listed files halted (by file name, with what halted each) and whether a
+ * listed log waits for its snapshot. `complete` says every listed log was
  * joined at its listed sha. */
 interface ColdJoin {
   state: SyncState;
   joined: Record<string, string>;
   complete: boolean;
-  halted: Map<string, "needsUpdate" | "needsAttention">;
+  halted: Map<string, Halt>;
   gap: boolean;
+}
+
+/** Where #readStreams reads the epoch's device streams from. */
+interface StreamSource {
+  listing: Listing;
+  /** The epoch's genesis state, which every snap is checked against. */
+  genesis: () => Promise<SyncState>;
+  /** Per device, the greatest L the state being built holds: raised as
+   * snapshots and logs are read. */
+  seen: Map<string, number>;
+  /** The file versions that state already includes. */
+  joined: Readonly<Record<string, string>>;
+  /** The device whose files are not read (this device, in a cycle). */
+  skip: string | null;
+  /** The logs to read, by name. */
+  logs: string[];
+  /** A file's versions to try, the listed one first. */
+  versions: (name: string) => Listed[];
+  /** Nothing is joined from any device yet: start from one snapshot. */
+  cold: boolean;
+}
+
+/** What #readStreams found: snapshots (as states) and ops to join, the file
+ * versions they hold, and each stream's health. */
+interface Streams {
+  states: SyncState[];
+  ops: [device: string, op: Op][];
+  /** Files newly joined, name to blob sha, with the joined maps of the
+   * snapshots read (section 8.3). */
+  joined: Record<string, string>;
+  /** Listed files that can't be joined (a log, or a snap a log waits for),
+   * and listed files found sound. */
+  halted: Map<string, Halt>;
+  healthy: Set<string>;
+  /** A listed log waits for a snapshot not yet readable (section 8.2). */
+  gap: boolean;
+  /** Every log was joined at its first version. */
+  complete: boolean;
 }
 
 /** The own log as text, ready to PUT. */
@@ -261,12 +339,30 @@ interface LogText {
   sha: string;
   /** The greatest own L it holds (K when it holds no op). */
   through: number;
+  /** Its snapThrough. */
+  K: number;
+  device: string;
+  file: RepoFile;
+}
+
+/** The own snap as text, ready to PUT (section 8.1 step 2). */
+interface SnapText {
+  text: string;
+  sha: string;
+  /** K: the device's greatest own L when it was taken. */
+  through: number;
   device: string;
   file: RepoFile;
 }
 
 /** What a cycle's own check found (section 7 step 5). */
 type OwnCheck = { fork: string } | { fork?: undefined; patch: MetaPatch };
+
+/** What the listed own snap says (section 8.1 step 3): a fork, a snapshot
+ * of this device's confirmed through `through`, or nothing new. */
+type SnapCheck = { fork: string } | { fork?: undefined; confirm?: { sha: string; through: number } };
+
+const haltOf = (read: FileRead): Halt => (!read.ok && read.problem === "needsUpdate" ? "needsUpdate" : "needsAttention");
 
 function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,6 +380,8 @@ interface Loaded {
   doc: LedgerDocument;
   ownLog: Op[];
   chainHead: string;
+  /** Entries in `tail`. */
+  tailCount: number;
 }
 
 /** A notice's key: (winner op, loser op), so each pair is stored once. */
@@ -369,7 +467,7 @@ export class SyncEngine {
   /** Another device's log needs its snapshot first (section 8.2). */
   #gapWait = false;
   /** Halted streams: file name to what halted it (section 12). */
-  readonly #halted = new Map<string, "needsUpdate" | "needsAttention">();
+  readonly #halted = new Map<string, Halt>();
   /** Files that were read and refused, by `<name>@<blob sha>`. A blob
    * never changes, so it isn't read again in this tab; a new build reads it
    * afresh. The name is part of the key because the verdict depends on it:
@@ -386,6 +484,16 @@ export class SyncEngine {
   #logText: { key: string; value: Promise<LogText> } | null = null;
   /** The last own log text built, for a keepalive push on pagehide. */
   #logReady: LogText | null = null;
+  /** The own snap text for the current own L, built once and reused by
+   * every send of that snapshot. */
+  #snapText: { key: string; value: Promise<SnapText | null> } | null = null;
+  /** The epoch's genesis state, which every snap is checked against: read
+   * once per tab, by its blob sha. */
+  #genesis: { name: string; sha: string; state: SyncState } | null = null;
+  readonly #compaction: CompactionLimits;
+  /** Entries in `tail`, and whether a local compaction is queued. */
+  #tailCount = 0;
+  #compactingLocal = false;
 
   constructor(options: SyncEngineOptions) {
     this.#key = options.key;
@@ -403,6 +511,7 @@ export class SyncEngine {
     this.#random = options.random ?? Math.random;
     this.#sleep = options.sleep ?? realSleep;
     this.#monotonic = options.monotonic ?? (() => performance.now());
+    this.#compaction = { ...COMPACTION, ...options.compaction };
     this.#snapshot = this.#makeSnapshot();
   }
 
@@ -472,8 +581,11 @@ export class SyncEngine {
         ownLogThrough: 0,
         lastSentLogSha: null,
         lastSentLogThrough: 0,
+        ownLogK: 0,
+        lastSentLogK: 0,
         ownSnapSha: null,
         lastSentSnapSha: null,
+        lastSentSnapThrough: 0,
         joined: {},
         seen: vectorOf(state.seen),
         lastSeenCommit: null,
@@ -482,7 +594,7 @@ export class SyncEngine {
       };
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
-      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START }, true);
+      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0 }, true);
     }).then(() => this.#begin());
   }
 
@@ -704,9 +816,10 @@ export class SyncEngine {
     return this.#remote !== null && !this.#stopped && !this.#superseded && this.#lockHeld && !this.#loading && this.#doc !== null && this.#meta !== null;
   }
 
-  /** The ledger is loaded: start listening for triggers, and sync now (the
-   * unlock trigger). */
+  /** The ledger is loaded: fold a long saved tail into its base (section
+   * 8.4), start listening for triggers, and sync now (the unlock trigger). */
   #begin(): void {
+    if (this.#doc !== null && !this.#stopped && this.#tailCount > this.#compaction.tailEntries) this.#compactLocalSoon();
     if (!this.#canCycle()) return;
     this.#listen();
     void this.sync();
@@ -775,7 +888,7 @@ export class SyncEngine {
     const meta = this.#meta!;
     const through = this.#ownLog.at(-1)?.L ?? meta.K;
     const ready = this.#logReady;
-    if (through <= meta.ownLogThrough || !ready || ready.through !== through || ready.device !== meta.deviceId) return;
+    if (!this.#logDue() || !ready || ready.through !== through || ready.K !== meta.K || ready.device !== meta.deviceId) return;
     const write = { path: repoPath(ready.file), text: ready.text, sha: meta.ownLogSha, message: deviceCommitMessage("Sync", ready.device) };
     // Measured as sent: a body the browser would refuse never goes, nor
     // counts against the hourly cap. The next start pushes it instead.
@@ -823,7 +936,8 @@ export class SyncEngine {
         await this.#record({ refEtag: ref.etag });
       }
     }
-    return this.#push(listedOwn);
+    if (!(await this.#push(listedOwn))) return false;
+    return this.#compact();
   }
 
   /** Step 1: the branch head, conditional on the ETag of the last head
@@ -893,6 +1007,16 @@ export class SyncEngine {
     if (genesis === null) return null;
     this.#genesisBlocked = false;
 
+    // The own snap first (section 8.1 step 3): a snapshot that landed while
+    // its answer was lost moves K, which the own log's check reads.
+    const snap = await this.#ownSnapCheck(listing);
+    if (snap.fork !== undefined) {
+      this.#log(`this device's own snapshot in the repo is not its history (${snap.fork}); it syncs on as a new device`);
+      await this.#rehome(listing);
+      return { listedOwn: undefined };
+    }
+    if (snap.confirm) await this.#confirmSnap(snap.confirm.sha, snap.confirm.through);
+
     const ownName = repoFileName({ kind: "log", epoch, device: meta.deviceId });
     const listedOwn = listing.files.get(ownName);
     const own = await this.#ownCheck(ownName, listedOwn);
@@ -903,12 +1027,19 @@ export class SyncEngine {
     }
 
     const others = await this.#readOthers(listing);
-    const patch: MetaPatch = { ...own.patch, joined: { ...meta.joined, ...genesis.joined, ...others.joined } };
+    const patch: MetaPatch = { ...own.patch, joined: { ...this.#meta!.joined, ...genesis.joined, ...others.joined } };
     if (others.complete && !listing.truncated) {
       patch.lastSeenCommit = listing.commit;
       patch.refEtag = listing.etag;
     }
-    if (others.ops.length > 0 || genesis.state) await this.join({ ops: others.ops, ...(genesis.state ? { state: genesis.state } : {}) }, patch);
+    // The genesis and every snapshot read join as one state.
+    const states = genesis.state ? [genesis.state, ...others.states] : others.states;
+    let state: SyncState | undefined;
+    if (states.length > 0) {
+      state = emptyState();
+      for (const part of states) joinInto(state, part);
+    }
+    if (others.ops.length > 0 || state) await this.join({ ops: others.ops, ...(state ? { state } : {}) }, patch);
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
   }
@@ -930,6 +1061,7 @@ export class SyncEngine {
       return null;
     }
     const state = genesisState(read.read.file.doc);
+    this.#genesis = { name, sha: listed.sha, state };
     const probe = cloneState(this.#state!);
     const changes = joinInto(probe, state);
     const adds = changes.records.size > 0 || changes.units.size > 0;
@@ -942,7 +1074,9 @@ export class SyncEngine {
     // No file yet, or a listing from before it.
     if (!listed || listed.sha === meta.ownLogSha) return { patch: {} };
     if (listed.sha === meta.lastSentLogSha) {
-      return { patch: { ownLogSha: listed.sha, ownLogThrough: Math.max(meta.ownLogThrough, meta.lastSentLogThrough) } };
+      return {
+        patch: { ownLogSha: listed.sha, ownLogThrough: Math.max(meta.ownLogThrough, meta.lastSentLogThrough), ownLogK: Math.max(meta.ownLogK, meta.lastSentLogK) },
+      };
     }
     // Neither: a send whose sha was overwritten by a later send, an older
     // version in a stale listing, or another instance of this device.
@@ -956,9 +1090,12 @@ export class SyncEngine {
     const local = last === 0 ? CHAIN_START : await this.#chainAt(last);
     if (local !== file.chain) return { fork: `its chain at L ${last} differs` };
     // This device's own history: confirmed through its last L, unless it is
-    // older than what was confirmed already (a stale listing).
-    if (meta.ownLogSha !== null && last <= meta.ownLogThrough) return { patch: {} };
-    return { patch: { ownLogSha: listed.sha, ownLogThrough: last } };
+    // no newer than what was confirmed already (a stale listing). Versions
+    // of the own log only ever grow in their last L and their snapThrough:
+    // a trim (section 8.1 step 4) keeps the last L and raises snapThrough.
+    const newer = last > meta.ownLogThrough || (last === meta.ownLogThrough && file.snapThrough > meta.ownLogK);
+    if (meta.ownLogSha !== null && !newer) return { patch: {} };
+    return { patch: { ownLogSha: listed.sha, ownLogThrough: last, ownLogK: file.snapThrough } };
   }
 
   /** This device's chain after its op at `L`, or undefined if it has none. */
@@ -970,61 +1107,149 @@ export class SyncEngine {
   }
 
   /** Step 4: every other device's log in the epoch that this device hasn't
-   * joined at its listed sha, read by blob sha. A file that can't be read
-   * halts its stream (section 12); one whose snapshot point is past what
-   * this device has seen from it waits for that snapshot (section 8.2).
-   * Neither is joined in part, and neither sha is recorded, so the next
-   * cycle tries again. `complete` says nothing was left out. */
-  async #readOthers(listing: Listing): Promise<{ ops: [string, Op][]; joined: Record<string, string>; complete: boolean }> {
+   * joined at its listed sha, read by blob sha, and a device's snapshot
+   * only when its log needs it (section 8.2), or, on a first start, the one
+   * largest snapshot (section 8.3). A file that can't be read halts its
+   * stream (section 12); a log whose snapshot point is past what this device
+   * has seen from it waits for that snapshot. Neither is joined in part, and
+   * neither sha is recorded, so the next cycle tries again. `complete` says
+   * nothing was left out. */
+  async #readOthers(listing: Listing): Promise<Streams> {
     const meta = this.#meta!;
-    const ops: [string, Op][] = [];
-    const joined: Record<string, string> = {};
-    let complete = true;
-    let gap = false;
-    for (const [name, listed] of listing.files) {
-      const { file } = listed;
-      if (file.kind !== "log" || file.epoch !== meta.epochKey || file.device === meta.deviceId) continue;
-      if (meta.joined[name] === listed.sha) {
-        this.#halted.delete(name);
-        continue;
-      }
-      const read = await this.#read(name, listed);
-      if (!read.ok || read.read.file.kind !== "log") {
-        this.#halted.set(name, !read.ok && read.problem === "needsUpdate" ? "needsUpdate" : "needsAttention");
-        complete = false;
-        continue;
-      }
-      const log = read.read.file;
-      const seen = this.#state!.seen.get(file.device) ?? 0;
-      if (log.snapThrough > seen) {
-        gap = true;
-        complete = false;
-        continue;
-      }
-      this.#halted.delete(name);
-      // Logs are cumulative and joined whole, so every op at or below what
-      // this device has seen from that device is already in its state.
-      for (const op of log.ops) if (op.L > seen) ops.push([file.device, op]);
-      joined[name] = listed.sha;
-    }
+    const logs: string[] = [];
+    for (const [name, { file }] of listing.files) if (file.kind === "log" && file.epoch === meta.epochKey && file.device !== meta.deviceId) logs.push(name);
+    const streams = await this.#readStreams({
+      listing,
+      genesis: () => this.#epochGenesis(listing),
+      seen: new Map(this.#state!.seen),
+      joined: meta.joined,
+      skip: meta.deviceId,
+      logs,
+      versions: (name) => {
+        const listed = listing.files.get(name);
+        return listed ? [listed] : [];
+      },
+      cold: this.#state!.seen.size === 0,
+    });
+    for (const name of streams.healthy) this.#halted.delete(name);
+    for (const [name, halt] of streams.halted) this.#halted.set(name, halt);
     // A halted file that is no longer listed in this epoch halts nothing.
     for (const name of this.#halted.keys()) if (!listing.files.has(name)) this.#halted.delete(name);
-    this.#gapWait = gap;
-    return { ops, joined, complete };
+    this.#gapWait = streams.gap;
+    return streams;
   }
 
-  /** Reads and checks the blob a listing names. A refused one is
-   * remembered by name and sha: the sha names its bytes for good, and the
-   * name is what they are checked against. One listed larger than any real
-   * file is refused without being downloaded. */
-  async #read(name: string, listed: Listed): Promise<FileRead> {
+  /** Reads the epoch's device streams (sections 8.2 and 8.3): for each log,
+   * the first of its versions that can be joined. A log whose snapThrough
+   * is past what the state holds from its device needs that device's
+   * snapshot first, and is never joined across the gap: its snap is read
+   * (each version not yet joined, in order) and joined, and if none reaches
+   * the log's snapThrough (a stale read) the log waits. A cold read starts
+   * from the largest listed snapshot instead (cost only, never correctness).
+   * Every snapshot joined also marks the file versions in its `joined` map
+   * as joined: blobs are content-addressed, so the snapshot holds them.
+   * Ops at or below what the state holds from a device are left out: logs
+   * are cumulative and joined whole. */
+  async #readStreams(src: StreamSource): Promise<Streams> {
+    const epoch = this.#meta!.epochKey;
+    const out: Streams = { states: [], ops: [], joined: {}, halted: new Map(), healthy: new Set(), gap: false, complete: true };
+    const holds = (name: string, sha: string) => (out.joined[name] ?? src.joined[name]) === sha;
+    const seenOf = (device: string) => src.seen.get(device) ?? 0;
+    const isListed = (name: string, sha: string) => src.listing.files.get(name)?.sha === sha;
+
+    const joinSnap = async (name: string, listed: Listed): Promise<FileRead> => {
+      const read = await this.#read(name, listed, await src.genesis());
+      if (!read.ok) return read;
+      const { file, state } = read.read;
+      if (!state || file.kind !== "snap") return { ok: false, problem: "malformed", detail: "it is not a snapshot" };
+      out.states.push(state);
+      for (const [device, L] of state.seen) if (L > seenOf(device)) src.seen.set(device, L);
+      out.joined[name] = listed.sha;
+      for (const [joinedName, sha] of Object.entries(file.joined)) {
+        const joinedFile = parseRepoFileName(joinedName);
+        // The genesis is the cycle's own to read and record.
+        if (!joinedFile || joinedFile.epoch !== epoch || joinedFile.kind === "genesis" || joinedFile.device === src.skip) continue;
+        if (out.joined[joinedName] === undefined && src.joined[joinedName] === undefined) out.joined[joinedName] = sha;
+      }
+      return read;
+    };
+
+    if (src.cold) {
+      const snaps = [...src.listing.files]
+        .filter(([, { file }]) => file.kind === "snap" && file.epoch === epoch && file.device !== src.skip)
+        .sort(([nameA, a], [nameB, b]) => b.size - a.size || (nameA < nameB ? -1 : 1));
+      for (const [name, listed] of snaps) {
+        if (holds(name, listed.sha)) continue;
+        if ((await joinSnap(name, listed)).ok) break;
+      }
+    }
+
+    for (const name of src.logs) {
+      const file = parseRepoFileName(name);
+      if (file?.kind !== "log") continue;
+      const device = file.device;
+      const snapName = repoFileName({ kind: "snap", epoch, device });
+      const versions = src.versions(name);
+      let done = false;
+      for (const version of versions) {
+        const listed = isListed(name, version.sha);
+        if (holds(name, version.sha)) {
+          if (listed) for (const healthy of [name, snapName]) out.healthy.add(healthy);
+          done = true;
+          break;
+        }
+        const read = await this.#read(name, version);
+        if (!read.ok || read.read.file.kind !== "log") {
+          if (listed) out.halted.set(name, haltOf(read));
+          continue;
+        }
+        const log = read.read.file;
+        if (log.snapThrough > seenOf(device)) {
+          for (const snap of src.versions(snapName)) {
+            if (holds(snapName, snap.sha)) continue;
+            const snapRead = await joinSnap(snapName, snap);
+            if (!snapRead.ok) {
+              if (listed && isListed(snapName, snap.sha)) out.halted.set(snapName, haltOf(snapRead));
+              continue;
+            }
+            if (seenOf(device) >= log.snapThrough) break;
+          }
+          if (log.snapThrough > seenOf(device)) {
+            // Not joined across the gap: a stale snap read waits for the
+            // next cycle, and a snap that can't be read halts the stream.
+            if (listed && !out.halted.has(snapName)) out.gap = true;
+            continue;
+          }
+        }
+        if (listed) {
+          out.halted.delete(snapName);
+          for (const healthy of [name, snapName]) out.healthy.add(healthy);
+        }
+        for (const op of log.ops) if (op.L > seenOf(device)) out.ops.push([device, op]);
+        const last = log.ops.at(-1)?.L ?? 0;
+        if (last > seenOf(device)) src.seen.set(device, last);
+        out.joined[name] = version.sha;
+        done = true;
+        break;
+      }
+      if (!done || (out.joined[name] ?? src.joined[name]) !== versions[0]?.sha) out.complete = false;
+    }
+    return out;
+  }
+
+  /** Reads and checks the blob a listing names (a snap against `genesis`,
+   * its epoch's genesis state). A refused one is remembered by name and
+   * sha: the sha names its bytes for good, and the name is what they are
+   * checked against (with the epoch's genesis, which the name fixes). One
+   * listed larger than any real file is refused without being downloaded. */
+  async #read(name: string, listed: Listed, genesis?: SyncState): Promise<FileRead> {
     const at = `${name}@${listed.sha}`;
     const known = this.#refused.get(at);
     if (known) return known;
     const read: FileRead =
       listed.size > REPO_FILE_MAX_BYTES
         ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${REPO_FILE_MAX_BYTES}` }
-        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key);
+        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key, genesis);
     if (!read.ok) {
       this.#refused.set(at, read);
       this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);
@@ -1032,25 +1257,34 @@ export class SyncEngine {
     return read;
   }
 
-  /** Step 6: PUTs the own log when it holds an op not yet confirmed. False
-   * when the cycle should be retried (section 12). */
-  async #push(listedOwn: string | undefined): Promise<boolean> {
+  /** Whether the own log in the repo lacks something: an own op not yet
+   * confirmed, or the snapshot point K, which a trim (section 8.1 step 4)
+   * still has to publish. */
+  #logDue(): boolean {
     const meta = this.#meta!;
     const through = this.#ownLog.at(-1)?.L ?? meta.K;
-    if (through <= meta.ownLogThrough) return true;
+    return through > meta.ownLogThrough || meta.ownLogK < meta.K;
+  }
+
+  /** Step 6: PUTs the own log when it holds an op not yet confirmed, or K
+   * changed. False when the cycle should be retried (section 12). */
+  async #push(listedOwn: string | undefined): Promise<boolean> {
+    if (!this.#logDue()) return true;
     const wait = this.#putWait();
     if (wait > 0) {
       this.#putLater(wait);
       return true;
     }
     const out = await this.#ownLogText();
+    const landed = () => this.#meta!.ownLogThrough >= out.through && this.#meta!.ownLogK >= out.K;
     // The repo holds these exact bytes: a PUT would only add an empty commit.
     if (out.sha === listedOwn) {
-      await this.#record({ ownLogSha: out.sha, ownLogThrough: Math.max(this.#meta!.ownLogThrough, out.through) });
+      const m = this.#meta!;
+      await this.#record({ ownLogSha: out.sha, ownLogThrough: Math.max(m.ownLogThrough, out.through), ownLogK: Math.max(m.ownLogK, out.K) });
       return true;
     }
     // Saved before it is sent, so a lost response is settled by step 5.
-    await this.#record({ lastSentLogSha: out.sha, lastSentLogThrough: out.through });
+    await this.#record({ lastSentLogSha: out.sha, lastSentLogThrough: out.through, lastSentLogK: out.K });
     const { client } = this.#remote!;
     let base = this.#meta!.ownLogSha;
     for (let put = 1; ; put++) {
@@ -1060,10 +1294,8 @@ export class SyncEngine {
         const res = await client.putFile({ path: repoPath(out.file), text: out.text, sha: base, message: deviceCommitMessage("Sync", out.device) });
         this.#lastLanded = this.#monotonic();
         const m = this.#meta!;
-        const patch: MetaPatch = { ownLogSha: res.sha, ownLogThrough: Math.max(m.ownLogThrough, out.through) };
-        // No other commit came between the head this device handled and
-        // this one, so this one is handled too.
-        if (res.parentSha !== null && res.parentSha === m.lastSeenCommit) Object.assign(patch, { lastSeenCommit: res.commitSha, refEtag: null });
+        const patch: MetaPatch = { ownLogSha: res.sha, ownLogThrough: Math.max(m.ownLogThrough, out.through), ownLogK: Math.max(m.ownLogK, out.K) };
+        Object.assign(patch, this.#handled(res.parentSha, res.commitSha));
         await this.#record(patch);
         return true;
       } catch (err) {
@@ -1077,14 +1309,8 @@ export class SyncEngine {
         // Another commit moved the branch: the same PUT may go again.
         if (err.reason === "branch-race") continue;
         // The sha is stale: run steps 1, 2 and 5 again (section 12).
-        const ref = await this.#head(false);
-        if (ref.kind !== "head") {
-          if (ref.kind === "empty") this.#blocker = "missing";
-          return false;
-        }
-        const listing = await this.#list(ref.commitSha, ref.etag);
-        const winner = winningEpoch([...listing.files.keys()]);
-        if (winner !== this.#meta!.epochKey) return false;
+        const listing = await this.#relist();
+        if (listing === null) return false;
         const name = repoFileName(out.file);
         const listed = listing.files.get(name);
         const own = await this.#ownCheck(name, listed);
@@ -1096,10 +1322,30 @@ export class SyncEngine {
         }
         if (Object.keys(own.patch).length > 0) await this.#record(own.patch);
         // It landed after all (a lost or late response).
-        if (this.#meta!.ownLogThrough >= out.through) return true;
+        if (landed()) return true;
         base = listed?.sha ?? this.#meta!.ownLogSha;
       }
     }
+  }
+
+  /** The bookkeeping for a PUT that landed as commit `commit` on `parent`:
+   * when no other commit came between the head this device handled and
+   * this one, this one is handled too. */
+  #handled(parent: string | null, commit: string): MetaPatch {
+    return parent !== null && parent === this.#meta!.lastSeenCommit ? { lastSeenCommit: commit, refEtag: null } : {};
+  }
+
+  /** Steps 1 and 2 again, after a stale-sha refusal (section 12): the
+   * listing at the head now, or null when it can't be used here (an empty
+   * repo, or another epoch winning), which ends the cycle. */
+  async #relist(): Promise<Listing | null> {
+    const ref = await this.#head(false);
+    if (ref.kind !== "head") {
+      if (ref.kind === "empty") this.#blocker = "missing";
+      return null;
+    }
+    const listing = await this.#list(ref.commitSha, ref.etag);
+    return winningEpoch([...listing.files.keys()]) === this.#meta!.epochKey ? listing : null;
   }
 
   /** How long until an own log PUT may go: at least SYNC_TIMING.putGapMs
@@ -1128,18 +1374,19 @@ export class SyncEngine {
     const meta = this.#meta!;
     const ops = this.#ownLog;
     const chain = this.#chainHead;
-    const through = ops.at(-1)?.L ?? meta.K;
-    const key = `${meta.epochKey}.${meta.deviceId}.${meta.K}.${through}.${chain}`;
+    const K = meta.K;
+    const through = ops.at(-1)?.L ?? K;
+    const key = `${meta.epochKey}.${meta.deviceId}.${K}.${through}.${chain}`;
     if (this.#logText?.key === key) return this.#logText.value;
     const file: RepoFile = { kind: "log", epoch: meta.epochKey, device: meta.deviceId };
-    const content = { fv: FORMAT_VERSION, kind: "log", epoch: meta.epochKey, device: meta.deviceId, snapThrough: meta.K, chain, ops: [...ops] };
+    const content = { fv: FORMAT_VERSION, kind: "log", epoch: meta.epochKey, device: meta.deviceId, snapThrough: K, chain, ops: [...ops] };
     // Never publish what every other device would refuse.
     const check = checkRepoFile(file, content);
     if (!check.ok) return Promise.reject(new Error(`This device's own log would be refused: ${check.detail}`));
     let entry: { key: string; value: Promise<LogText> } | undefined;
     const value = (async (): Promise<LogText> => {
       const text = await seal(content, this.#key);
-      const built = { text, sha: await gitBlobSha(text), through, device: meta.deviceId, file };
+      const built = { text, sha: await gitBlobSha(text), through, K, device: meta.deviceId, file };
       // Only the newest text is kept for pagehide.
       if (this.#logText === entry) this.#logReady = built;
       return built;
@@ -1150,6 +1397,181 @@ export class SyncEngine {
       if (this.#logText === entry) this.#logText = null;
     });
     return value;
+  }
+
+  // --- The network half: compaction (section 8.1) ---------------------------
+
+  /** Step 7: compaction of the own log, with no agreement between devices.
+   * Due once the own log holds COMPACTION.logOps ops or its text reaches
+   * COMPACTION.logBytes (counts, never time), and only while the own log is
+   * confirmed, so no rollover happens while a PUT is in doubt:
+   *   2. PUT the own snap: the device's state at K = its greatest own L.
+   *   3. Confirm it landed: a 2xx, the listed sha of the text sent, or a
+   *      read-back that is this device's history at K or later.
+   *   4. Only then drop own ops at or below K from ownLog (one transaction
+   *      with K) and PUT the trimmed log, as step 6 does once spacing allows.
+   * "Snapshot first, trim second" keeps invariant S1: the snap and the log
+   * together hold every op this device pushed. A crash between leaves both
+   * holding some ops, which the join makes harmless. False when the cycle
+   * should be retried. */
+  async #compact(): Promise<boolean> {
+    if (!this.#canCycle() || this.#ownLog.length === 0 || this.#logDue()) return true;
+    const limits = this.#compaction;
+    if (this.#ownLog.length < limits.logOps && (await this.#ownLogText()).text.length < limits.logBytes) return true;
+    const wait = this.#putWait();
+    if (wait > 0) {
+      this.#putLater(wait);
+      return true;
+    }
+    const out = await this.#ownSnapText(await this.#epochGenesis());
+    // A snapshot every reader would refuse is never published. The log
+    // still syncs, only uncompacted; the reason was logged once.
+    if (out === null || out.through <= this.#meta!.K) return true;
+    // Saved before it is sent, so a lost response is settled by step 5.
+    await this.#record({ lastSentSnapSha: out.sha, lastSentSnapThrough: out.through });
+    const { client } = this.#remote!;
+    let base = this.#meta!.ownSnapSha;
+    for (let put = 1; ; put++) {
+      if (!this.#canCycle()) return false;
+      this.#putTimes.push(this.#monotonic());
+      try {
+        const res = await client.putFile({ path: repoPath(out.file), text: out.text, sha: base, message: deviceCommitMessage("Snapshot", out.device) });
+        this.#lastLanded = this.#monotonic();
+        await this.#confirmSnap(res.sha, out.through, this.#handled(res.parentSha, res.commitSha));
+        return this.#push(undefined);
+      } catch (err) {
+        if (!(err instanceof ShaConflictError)) throw err;
+        if (put >= MAX_PUTS) {
+          this.#log(`the repo refused ${MAX_PUTS} writes of this device's snapshot in a row; trying again on the next trigger`);
+          return false;
+        }
+        await this.#sleep(SYNC_TIMING.retryMs[put - 1] + Math.floor(this.#random() * SYNC_TIMING.jitterMs));
+        if (!this.#canCycle()) return false;
+        if (err.reason === "branch-race") continue;
+        const listing = await this.#relist();
+        if (listing === null) return false;
+        const check = await this.#ownSnapCheck(listing);
+        if (check.fork !== undefined) {
+          this.#log(`this device's own snapshot in the repo is not its history (${check.fork}); it syncs on as a new device`);
+          await this.#rehome(listing);
+          this.#again = true;
+          return true;
+        }
+        if (check.confirm) await this.#confirmSnap(check.confirm.sha, check.confirm.through);
+        // It landed after all (a lost or late response).
+        if (this.#meta!.K >= out.through) return this.#push(undefined);
+        base = listing.files.get(repoFileName(out.file))?.sha ?? this.#meta!.ownSnapSha;
+      }
+    }
+  }
+
+  /** What the listed own snap says (section 8.1 step 3). The sha this
+   * device knows, or none listed: nothing new. The sha it last sent: that
+   * send landed. Anything else is read: a snapshot of this device's own
+   * history (its chain at `through` matches) at K or later is confirmed, an
+   * older one is a stale listing, and anything else is a fork (section
+   * 10.3), as for the own log. */
+  async #ownSnapCheck(listing: Listing): Promise<SnapCheck> {
+    const meta = this.#meta!;
+    const name = repoFileName({ kind: "snap", epoch: meta.epochKey, device: meta.deviceId });
+    const listed = listing.files.get(name);
+    if (!listed || listed.sha === meta.ownSnapSha) return {};
+    if (listed.sha === meta.lastSentSnapSha) return { confirm: { sha: listed.sha, through: meta.lastSentSnapThrough } };
+    const read = await this.#read(name, listed, await this.#epochGenesis(listing));
+    if (!read.ok) return { fork: `it can't be read: ${read.detail}` };
+    const file = read.read.file;
+    if (file.kind !== "snap") return { fork: "it is not a snapshot" };
+    if (file.through > meta.ownMaxL) return { fork: `it holds L ${file.through}, past this device's ${meta.ownMaxL}` };
+    const local = file.through === 0 ? CHAIN_START : await this.#chainAt(file.through);
+    if (local !== file.chain) return { fork: `its chain at L ${file.through} differs` };
+    if (file.through < meta.K) return {};
+    return { confirm: { sha: listed.sha, through: file.through } };
+  }
+
+  /** The own snap at `sha`, through `through`, is in the repo: in one
+   * transaction K becomes `through` and own ops at or below it leave
+   * ownLog (section 8.1 step 4). The trimmed log goes out with the next
+   * push, which K now makes due. */
+  #confirmSnap(sha: string, through: number, patch: MetaPatch = {}): Promise<void> {
+    return this.#enqueue(async () => {
+      this.#assertWritable();
+      const meta = this.#meta!;
+      const K = Math.max(meta.K, through);
+      await this.#mutate({ ...meta, ...patch, ownSnapSha: sha, K }, { ownLog: { dropThrough: K } });
+      this.#ownLog = this.#ownLog.filter((op) => op.L > K);
+      this.#emit();
+    });
+  }
+
+  /** The own snap file (section 6) as text: the state, seen, maxL and chain
+   * as of the device's greatest own L, taken between two mutations, with
+   * the file versions that state holds. Built once per snapshot point and
+   * reused, so every send of one snapshot is the same bytes. Checked as
+   * every reader checks it, against the epoch's genesis, before it is
+   * published: null, remembered for that snapshot point, when it would be
+   * refused. */
+  async #ownSnapText(genesis: SyncState): Promise<SnapText | null> {
+    const view = await this.#enqueue(async () => {
+      this.#assertWritable();
+      return { meta: this.#meta!, state: cloneState(this.#state!), chain: this.#chainHead };
+    });
+    const { meta, state, chain } = view;
+    const through = meta.ownMaxL;
+    const key = `${meta.epochKey}.${meta.deviceId}.${through}.${chain}`;
+    if (this.#snapText?.key === key) return this.#snapText.value;
+    const file: RepoFile = { kind: "snap", epoch: meta.epochKey, device: meta.deviceId };
+    const joined: Record<string, string> = {};
+    for (const [name, sha] of Object.entries(meta.joined)) if (parseRepoFileName(name)?.epoch === meta.epochKey) joined[name] = sha;
+    // The confirmed own log holds own ops up to ownLogThrough, all in state.
+    if (meta.ownLogSha !== null) joined[repoFileName({ kind: "log", epoch: meta.epochKey, device: meta.deviceId })] = meta.ownLogSha;
+    const content = {
+      fv: FORMAT_VERSION,
+      kind: "snap",
+      epoch: meta.epochKey,
+      device: meta.deviceId,
+      through,
+      chain,
+      seen: vectorOf(state.seen),
+      maxL: state.maxL,
+      joined,
+      state: encodeState(state),
+    };
+    let entry: { key: string; value: Promise<SnapText | null> } | undefined;
+    const value = (async (): Promise<SnapText | null> => {
+      // Never publish what every other device would refuse.
+      const check = checkRepoFile(file, content, genesis);
+      if (!check.ok) {
+        this.#log(`this device's snapshot would be refused (${check.detail}); its log is not compacted`);
+        return null;
+      }
+      const text = await seal(content, this.#key);
+      return { text, sha: await gitBlobSha(text), through, device: meta.deviceId, file };
+    })();
+    entry = { key, value };
+    this.#snapText = entry;
+    value.catch(() => {
+      if (this.#snapText === entry) this.#snapText = null;
+    });
+    return value;
+  }
+
+  /** The epoch's genesis state, which every snap is checked against: the
+   * one the cycle read, or else read once by its blob sha (listed, or the
+   * one this device joined). Throws when it can't be read, which ends the
+   * cycle as `pending`: the cycle already refused a genesis that can't be
+   * joined, so this is a failed read. */
+  async #epochGenesis(listing?: Listing): Promise<SyncState> {
+    const meta = this.#meta!;
+    const name = repoFileName({ kind: "genesis", epoch: meta.epochKey });
+    const listed = listing?.files.get(name);
+    const sha = listed?.sha ?? meta.joined[name];
+    if (this.#genesis?.name === name && (sha === undefined || this.#genesis.sha === sha)) return this.#genesis.state;
+    if (sha === undefined) throw new Error("This device hasn't joined its epoch's genesis");
+    const read = await this.#read(name, listed ?? { file: { kind: "genesis", epoch: meta.epochKey }, sha, size: 0 });
+    if (!read.ok || read.read.file.kind !== "genesis") throw new Error(`The epoch's genesis can't be read${read.ok ? "" : `: ${read.detail}`}`);
+    const state = genesisState(read.read.file.doc);
+    this.#genesis = { name, sha, state };
+    return state;
   }
 
   /** Saves sync bookkeeping in meta alone, in one transaction. */
@@ -1266,8 +1688,11 @@ export class SyncEngine {
           ownLogThrough: 0,
           lastSentLogSha: null,
           lastSentLogThrough: 0,
+          ownLogK: 0,
+          lastSentLogK: 0,
           ownSnapSha: null,
           lastSentSnapSha: null,
+          lastSentSnapThrough: 0,
           joined: rebuilt.joined,
           seen: vectorOf(next.seen),
           lastSeenCommit: rebuilt.complete ? listing.commit : null,
@@ -1305,61 +1730,55 @@ export class SyncEngine {
     }
   }
 
-  /** The epoch rebuilt from its files (section 8.3; snapshots come with
-   * design step 5): the genesis, then every log. A version that can't be
-   * joined now is replaced by the one this device joined before, which
-   * still reads by its sha, so nothing this device had from another device
-   * is dropped. A listed log that wasn't joined at its listed sha is
-   * reported as #readOthers would find it: halted, with what halted it, or
-   * waiting for its snapshot. */
+  /** The epoch rebuilt from its files (section 8.3): the genesis, the
+   * largest listed snapshot, then every log, each device's snapshot read
+   * where its log needs it (section 8.2). A version that can't be joined
+   * now is replaced by the one this device joined before, which still reads
+   * by its sha, so nothing this device had from another device is dropped.
+   * A listed file that wasn't joined is reported as #readOthers would find
+   * it: halted, with what halted it, or waiting for its snapshot. */
   async #coldJoin(listing: Listing): Promise<ColdJoin> {
     const meta = this.#meta!;
     const epoch = meta.epochKey;
     const versions = new Map<string, Listed[]>();
-    for (const [name, listed] of listing.files) if (listed.file.epoch === epoch && listed.file.kind !== "snap") versions.set(name, [listed]);
+    for (const [name, listed] of listing.files) if (listed.file.epoch === epoch) versions.set(name, [listed]);
     for (const [name, sha] of Object.entries(meta.joined)) {
       const file = parseRepoFileName(name);
-      if (!file || file.epoch !== epoch || file.kind === "snap") continue;
+      if (!file || file.epoch !== epoch) continue;
       const list = versions.get(name) ?? [];
       if (!list.some((v) => v.sha === sha)) versions.set(name, [...list, { file, sha, size: 0 }]);
     }
     const genesisName = repoFileName({ kind: "genesis", epoch });
-    let state: SyncState | null = null;
-    const joined: Record<string, string> = {};
-    const halted = new Map<string, "needsUpdate" | "needsAttention">();
-    let gap = false;
-    let complete = !listing.truncated;
+    let genesis: { sha: string; state: SyncState } | null = null;
     for (const listed of versions.get(genesisName) ?? []) {
       const read = await this.#read(genesisName, listed);
       if (!read.ok || read.read.file.kind !== "genesis") continue;
-      state = genesisState(read.read.file.doc);
-      joined[genesisName] = listed.sha;
+      genesis = { sha: listed.sha, state: genesisState(read.read.file.doc) };
       break;
     }
-    if (state === null) throw new Error("The epoch's genesis can't be read, so this device can't rebuild its state");
-    for (const [name, list] of versions) {
-      if (name === genesisName) continue;
-      let done = false;
-      for (const listed of list) {
-        const read = await this.#read(name, listed);
-        const isListed = listing.files.get(name)?.sha === listed.sha;
-        if (!read.ok || read.read.file.kind !== "log" || listed.file.kind !== "log") {
-          if (isListed && listed.file.kind === "log") halted.set(name, !read.ok && read.problem === "needsUpdate" ? "needsUpdate" : "needsAttention");
-          continue;
-        }
-        const log = read.read.file;
-        if (log.snapThrough > (state.seen.get(listed.file.device) ?? 0)) {
-          if (isListed) gap = true;
-          continue;
-        }
-        for (const op of log.ops) applyOp(state, listed.file.device, op);
-        joined[name] = listed.sha;
-        done = true;
-        break;
-      }
-      if (!done || joined[name] !== list[0].sha) complete = false;
-    }
-    return { state, joined, complete, halted, gap };
+    if (genesis === null) throw new Error("The epoch's genesis can't be read, so this device can't rebuild its state");
+    this.#genesis = { name: genesisName, ...genesis };
+    const state = cloneState(genesis.state);
+    const logs = [...versions.keys()].filter((name) => parseRepoFileName(name)?.kind === "log");
+    const streams = await this.#readStreams({
+      listing,
+      genesis: async () => genesis.state,
+      seen: new Map(state.seen),
+      joined: {},
+      skip: null,
+      logs,
+      versions: (name) => versions.get(name) ?? [],
+      cold: true,
+    });
+    for (const part of streams.states) joinInto(state, part);
+    for (const [device, op] of streams.ops) applyOp(state, device, op);
+    return {
+      state,
+      joined: { [genesisName]: genesis.sha, ...streams.joined },
+      complete: !listing.truncated && streams.complete,
+      halted: streams.halted,
+      gap: streams.gap,
+    };
   }
 
   // --- Status ---------------------------------------------------------------
@@ -1393,13 +1812,15 @@ export class SyncEngine {
    * checked against the token expected. A tab whose claim failed claims
    * first, in a transaction of its own. A takeover, or a write made since
    * this tab loaded, makes it read-only; any other failure is a refused
-   * write ("This device couldn't save"). */
-  async #mutate(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">): Promise<void> {
-    if (!this.#claimed) await this.#write(this.#meta!, {});
-    await this.#write(meta, writes);
+   * write ("This device couldn't save"), unless the mutation is the
+   * engine's own `housekeeping` (a local compaction), which no user write
+   * waits on: that failure is only logged. */
+  async #mutate(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">, housekeeping = false): Promise<void> {
+    if (!this.#claimed) await this.#write(this.#meta!, {}, housekeeping);
+    await this.#write(meta, writes, housekeeping);
   }
 
-  async #write(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">): Promise<void> {
+  async #write(meta: SyncMeta, writes: Omit<Mutation, "expect" | "meta">, housekeeping: boolean): Promise<void> {
     const nextMeta: SyncMeta = { ...meta, writerToken: randomHex(16) };
     try {
       await this.#store.mutate({ ...writes, expect: this.#expect, meta: nextMeta });
@@ -1409,17 +1830,44 @@ export class SyncEngine {
         throw new ApiError(503, OTHER_TAB);
       }
       this.#log("a save on this device failed; nothing from it was kept", err);
-      this.#deviceSaveFailed = true;
-      this.#emit();
+      if (!housekeeping) {
+        this.#deviceSaveFailed = true;
+        this.#emit();
+      }
       throw new ApiError(500, DEVICE_SAVE_FAILED);
     }
     this.#expect = nextMeta.writerToken;
     this.#meta = nextMeta;
     this.#claimed = true;
-    if (this.#deviceSaveFailed) {
+    this.#tailCount = (writes.clearTail ? 0 : this.#tailCount) + (writes.tail?.length ?? 0);
+    if (this.#tailCount > this.#compaction.tailEntries) this.#compactLocalSoon();
+    if (this.#deviceSaveFailed && !housekeeping) {
       this.#deviceSaveFailed = false;
       this.#emit();
     }
+  }
+
+  /** Local compaction (section 8.4), separate from the repo's: once `tail`
+   * holds more entries than the limit, one transaction rewrites `base` as
+   * the joined state and empties `tail`, so a load joins one record instead
+   * of every delta since. It is queued behind the mutation that grew the
+   * tail, and the state can't change while it runs: every change to it is a
+   * queued mutation. A failure (a full device) is only logged; the next
+   * mutation past the limit tries again. */
+  #compactLocalSoon(): void {
+    if (this.#compactingLocal) return;
+    this.#compactingLocal = true;
+    this.#enqueue(async () => {
+      try {
+        if (this.#tailCount <= this.#compaction.tailEntries) return;
+        this.#assertWritable();
+        const base = await seal(storedState(this.#state!), this.#key);
+        this.#assertWritable();
+        await this.#mutate(this.#meta!, { base, clearTail: true }, true);
+      } finally {
+        this.#compactingLocal = false;
+      }
+    }).catch((err: unknown) => this.#log("compacting this device's saved changes failed; it will be tried again", err));
   }
 
   #supersede(): void {
@@ -1517,6 +1965,7 @@ export class SyncEngine {
     this.#doc = loaded.doc;
     this.#ownLog = loaded.ownLog;
     this.#chainHead = loaded.chainHead;
+    this.#tailCount = loaded.tailCount;
     this.#lastAllocated = 0;
     this.#needsInit = false;
     this.#unreadable = null;
@@ -1580,7 +2029,7 @@ export class SyncEngine {
         if (!isChainValue(value)) return malformed("the chain is malformed");
         chainHead = value;
       }
-      return { meta, state, doc: materialize(state), ownLog, chainHead };
+      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length };
     } catch (err) {
       if (err instanceof Undecryptable) {
         this.#log("the saved sync state doesn't decrypt with this device's key", err);
