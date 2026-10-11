@@ -127,9 +127,11 @@ export class PublicRepoError extends GitHubError {
 /** 409, or 422 about the `sha`: the write was not applied.
  *
  * `reason` tells the two kinds apart by GitHub's message:
- * - "branch-race": "is at <head> but expected <base>". Another commit, to
- *   any path, moved the branch while this PUT was in flight. The file's own
- *   sha may still be current, so the same PUT can be retried.
+ * - "branch-race": "is at <head> but expected <base>". The PUT was checked
+ *   against a head that has since moved. The file's own sha is usually
+ *   still current (another path moved the branch), so the same PUT may be
+ *   retried, but not always: a PUT to the same path that won the race gets
+ *   the loser this same message, and then the retry gets "does not match".
  * - "stale-sha": "<path> does not match <sha>", or a 422 "sha" wasn't
  *   supplied. The sha sent is not the file's current one. */
 export class ShaConflictError extends GitHubError {

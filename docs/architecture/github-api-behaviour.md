@@ -55,7 +55,7 @@
    - Map 409 with message "Git Repository is empty." to "no ledger yet", not to `ShaConflictError`.
    - Send the same `Accept` header on every poll, because the ETag varies with it.
 3. **Before a PUT,** skip it when `gitBlobSha(text)` equals the listed own sha. Otherwise each re-send makes an empty commit, which moves the ref and costs every other device a listing.
-4. **Optional:** tell the two kinds of 409 apart by message (§4). For a branch race, the same PUT with the same sha can simply be retried. A stale sha needs steps 1, 2 and 5 re-run.
+4. **Optional:** tell the two kinds of 409 apart by message (§4). A branch race means the PUT was checked against a head that has since moved. The sha is usually still current, so the same PUT with the same sha may be retried, but a same-path race gives the same message with a stale sha, so a retry that then gets "does not match" re-runs steps 1, 2 and 5. A stale sha needs steps 1, 2 and 5 re-run.
 5. **Fake fidelity:** fix the gaps in §17.
 
 ---
@@ -121,12 +121,12 @@ Request: the same moment (within about 30 ms), two or three PUTs to **different*
 | 3 different paths | 5 | 15 | 9 (one round had two winners) |
 | Same path, same sha | 3 | 6 | 3 |
 
-- **The 409 message for a lost race** is `is at <40-hex new head> but expected <40-hex head the request started from>`. The same-path loser got this message too, not "does not match", because its file sha was still current when it was checked.
+- **The 409 message for a lost race** is `is at <40-hex new head> but expected <40-hex head the request started from>`. The same-path loser got this message too, not "does not match", because its file sha was still current at the head it was checked against. By the time it got the 409 that sha was stale: the winner had changed the file, so resending the identical PUT gets "does not match".
 - **The "two winners" round:** GitHub applied the second PUT on top of the first. Its `commit.parents[0].sha` was the first winner's commit, not the head the client had seen.
 
 **Design should:**
 - Expect this 409 routinely whenever two devices push in the same second. The §12 retry policy (250/500/1000 ms plus jitter, at most 4 PUTs a cycle) fits.
-- On `is at … but expected …`, know that the own file's sha is still valid. A retry of the identical PUT is correct, and re-running steps 1, 2 and 5 is optional.
+- On `is at … but expected …`, know that the PUT was checked against a head that has since moved. The own file's sha is usually still current (another path moved the branch), but not always: a same-path race gives the same message, and the design reaches one when an own lost or late PUT lands beside the next cycle's retry (§12 row B26) or a forked profile writes the same own log (§10.3). A retry of the identical PUT is allowed. The re-list is not optional: if the retry gets `… does not match …`, re-run steps 1, 2 and 5.
 - On `… does not match …`, re-list as §12 says.
 - Have the fake's branch-level ref (§16.3) produce exactly this message.
 

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import recorded from "./__fixtures__/github-behaviour.json";
+import { ShaConflictError } from "./contents";
 import { BROWSER_VISIBLE_HEADERS, createFakeGitHub, PREFLIGHT_ALLOWED_HEADERS, type FakeGitHub } from "./fakeGitHub";
 
 // Fidelity: the fake against what the real GitHub API did when probed
@@ -233,7 +234,7 @@ describe("fake GitHub fidelity: concurrent PUTs race on the branch ref (section 
     const shas = await Promise.all(paths.map(async (p) => (await call("GET", `{r}/contents/${p}`, { via })).body.sha as string));
     const base = via.head(REPO);
     const answers = await Promise.all(paths.map((p, i) => put(p, `${p} ${Math.random()}`, shas[i], { via })));
-    return { base, answers };
+    return { base, shas, answers };
   }
 
   async function seedLogs(via: FakeGitHub, n: number): Promise<string[]> {
@@ -289,9 +290,18 @@ describe("fake GitHub fidelity: concurrent PUTs race on the branch ref (section 
     const [path] = await seedLogs(fake, 1);
     let conflicts = 0;
     for (let r = 0; r < recordedRun.rounds; r++) {
-      const { answers } = await round([path, path]);
+      const { shas, answers } = await round([path, path]);
       expect(answers.filter((a) => a.status === 200)).toHaveLength(1);
-      for (const loser of answers.filter((a) => a.status === 409)) expect(loser.body.message).toMatch(race);
+      for (const loser of answers.filter((a) => a.status === 409)) {
+        expect(loser.body.message).toMatch(race);
+        // The loser's sha is no longer current: the winner changed the file.
+        // Resending the identical PUT gets "does not match", so a branch
+        // race does not prove the sha still holds.
+        const resent = await put(path, "resent", shas[0]);
+        expect(resent.status).toBe(409);
+        expect(resent.body.message).toBe(`${path} does not match ${shas[0]}`);
+        expect(new ShaConflictError(409, resent.body.message).reason).toBe("stale-sha");
+      }
       conflicts += answers.filter((a) => a.status === 409).length;
     }
     expect(conflicts).toBe(recordedRun.conflicts409);
