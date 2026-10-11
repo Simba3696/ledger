@@ -357,7 +357,10 @@ describe("failure handling (section 12)", () => {
         expect(remarks(b).sort()).toEqual(["Bus", "Groceries"]);
         expect(status(a)).toBe("needsAttention");
         expect(a.engine.getState().pendingCount).toBe(0);
-      });
+        // Robustness, not speed: building and inflating the 32 MiB body
+        // takes about a second alone, and past vitest's 5 s default when the
+        // whole suite runs at once on a loaded machine.
+      }, 30_000);
     }
 
     it("a listed file larger than any real one is refused without being downloaded", async () => {
