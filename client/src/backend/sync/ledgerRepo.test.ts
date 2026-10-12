@@ -233,14 +233,28 @@ describe("writing a genesis (section 9.2 step 5)", () => {
     expect(puts()).toHaveLength(1);
   });
 
-  it("no answer and nothing listed: sent once more; twice, it failed", async () => {
+  it("no answer and nothing listed: sent once more; twice, whether it landed is unknown, since either may still land", async () => {
     fake.failNext({ method: "PUT", network: true });
     expect(await writeGenesis(remote(), content(), key)).toMatchObject({ kind: "written" });
     expect(puts()).toHaveLength(2);
     fake.failNext({ method: "PUT", network: true });
     fake.failNext({ method: "PUT", network: true });
-    expect(await writeGenesis(remote(), content("e000002-0000000a"), key)).toMatchObject({ kind: "failed" });
+    expect(await writeGenesis(remote(), content("e000002-0000000a"), key)).toMatchObject({ kind: "unknown" });
     expect(puts()).toHaveLength(4);
+  });
+
+  it("an answer that says a PUT wasn't applied is a failure only when no earlier PUT went unanswered", async () => {
+    fake.failNext({ method: "PUT", status: 422, message: "Invalid request. \"sha\" wasn't supplied." });
+    expect(await writeGenesis(remote(), content(), key)).toMatchObject({ kind: "failed" });
+    expect(puts()).toHaveLength(1);
+    // No answer, then a refusal: the first may still land.
+    fake.failNext({ method: "PUT", network: true });
+    fake.failNext({ method: "PUT", status: 409 });
+    expect(await writeGenesis(remote(), content("e000002-0000000a"), key)).toMatchObject({ kind: "unknown" });
+    // No answer, then a rate limit: not thrown, since the first may still land.
+    fake.failNext({ method: "PUT", network: true });
+    fake.failNext({ method: "PUT", status: 429 });
+    expect(await writeGenesis(remote(), content("e000003-0000000a"), key)).toMatchObject({ kind: "unknown" });
   });
 
   it("a name already taken is a failure at once, and a token the repo refuses throws", async () => {

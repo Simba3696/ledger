@@ -238,6 +238,43 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expect(await findLedger({ client: a.client, branch: "main" })).toMatchObject({ kind: "ledger", epoch: (result as { epoch: string }).epoch });
   });
 
+  it("a restore whose genesis PUTs get no answer says unknown, refuses writes until a listing settles it, and the genesis that lands later wins", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    backup.expenses = {};
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    const result = await a.engine.restore(backup);
+    expect(result).toEqual({ kind: "unknown", epoch: expect.stringMatching(/^e000002-[0-9a-f]{8}$/) });
+    const epoch = (result as { epoch: string }).epoch;
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    w.fake.landPending();
+    await quiesce(w, a, b);
+    for (const d of [a, b]) expect(d.engine.epochKey).toBe(epoch);
+    expect(remarks(b)).toEqual([]);
+    // It landed: the device reloads, as after "restored".
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("a restore whose genesis PUTs get no answer and never land: the next sync's listing settles it, and writes go on", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    await cycle(w, a);
+    await a.backend.addEntry(entry("Bus"));
+    await quiesce(w, a);
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Groceries", "Bus"]);
+    expect(a.engine.getState().pendingCount).toBe(0);
+  });
+
   it("a write queued behind a restore is refused, never saved into the state the reload clears (section 9.2 step 7)", async () => {
     let a!: Device;
     let late: Promise<unknown> | null = null;
