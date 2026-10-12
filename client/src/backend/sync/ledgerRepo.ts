@@ -77,12 +77,47 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
   return { names: [...files.keys()], files, truncated: listing.truncated };
 }
 
+/** A winning genesis this device can't open (owner decision D26): one the
+ * app never writes, so a git client, a manual edit or a bad commit put it
+ * there. `malformed`: it doesn't parse or open as a genesis.
+ * `undecryptable`: it names the household's salt and iterations and still
+ * doesn't decrypt (AES-GCM can't tell an altered body from another key, but
+ * under the household's own salt only damage explains it). `foreignKey`: it
+ * is sealed under another salt and iterations, another passphrase's. Sync
+ * stops, with nothing lost, until the file is deleted on GitHub; nothing is
+ * ever written past it. */
+export interface DamagedFile {
+  /** Its path in the repo, "ledger/<epoch>.genesis.enc". */
+  path: string;
+  epoch: string;
+  reason: "malformed" | "undecryptable" | "foreignKey";
+}
+
+export function damagedGenesis(epoch: string, reason: DamagedFile["reason"]): DamagedFile {
+  return { path: repoPath({ kind: "genesis", epoch }), epoch, reason };
+}
+
+/** What to tell the person about a damaged genesis: which file to delete,
+ * where, and that deleting it resumes sync (D26). */
+export function damagedFileMessage(file: DamagedFile): string {
+  const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+  const why =
+    file.reason === "foreignKey"
+      ? "it is sealed with a different passphrase, which may mean the household passphrase was changed"
+      : file.reason === "undecryptable"
+        ? "it doesn't decrypt with the household passphrase, so it was changed after it was written"
+        : "it is damaged";
+  return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device (${why}). Ledger never writes a file like it. Deleting it resumes sync, and nothing on this device is lost: on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, and delete the file.`;
+}
+
 /** The winning epoch in a listing of the repo now (section 9.1). */
 export interface EpochNow {
   /** The greatest counted epoch listed, or null when none is. */
   winner: string | null;
-  /** The winner's genesis blob sha, or null when there is no winner. */
+  /** The winner's genesis blob sha and listed size, or null when there is
+   * no winner. */
   sha: string | null;
+  size: number | null;
   /** GitHub cut the listing short: a greater epoch may be left out, so
    * `winner` alone decides nothing (ADR-0008). A greater one listed is
    * there all the same. */
@@ -93,10 +128,10 @@ export interface EpochNow {
  * listing it comes from was cut. */
 export async function winningEpochNow(remote: Remote): Promise<EpochNow> {
   const listing = await listNow(remote);
-  if (listing === null) return { winner: null, sha: null, truncated: false };
+  if (listing === null) return { winner: null, sha: null, size: null, truncated: false };
   const winner = winningEpoch(listing.names);
-  const sha = winner === null ? null : listing.files.get(repoFileName({ kind: "genesis", epoch: winner }))!.sha;
-  return { winner, sha, truncated: listing.truncated };
+  const listed = winner === null ? null : listing.files.get(repoFileName({ kind: "genesis", epoch: winner }))!;
+  return { winner, sha: listed?.sha ?? null, size: listed?.size ?? null, truncated: listing.truncated };
 }
 
 /** "Is there a ledger?" (#8): the winning genesis and its header. */
