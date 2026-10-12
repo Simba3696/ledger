@@ -1,8 +1,15 @@
 .dashboard-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 16px;
+}
+
+.dashboard-controls {
+  display: flex;
+  gap: 8px;
 }
 
 .dashboard-header h2 {
