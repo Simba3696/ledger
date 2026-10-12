@@ -2635,8 +2635,9 @@ export class SyncEngine {
     return true;
   }
 
-  /** The previous epochs' states kept in `old`. One that can't be read is
-   * logged and left out: its groups stay as they were. */
+  /** The previous epochs' states kept in `old`. A load reads them first, so
+   * one that can't be read leaves the device unreadable; this is only a
+   * fallback (logged and left out: the groups stay as they were). */
   async #readOld(): Promise<OldEpoch[]> {
     return (await this.#decodeOld()) ?? [];
   }
@@ -2997,6 +2998,13 @@ export class SyncEngine {
         const group = checkGroup(await this.#open(text));
         if (group === null || group.marker !== key) return malformed("a group of changes left behind is malformed");
         leftBehind.set(key, group);
+      }
+      // The previous epochs' states are read now, like the groups: one that
+      // can't be read is unreadable (section 12, B13), never dropped later
+      // or written over by the next switch.
+      if (records.old !== undefined) {
+        const old = decodeOld(await this.#open(records.old));
+        if (typeof old === "string") return malformed(old);
       }
       return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, old: records.old ?? null };
     } catch (err) {
