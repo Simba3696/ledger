@@ -201,6 +201,19 @@ export interface EngineState {
    * deleting this file on GitHub resumes it (damagedFileMessage says how).
    * Null otherwise, a genesis too new for this build included. */
   damagedFile: DamagedFile | null;
+  /** A restore this tab started (restore()), once its genesis was sent:
+   * "pending" while a PUT got no answer and no listing has settled it
+   * ("unknown"), "landed" once its genesis is known to be in the repo
+   * (clear the sync state and reload, section 9.2 step 7). Null when none
+   * was, or a full listing showed the pending one never landed. */
+  restore: RestoreState | null;
+}
+
+/** How a restore this tab started stands (EngineState.restore). */
+export interface RestoreState {
+  state: "pending" | "landed";
+  /** The epoch its genesis is for. */
+  epoch: string;
 }
 
 /** A group of changes a restore left behind, as the list shows it. */
@@ -661,6 +674,8 @@ export class SyncEngine {
    * "unknown"): own writes are refused until a listing settles whether it
    * landed (#settleRestore). */
   #restoreUnknown: string | null = null;
+  /** EngineState.restore, the same object while it doesn't change. */
+  #restoreState: RestoreState | null = null;
   #snapshot: EngineState;
   readonly #listeners = new Set<() => void>();
 
@@ -1506,9 +1521,11 @@ export class SyncEngine {
       this.#log(`the restore's genesis ${epoch} landed after all`);
       this.#restoreUnknown = null;
       this.#restore = "written";
+      this.#restoreState = { state: "landed", epoch };
     } else if (!listing.truncated) {
       this.#log(`the restore's genesis ${epoch} isn't in the repo; writes go on`);
       this.#restoreUnknown = null;
+      this.#restoreState = null;
     }
   }
 
@@ -2464,12 +2481,16 @@ export class SyncEngine {
       if (written.kind === "unknown") {
         this.#log(`the restore's genesis got no answer (${written.detail}); it may still land`);
         this.#restoreUnknown = written.epoch;
+        this.#restoreState = { state: "pending", epoch: written.epoch };
+        this.#emit();
         rememberRestore(written.epoch);
         return { kind: "unknown", epoch: written.epoch };
       }
       if (written.kind !== "written") return written;
       this.#restore = "written";
       const epoch = written.genesis.epoch;
+      this.#restoreState = { state: "landed", epoch };
+      this.#emit();
       rememberRestore(epoch);
       // Step 6: a restore that raced this one may have won. The genesis has
       // landed whatever this read says, so a failed read is no failure.
@@ -3312,6 +3333,7 @@ export class SyncEngine {
       leftBehindCount: this.#leftBehindCount,
       leftBehindOwnCount: this.#leftBehindOwnCount,
       damagedFile: this.#damaged,
+      restore: this.#restoreState,
     };
   }
 
