@@ -497,6 +497,21 @@ describe("saved state this build can't read (section 12, B13, B22)", () => {
     await expectUnreadable(d, "malformed", before);
   });
 
+  it("a previous epochs' state (`old`) that is malformed or doesn't decrypt is unreadable, never dropped or written over later", async () => {
+    await savedDevice();
+    await tamper("ledger:sync", "old", (s) => s.put("not a sealed record", "old"));
+    let before = await dumpDatabase();
+    await expectUnreadable(await device(), "undecryptable", before);
+    const malformed = await seal({ entries: [{ epoch: "nope" }] }, key);
+    await tamper("ledger:sync", "old", (s) => s.put(malformed, "old"));
+    before = await dumpDatabase();
+    await expectUnreadable(await device(), "malformed", before);
+    const foreign = await seal({ entries: [] }, await testKey());
+    await tamper("ledger:sync", "old", (s) => s.put(foreign, "old"));
+    before = await dumpDatabase();
+    await expectUnreadable(await device(), "undecryptable", before);
+  });
+
   it("an own log that disagrees with the state is unreadable", async () => {
     await savedDevice();
     await tamper("ledger:sync", "tail", (s) => s.clear());
