@@ -180,6 +180,19 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     expect(puts()).toHaveLength(0);
   });
 
+  it("a restore into a repo with no ledger whose genesis would fill the gap below a genesis no device can open writes nothing and names that file (D26)", async () => {
+    const gapped = "e000002-0000000b";
+    const path = `ledger/${gapped}.genesis.enc`;
+    await fake.seedFile(FULL, path, "not a ledger file");
+    // Uncounted: no ledger yet.
+    expect(await findLedger(remote())).toEqual({ kind: "none" });
+    const backup = emptyDocument();
+    expect(await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" })).toMatchObject({ kind: "failed", damagedFile: { path, epoch: gapped, reason: "malformed" } });
+    expect(puts()).toHaveLength(0);
+    fake.removeFile(FULL, path);
+    expect(await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" })).toMatchObject({ kind: "created" });
+  });
+
   /** An epoch 1 genesis another device created, planted as it would land. */
   async function plantCreate(epoch: string, with_: DeviceKey): Promise<void> {
     const content = { fv: 1, kind: "genesis", epoch, reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() };

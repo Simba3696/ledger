@@ -935,6 +935,58 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     expect(w.fake.violations).toEqual([]);
   });
 
+  it("a restore whose genesis would fill the gap below a genesis no device can open writes nothing and names that file, which is safe to delete", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    // Epoch 3, past a gap, counts for nothing, so sync goes on around it.
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+    // Epoch 2 would make it count and win: the restore would be "replaced"
+    // by a file no device can open.
+    const before = puts(w).length;
+    const damagedFile = { path: `ledger/${gapped}.genesis.enc`, epoch: gapped, reason: "malformed" };
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed", damagedFile });
+    expect(puts(w).length).toBe(before);
+    expect(a.engine.epochKey).toBe(EPOCH);
+    await a.backend.addEntry(entry("Bus"));
+    // The person deletes it: the restore goes ahead.
+    w.fake.removeFile(FULL, damagedFile.path);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    expect(remarks(await reload(a))).toEqual(["Groceries", "Bus"]);
+  });
+
+  it("a restore replaced by a greater genesis no device can open, which landed while it ran, names the file and no maker: the caller must not reload yet", async () => {
+    const damaged = "e000002-ffffffff";
+    let tamper = true;
+    const a = await open({
+      login: "alex",
+      // Right after the restore's genesis lands, a tampered file of the same
+      // number with a greater key lands too.
+      wrapFetch: (inner) => async (input, init) => {
+        const res = await inner(input, init);
+        const url = String(input instanceof Request ? input.url : input);
+        if (tamper && init?.method === "PUT" && url.endsWith(".genesis.enc") && res.ok) {
+          tamper = false;
+          await plant(w, { kind: "genesis", epoch: damaged }, "not a ledger file");
+        }
+        return res;
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: damaged, damagedFile: { path: `ledger/${damaged}.genesis.enc`, epoch: damaged, reason: "malformed" } });
+    const epoch = (result as { epoch: string }).epoch;
+    // The person deletes it: the restore it replaced wins, and the reload joins it.
+    w.fake.removeFile(FULL, `ledger/${damaged}.genesis.enc`);
+    const a2 = await reload(a);
+    expect(a2.engine.epochKey).toBe(epoch);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+  });
+
   it("a newer genesis this build is too old to read refuses a restore and names no file: updating the app is the fix", async () => {
     const a = await open({ login: "alex" });
     await plant(w, { kind: "genesis", epoch: BAD }, { fv: 2, kind: "genesis", epoch: BAD });
@@ -1085,6 +1137,21 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     const fresh = await reload(await open({ login: "sam" }));
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
+  });
+
+  it("a next epoch that would fill the gap below a genesis no device can open is not written: the write is refused, naming the file (D26)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: expect.stringContaining(`ledger/${gapped}.genesis.enc`) });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+    w.fake.removeFile(FULL, `ledger/${gapped}.genesis.enc`);
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).toMatch(/^e000002-/);
+    expect(remarks(a)).toEqual(["Planted", "After"]);
   });
 
   it("every genesis PUT it sends counts against the hourly cap, a second one after no answer included (ADR-0008 stage 4)", async () => {
