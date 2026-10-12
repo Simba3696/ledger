@@ -58,6 +58,8 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     if (found.kind !== "ledger") throw new Error(found.kind);
     const opened = await openGenesis(found, key);
     expect(opened.ok && docText(opened.doc)).toBe(docText(emptyDocument()));
+    // Who made it, for "Sam's restore replaced yours" (section 9.2).
+    expect(opened).toMatchObject({ ok: true, reason: "create", by: "alex", at: 1 });
     expect(await openGenesis(found, await testKey())).toEqual({ ok: false, problem: "wrongPassphrase" });
     // A second create finds the first.
     expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "sam", at: 2 })).toEqual({ kind: "exists" });

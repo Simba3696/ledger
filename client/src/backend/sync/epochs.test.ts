@@ -503,7 +503,8 @@ describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
     w.fake.staleReads(1);
     const result = await a.engine.restore(backup);
     w.fake.staleReads(0);
-    expect(result).toMatchObject({ kind: "replaced", winner: "e000002-ffffffff" });
+    // Who restored, for "Sam's restore replaced yours" (section 9.2 step 6).
+    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: "e000002-ffffffff", reason: "restore", by: "sam", at: 7 });
     const a2 = await reload(a);
     expect(a2.engine.epochKey).toBe("e000002-ffffffff");
   });
