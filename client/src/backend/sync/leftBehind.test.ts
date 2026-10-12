@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
 import { genesisState } from "./state";
 import { ALL_MODULES, Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -119,6 +119,30 @@ describe("left behind (section 9.3)", () => {
     const [group] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
     const keys = group.set.map(([key]) => key.split("/").at(-1));
     expect(keys).toEqual(expect.arrayContaining(["remainingAsOf", "asOfDate"]));
+  });
+
+  it("carried into a later genesis, keeps only what that genesis doesn't hold, a field group whole, and nothing once it holds all", async () => {
+    const doc = await backup();
+    const { a } = pair(doc);
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), { amount: 50, remarks: "Groceries", category: "food", isCard: false });
+    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
+    await a.backend.deleteDebt((await a.backend.getDebts())[0].row);
+    const emi = (await a.backend.getEmis())[0];
+    await a.backend.updateEmi(emi.row, { cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 8000, interestRate: 9.5, foreclosureCharge: null });
+    const [group] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
+    expect(withoutHeld(group, genesisState(doc))).toBe(group);
+    // A later genesis that took in Taxi and the delete, but not the rest.
+    const n = new Replica(N, doc, { epoch: NEW });
+    await n.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
+    const later = structuredClone(n.doc);
+    later.expenses["2026-05"] = later.expenses["2026-05"].map((e) => (e.remarks === "Taxi" ? { ...e, id: leftBehindItems(group).find((i) => i.kind === "add")!.id } : e));
+    later.debts = [];
+    const left = withoutHeld(group, genesisState(later))!;
+    expect(leftBehindItems(left).map((i) => (i.kind === "unit" ? i.key : `${i.kind}:${i.coll}`))).toEqual(["edit:e", "edit:emi"]);
+    expect(left.set.map(([key]) => key.split("/").at(-1))).toEqual(expect.arrayContaining(["remainingAsOf", "asOfDate"]));
+    expect(Object.keys(left.records).sort()).toEqual(left.set.map(([key]) => key.split("/").slice(0, 2).join("/")).filter((rk, i, all) => all.indexOf(rk) === i).sort());
+    // One that holds it all leaves nothing.
+    expect(withoutHeld(group, genesisState(a.doc))).toBeNull();
   });
 
   it("is never the genesis's registers, nor a unit equal to the restore's, and is a unit that differs", async () => {

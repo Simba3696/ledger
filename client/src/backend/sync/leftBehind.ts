@@ -174,6 +174,42 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
   return groups.sort((a, b) => Number(b.own) - Number(a.own) || compareText(a.device, b.device));
 }
 
+/** `group` less what `restored` (a new epoch's genesis state) already
+ * holds, by the projection's rule above: a register at the same value, a
+ * create of a record the genesis has, a delete of a record it lacks, and a
+ * field group set whole while any of it is left. Null when nothing is left;
+ * `group` itself when nothing is held. For a group carried across a switch
+ * (section 9.3): its marker joined in the old epoch, if at all, never
+ * reaches the new one, so this is what hides one the new genesis took in. */
+export function withoutHeld(group: LeftBehindGroup, restored: SyncState): LeftBehindGroup | null {
+  const held = (key: string, value: unknown): boolean => {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind !== "field") return sameValue(readValue(key, { v: value, t: GENESIS_TAG }), readValue(key, restored.unit.get(key)));
+    const theirs = restored.rec.get(`${parsed.coll}/${parsed.id}`);
+    return parsed.field === CREATE ? theirs?.has(CREATE) === true : sameValue(value, theirs?.get(parsed.field)?.v);
+  };
+  const left = new Set(group.set.filter(([key, value]) => !held(key, value)).map(([key]) => key));
+  // A field group (an EMI's balance pair) stays whole while any of it is left.
+  for (const [key] of group.set) {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind !== "field" || left.has(key)) continue;
+    const rk = `${parsed.coll}/${parsed.id}`;
+    const together = TOGETHER[parsed.coll].find((fields) => fields.includes(parsed.field));
+    if (together?.some((field) => left.has(`${rk}/${field}`))) left.add(key);
+  }
+  const del = group.del.filter((rk) => restored.rec.get(rk)?.has(CREATE) === true);
+  if (left.size === group.set.length && del.length === group.del.length) return group;
+  if (left.size === 0 && del.length === 0) return null;
+  const set = group.set.filter(([key]) => left.has(key));
+  const touched = new Set(del);
+  for (const [key] of set) {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind === "field") touched.add(`${parsed.coll}/${parsed.id}`);
+  }
+  const records = Object.fromEntries(Object.entries(group.records).filter(([rk]) => touched.has(rk)));
+  return { ...group, set, del, records };
+}
+
 // --- Stored groups ----------------------------------------------------------
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -22,7 +22,7 @@ import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opH
 import { diffDocuments } from "./diff";
 import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { rememberRestore, winningEpochNow, writeGenesis, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
@@ -2504,7 +2504,14 @@ export class SyncEngine {
     const into = { epoch: genesis.epoch, by: genesis.by, at: genesis.at, state: genesis.state };
     const basedOn = genesis.basedOn;
     const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : null);
-    const groups = new Map([...this.#leftBehind].filter(([, group]) => !this.#isHidden(group, pre)));
+    // Groups shown now are carried, less what the new genesis already holds
+    // (the projection's rule): a marker joined here never reaches the new
+    // epoch, so nothing else would hide one the genesis took in.
+    const groups = new Map<string, LeftBehindGroup>();
+    for (const [marker, group] of this.#leftBehind) {
+      const carried = this.#isHidden(group, pre) ? null : withoutHeld(group, genesis.state);
+      if (carried !== null) groups.set(marker, carried);
+    }
     const kept = await this.#readOld();
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
