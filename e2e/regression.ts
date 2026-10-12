@@ -216,6 +216,24 @@ async function main() {
       (await page.locator(".category-chart", { hasText: "Food :" }).count()) > 0,
     );
 
+    // --- Moving-average line, read from the hover tooltips above ---
+    // The fixture has no previous year, so a 3-month average exists only from
+    // March on. From then, the current month's window is two filler months
+    // (Other, 10 each) plus the seeded month (Food 100 + Transportation 50).
+    if (monthIndex >= 2) {
+      const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
+      const totalAverage = inr.format(Math.round(((10 + 10 + 150) / 3) * 100) / 100);
+      const foodAverage = inr.format(Math.round((100 / 3) * 100) / 100);
+      check(
+        "The main chart's tooltip shows the month's 3-month average",
+        (await page.locator(".chart-wrap", { hasText: `3-month average : ${totalAverage}` }).count()) > 0,
+      );
+      check(
+        "The Food mini-chart's tooltip shows its own 3-month average",
+        (await page.locator(".category-chart", { hasText: `3-month average : ${foodAverage}` }).count()) > 0,
+      );
+    }
+
     // The hover-sync check above leaves a tooltip popup floating right over
     // the bar we're about to click next (same month, same first mini-chart)
     // — move away first so that overlay doesn't intercept the click.
@@ -257,6 +275,25 @@ async function main() {
     // actually reappear with real data loaded (not just the DOM shell)
     // rather than a fixed delay that may finish before that's done.
     await waitForDashboardData();
+    await page.waitForTimeout(300);
+
+    // --- Average window selector ---
+    const averageSelect = page.locator('select[aria-label="Average line"]');
+    check(
+      "The main chart's legend names the 3-month average by default",
+      (await page.locator(".chart-wrap .recharts-legend-item-text", { hasText: "3-month average" }).count()) === 1,
+    );
+    check("Every category mini-chart draws an average line", (await page.locator(".category-chart .recharts-line").count()) === 4);
+    await averageSelect.selectOption("6");
+    await page.waitForTimeout(300);
+    check(
+      "Choosing 6 months relabels the average line",
+      (await page.locator(".chart-wrap .recharts-legend-item-text", { hasText: "6-month average" }).count()) === 1,
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await waitForDashboardData();
+    check("The chosen average window is remembered after a reload", (await averageSelect.inputValue()) === "6");
+    await averageSelect.selectOption("3");
     await page.waitForTimeout(300);
 
     await clickChartMonth(monthIndex);

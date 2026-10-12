@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import {
-  BarChart,
+  ComposedChart,
   Bar,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -11,6 +12,8 @@ import {
   type MouseHandlerDataParam,
 } from "recharts";
 import { getYearSummary, type MonthSummary, type UpcomingItem } from "../api";
+import { EARLIEST_YEAR } from "../constants";
+import { AVERAGE_WINDOWS, knownMonths, trailingAverages, type AverageWindow } from "../movingAverage";
 import { CATEGORY_SWATCH } from "../categoryColors";
 import { YearSelect } from "./YearSelect";
 import { LoadingOverlay } from "./LoadingOverlay";
@@ -31,6 +34,38 @@ interface ChartRow {
   Transportation: number;
   Rent: number;
   Other: number;
+  /** Trailing average of the month total and of each category, keyed
+   * "<series> average". Null where there isn't a full window of data. */
+  "Total average": number | null;
+  "Food average": number | null;
+  "Transportation average": number | null;
+  "Rent average": number | null;
+  "Other average": number | null;
+}
+
+const AVERAGE_WINDOW_KEY = "ledger-dashboard-average-window";
+
+function getInitialAverageWindow(): AverageWindow {
+  const n = Number(localStorage.getItem(AVERAGE_WINDOW_KEY));
+  return AVERAGE_WINDOWS.find((w) => w === n) ?? 3;
+}
+
+/** The dashed trailing-average line drawn over a chart's bars. */
+function averageLine(dataKey: string, window: AverageWindow) {
+  return (
+    <Line
+      type="monotone"
+      dataKey={dataKey}
+      name={`${window}-month average`}
+      stroke="var(--text-h)"
+      strokeWidth={2}
+      strokeDasharray="5 4"
+      dot={false}
+      activeDot={false}
+      connectNulls={false}
+      isAnimationActive={false}
+    />
+  );
 }
 
 // Shared across every BarChart below so hovering a month in any one of them
@@ -57,18 +92,20 @@ function CategoryMiniChart({
   data,
   dataKey,
   color,
+  averageWindow,
   onBarClick,
 }: {
   data: ChartRow[];
   dataKey: (typeof CATEGORY_CHARTS)[number]["dataKey"];
   color: string;
+  averageWindow: AverageWindow;
   onBarClick: (state: MouseHandlerDataParam) => void;
 }) {
   return (
     <div className="category-chart">
       <h3>{dataKey}</h3>
       <ResponsiveContainer width="100%" height={180}>
-        <BarChart data={data} syncId={DASHBOARD_SYNC_ID} onClick={onBarClick} className="clickable-chart">
+        <ComposedChart data={data} syncId={DASHBOARD_SYNC_ID} onClick={onBarClick} className="clickable-chart">
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
           <XAxis dataKey="name" stroke="var(--text)" fontSize={11} />
           <YAxis stroke="var(--text)" fontSize={11} width={40} />
@@ -77,7 +114,8 @@ function CategoryMiniChart({
             contentStyle={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8 }}
           />
           <Bar dataKey={dataKey} fill={color} radius={[4, 4, 0, 0]} />
-        </BarChart>
+          {averageLine(`${dataKey} average`, averageWindow)}
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
@@ -92,25 +130,56 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [data, setData] = useState<MonthSummary[]>([]);
+  // The previous year's months, so a trailing average can start in January.
+  // Null when there is no earlier year or it couldn't be read: the averages
+  // then start once the selected year has a full window of its own.
+  const [previousData, setPreviousData] = useState<MonthSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [averageWindow, setAverageWindow] = useState<AverageWindow>(getInitialAverageWindow);
+
+  useEffect(() => {
+    localStorage.setItem(AVERAGE_WINDOW_KEY, String(averageWindow));
+  }, [averageWindow]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    getYearSummary(year)
-      .then(setData)
+    const previous =
+      year - 1 >= EARLIEST_YEAR ? getYearSummary(year - 1).catch(() => null) : Promise.resolve(null);
+    Promise.all([getYearSummary(year), previous])
+      .then(([current, prior]) => {
+        setData(current);
+        setPreviousData(prior);
+      })
       .catch((err) => setError((err as Error).message))
       .finally(() => setLoading(false));
   }, [year]);
 
-  const chartData = data.map((m) => ({
+  const averagesOf = (pick: (m: MonthSummary) => number) =>
+    trailingAverages(
+      previousData ? knownMonths(year - 1, previousData.map(pick)) : Array.from({ length: 12 }, () => null),
+      knownMonths(year, data.map(pick)),
+      averageWindow,
+    );
+  const totalAverage = averagesOf((m) => m.total);
+  const foodAverage = averagesOf((m) => m.food);
+  const transportationAverage = averagesOf((m) => m.transportation);
+  const rentAverage = averagesOf((m) => m.rent);
+  const otherAverage = averagesOf((m) => m.other);
+
+  const chartData: ChartRow[] = data.map((m, i) => ({
     name: MONTH_ABBR[m.month - 1],
     month: m.month,
     Food: m.food,
     Transportation: m.transportation,
     Rent: m.rent,
     Other: m.other,
+    "Total average": totalAverage[i] ?? null,
+    "Food average": foodAverage[i] ?? null,
+    "Transportation average": transportationAverage[i] ?? null,
+    "Rent average": rentAverage[i] ?? null,
+    "Other average": otherAverage[i] ?? null,
   }));
 
   const yearTotal = data.reduce((sum, m) => sum + m.total, 0);
@@ -131,7 +200,21 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
 
       <div className="dashboard-header">
         <h2>Yearly Overview</h2>
-        <YearSelect value={year} onChange={setYear} />
+        <div className="dashboard-controls">
+          <select
+            className="select"
+            aria-label="Average line"
+            value={averageWindow}
+            onChange={(e) => setAverageWindow(Number(e.target.value) as AverageWindow)}
+          >
+            {AVERAGE_WINDOWS.map((w) => (
+              <option key={w} value={w}>
+                {w}-month average
+              </option>
+            ))}
+          </select>
+          <YearSelect value={year} onChange={setYear} />
+        </div>
       </div>
 
       {error && <p className="error">{error}</p>}
@@ -147,7 +230,7 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
 
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={360}>
-              <BarChart data={chartData} onClick={handleBarClick} syncId={DASHBOARD_SYNC_ID} className="clickable-chart">
+              <ComposedChart data={chartData} onClick={handleBarClick} syncId={DASHBOARD_SYNC_ID} className="clickable-chart">
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="name" stroke="var(--text)" fontSize={12} />
                 <YAxis stroke="var(--text)" fontSize={12} />
@@ -171,14 +254,24 @@ export function Dashboard({ onSelectMonth, onSelectUpcomingItem }: Props) {
                   radius={[4, 4, 0, 0]}
                   className="dashboard-bar"
                 />
-              </BarChart>
+                {averageLine("Total average", averageWindow)}
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
-          <p className="dashboard-hint">Click a month to view or add entries for it.</p>
+          <p className="dashboard-hint">
+            Click a month to view or add entries for it. The dashed line is the {averageWindow}-month average.
+          </p>
 
           <div className="category-charts">
             {CATEGORY_CHARTS.map((c) => (
-              <CategoryMiniChart key={c.dataKey} data={chartData} dataKey={c.dataKey} color={c.color} onBarClick={handleBarClick} />
+              <CategoryMiniChart
+                key={c.dataKey}
+                data={chartData}
+                dataKey={c.dataKey}
+                color={c.color}
+                averageWindow={averageWindow}
+                onBarClick={handleBarClick}
+              />
             ))}
           </div>
         </div>
