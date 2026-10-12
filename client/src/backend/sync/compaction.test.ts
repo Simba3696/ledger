@@ -1085,10 +1085,14 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     for (const d of [r, c]) expect(status(d)).toBe("idle");
   });
 
-  // Open for the owner (ADR-0008, Design questions): guarantee 3 does not
-  // yet hold here. This pins today's behaviour so whoever closes the gap
-  // sees this test fail and turns it into a convergence test.
-  it("open for the owner: content only in an overwritten version of a log reaches a device that read it, never a cold start", async () => {
+  // Owner decision D25 (ADR-0008): guarantee 3 holds for devices that have
+  // joined the same file versions, and the app never drops content from a
+  // file it overwrites. A key holder overwriting a file with a version that
+  // drops content is insider rewriting, out of scope: the device that read
+  // the earlier version keeps what it joined, a cold start never sees it,
+  // and each stays consistent with what it joined (both idle, nothing
+  // halted). The accepted behaviour, pinned so a change to it is a decision.
+  it("D25: content only in an overwritten version of a log stays with the device that read it, and a cold start never sees it", async () => {
     const scratch = await world();
     const src = await device(scratch, { login: "alex" });
     running.push(src.engine);
@@ -1105,9 +1109,24 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     await plant(w, zLog, logFile(z, [ops[0], ops[2]]));
     const c = await open({ login: "sam" });
     await quiesce(w, r, c);
-    for (const d of [r, c]) expect(status(d)).toBe("idle");
+    for (const d of [r, c]) expect(d.engine.getState()).toMatchObject({ status: "idle", unreadable: null });
+    // Both hold the listed version; r also joined the one it replaced.
+    const listed = w.fake.file(FULL, repoPath(zLog))!.sha;
+    for (const d of [r, c]) expect(d.store.meta().joined).toMatchObject({ [`${EPOCH}.${z}.log.enc`]: listed });
     expect(remarks(r).sort()).toEqual(["One", "Three", "Two"]);
     expect(remarks(c).sort()).toEqual(["One", "Three"]);
+    // Each is consistent with what it joined: a reload shows the same.
+    for (const d of [r, c]) d.engine.stop();
+    const r2 = await open({ login: "sam", store: r.store });
+    const c2 = await open({ login: "sam", store: c.store });
+    await quiesce(w, r2, c2);
+    expect(remarks(r2).sort()).toEqual(["One", "Three", "Two"]);
+    expect(remarks(c2).sort()).toEqual(["One", "Three"]);
+    // And a write on either still reaches the other.
+    await write(c2, "After");
+    await quiesce(w, r2, c2);
+    expect(remarks(r2).sort()).toEqual(["After", "One", "Three", "Two"]);
+    expect(remarks(c2).sort()).toEqual(["After", "One", "Three"]);
   });
 
   /** Plants a snapshot under `device`, which has no other file, at `through`
