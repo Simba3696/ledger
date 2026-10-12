@@ -104,18 +104,28 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
  * of its epoch is listed, so another device already uses that epoch, and
  * deleting the genesis would leave the epoch uncounted and strand that
  * device; its previous version is restored from the repo's history
- * instead. */
+ * instead, or, for a `foreignKey` cause, that ledger is joined with its
+ * passphrase (`cause` keeps what is wrong with it). */
 export interface DamagedFile {
   /** Its path in the repo, "ledger/<epoch>.genesis.enc". */
   path: string;
   epoch: string;
-  reason: "malformed" | "undecryptable" | "foreignKey" | "joined";
+  reason: DamageCause | "joined";
+  /** For "joined": what is wrong with it (stage 6 final review). A joined
+   * `foreignKey` genesis is a ledger in use under another passphrase, to
+   * join, with no previous version to restore. */
+  cause?: DamageCause;
 }
 
+/** What is wrong with a damaged genesis (DamagedFile). */
+type DamageCause = "malformed" | "undecryptable" | "foreignKey";
+
 /** Epoch `epoch`'s genesis as a damaged file, for `reason`, or "joined"
- * when `joined` (a device file of the epoch is listed, epochJoined). */
-export function damagedGenesis(epoch: string, reason: Exclude<DamagedFile["reason"], "joined">, joined: boolean): DamagedFile {
-  return { path: repoPath({ kind: "genesis", epoch }), epoch, reason: joined ? "joined" : reason };
+ * with `reason` as its cause when `joined` (a device file of the epoch is
+ * listed, epochJoined). */
+export function damagedGenesis(epoch: string, reason: DamageCause, joined: boolean): DamagedFile {
+  const path = repoPath({ kind: "genesis", epoch });
+  return joined ? { path, epoch, reason: "joined", cause: reason } : { path, epoch, reason };
 }
 
 /** What to tell the person about a damaged genesis: which file to delete,
@@ -124,6 +134,12 @@ export function damagedGenesis(epoch: string, reason: Exclude<DamagedFile["reaso
  * version. */
 export function damagedFileMessage(file: DamagedFile): string {
   const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+  if (file.reason === "joined" && file.cause === "foreignKey") {
+    // Another device's ledger (a racing create's, or one under a changed
+    // passphrase) that it already writes in: no earlier version of the
+    // file was ever this household's to restore.
+    return `Sync is paused: the file ${file.path} in your GitHub repo is another device's ledger, already in use under a different passphrase, so this device can't open it. Don't delete it: that would cut that device off. To use that ledger, join it with that passphrase.`;
+  }
   if (file.reason === "joined") {
     return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device, and another device is already using this ledger version, so don't delete it: that would cut that device off. Restore the file's previous version from the repo's history instead: on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, then its History, open the version before the change, and commit that version back as the file. Sync then resumes, and nothing on this device is lost. If the household passphrase was changed, join the ledger with the new passphrase instead.`;
   }
