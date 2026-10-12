@@ -193,7 +193,10 @@ export interface EngineState {
    * on, a restore is refused (it would write past `winner`), and #8 offers
    * joining the ledger that's there now, or, with no winner (status
    * `missing` too), restoring this device's data into the empty repo or
-   * creating a new ledger (epochGoneMessage). Every cycle lists
+   * creating a new ledger (epochGoneMessage). #8's join from here must
+   * offer this device's own changes first (an export, or an own group
+   * left behind with the cut {}): the join clears the sync state, and
+   * nothing else keeps them (ADR-0008 STAGE-8). Every cycle lists
    * afresh meanwhile, and the first listing that counts the epoch again
    * clears it. Null otherwise. */
   epochGone: EpochGone | null;
