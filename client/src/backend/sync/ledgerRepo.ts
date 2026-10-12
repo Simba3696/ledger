@@ -122,13 +122,14 @@ export function damagedFileMessage(file: DamagedFile): string {
   if (file.reason === "joined") {
     return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device, and another device is already using this ledger version, so don't delete it: that would cut that device off. Restore the file's previous version from the repo's history instead: on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, then its History, open the version before the change, and commit that version back as the file. Sync then resumes, and nothing on this device is lost. If the household passphrase was changed, join the ledger with the new passphrase instead.`;
   }
-  const why =
-    file.reason === "foreignKey"
-      ? "it is sealed with a different passphrase, which may mean the household passphrase was changed"
-      : file.reason === "undecryptable"
-        ? "it doesn't decrypt with the household passphrase, so it was changed after it was written"
-        : "it is damaged";
-  return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device (${why}). Ledger never writes a file like it. Deleting it resumes sync, and nothing on this device is lost: on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, and delete the file.`;
+  const how = `on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, and delete the file.`;
+  if (file.reason === "foreignKey") {
+    // Ledger does write such a file: another device's create that raced
+    // this one, under its own passphrase's salt.
+    return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device: it is sealed with a different passphrase. It may be another device's ledger created at the same time, or the household passphrase changed; deleting it removes that ledger. To keep this device's ledger, delete it, and sync resumes with nothing on this device lost: ${how} To use that ledger instead, join it with its passphrase.`;
+  }
+  const why = file.reason === "undecryptable" ? "it doesn't decrypt with the household passphrase, so it was changed after it was written" : "it is damaged";
+  return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device (${why}). Ledger never writes a file like it. Deleting it resumes sync, and nothing on this device is lost: ${how}`;
 }
 
 /** The winning epoch in a listing of the repo now (section 9.1). */

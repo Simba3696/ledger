@@ -183,6 +183,13 @@ export interface EngineState {
    * deleting this file on GitHub resumes it (damagedFileMessage says how).
    * Null otherwise, a genesis too new for this build included. */
   damagedFile: DamagedFile | null;
+  /** This device's epoch no longer counts in a full listing (its genesis,
+   * or one below it, was deleted on GitHub) and the listing's winner is
+   * older or another: nothing the device can switch to. Sync stays
+   * pending, local writes go on, a restore is refused (it would write
+   * past `winner`), and #8 offers joining the ledger that's there now
+   * (EPOCH_GONE). Null otherwise. */
+  epochGone: EpochGone | null;
   /** A restore this tab started (restore()), once its genesis was sent:
    * "pending" while a PUT got no answer and no listing has settled it
    * ("unknown"), "landed" once its genesis is known to be in the repo
@@ -190,6 +197,18 @@ export interface EngineState {
    * was, or a full listing showed the pending one never landed. */
   restore: RestoreState | null;
 }
+
+/** This device's epoch, gone from the repo, and the winner listed now
+ * (EngineState.epochGone); `winner` is null when a restore finds no
+ * counted epoch at all. */
+export interface EpochGone {
+  epoch: string;
+  winner: string | null;
+}
+
+/** What to tell the person when this device's epoch is gone (EpochGone). */
+export const EPOCH_GONE =
+  "This device's ledger version was removed from the GitHub repo, so it can't sync. Its changes are kept on this device. To go on, join the ledger that's there now; its passphrase may differ.";
 
 /** How a restore this tab started stands (EngineState.restore). */
 export interface RestoreState {
@@ -246,8 +265,11 @@ export type RestoreResult =
    * refusal: it didn't land, and nothing was replaced. Try again.
    * `damagedFile`: the listing's winner is newer than this device's epoch
    * and can't be opened here; nothing is ever written past it, and
-   * deleting it on GitHub lets sync, and a restore, go on (D26). */
-  | { kind: "failed"; detail: string; damagedFile?: DamagedFile }
+   * deleting it on GitHub lets sync, and a restore, go on (D26).
+   * `epochGone`: this device's epoch no longer counts in a full listing, so
+   * a restore based on it would write past the epoch listed now; join that
+   * ledger instead (EPOCH_GONE). */
+  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone }
   /** A PUT of `epoch`'s genesis got no answer, and the listing since didn't
    * show it: it may still land, and then it replaces the ledger like any
    * restore. Sync (or reload) before trying again. Own writes stay refused
@@ -544,7 +566,7 @@ interface Loaded {
 type RestoreWrite =
   | { kind: "written"; genesis: NewEpoch }
   | { kind: "tooLarge"; detail: string }
-  | { kind: "failed"; detail: string; damagedFile?: DamagedFile }
+  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone }
   | { kind: "unknown"; epoch: string; detail: string };
 
 /** A new epoch's genesis, read or written, to switch to (section 9.3). */
@@ -695,6 +717,9 @@ export class SyncEngine {
   /** The listing's winner, newer than this device's epoch, can't be opened
    * here (D26), as last decided by a listing that could tell. */
   #damaged: DamagedFile | null = null;
+  /** This device's epoch no longer counts in a full listing (EpochGone),
+   * as last decided by a listing that could tell. */
+  #epochGone: EpochGone | null = null;
   /** Own log PUTs sent in the last hour, and when one last landed
    * (monotonic ms). */
   #putTimes: number[] = [];
@@ -1213,6 +1238,7 @@ export class SyncEngine {
     this.#blocker = null;
     if (ref.kind === "empty") {
       this.#damaged = null;
+      this.#epochGone = null;
       this.#blocker = "missing";
       return false;
     }
@@ -1279,15 +1305,25 @@ export class SyncEngine {
     if (winner === null) {
       // No genesis listed: no ledger in this repo (section 9.5).
       this.#damaged = null;
+      this.#epochGone = null;
       this.#blocker = "missing";
       return null;
     }
     const move = epochMove(winner, epoch);
     if (move === "stale") {
-      // A listing older than what this device has joined (section 9.1).
-      this.#log("the repo listing is older than what this device has joined; trying again later");
+      // A listing older than what this device has joined (section 9.1), or
+      // this device's epoch is gone: its genesis (or one below it) was
+      // deleted, perhaps on another device's word that it was a racing
+      // create's (D26). A listing can't tell the two apart, and a stale one
+      // passes with the next listing, so the cycle stays pending either
+      // way; the state says the epoch no longer counts, so #8 can
+      // offer joining the ledger that's there now, and a restore is refused.
+      // (A cut listing never gets here: it stopped above.)
+      if (this.#epochGone?.epoch !== epoch || this.#epochGone.winner !== winner) this.#epochGone = { epoch, winner };
+      this.#log(`the repo listing is older than what this device has joined, or its epoch ${epoch} is gone (the winner is ${winner}); trying again later`);
       return null;
     }
+    this.#epochGone = null;
     if (move === "switch") {
       // A restore won (section 9.3): switch to its epoch, then read that
       // epoch's files from this same listing. Nothing more is read from or
@@ -2433,7 +2469,9 @@ export class SyncEngine {
    * is too old to read it: updating the app is the fix. Nor when this
    * device can't open it (owner decision D26): the app never writes such a
    * genesis, and nothing is written past it; the result names the file,
-   * whose deletion on GitHub lets sync and the restore go on. */
+   * whose deletion on GitHub lets sync and the restore go on. Nor when this
+   * device's epoch no longer counts in a full listing (`epochGone`): a
+   * restore numbered after it would write past the epoch that won. */
   async #writeRestore(doc: LedgerDocument): Promise<RestoreWrite> {
     const remote = this.#remote!;
     const meta = this.#meta!;
@@ -2448,6 +2486,13 @@ export class SyncEngine {
       return { kind: "failed", detail: "GitHub cut the file listing short, so the winning epoch is unknown; try again later" };
     }
     const listed = now.winner;
+    // This device's epoch no longer counts: a restore based on it, numbered
+    // after it, would write past the epoch listed now (a racing create's
+    // flip-flop, D26). Join that ledger instead.
+    if (!now.truncated && (listed === null || compareEpochKeys(listed, meta.epochKey) < 0)) {
+      const epochGone = { epoch: meta.epochKey, winner: listed };
+      return { kind: "failed", detail: EPOCH_GONE, epochGone };
+    }
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
       const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.names);
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
@@ -2509,6 +2554,7 @@ export class SyncEngine {
           // No epoch is written past a genesis this device can't open
           // (D26): the write waits until the file is deleted.
           if (written.kind === "failed" && written.damagedFile) throw new ApiError(503, needsNewEpochPast(written.damagedFile));
+          if (written.kind === "failed" && written.epochGone) throw new ApiError(503, EPOCH_GONE);
           throw new ApiError(503, NEEDS_NEW_EPOCH);
         }
         if (!(await this.#switchEpoch(from, written.genesis))) throw new ApiError(503, CHANGED_WHILE_SAVING);
@@ -3147,6 +3193,7 @@ export class SyncEngine {
       leftBehindCount: this.#leftBehindCount,
       leftBehindOwnCount: this.#leftBehindOwnCount,
       damagedFile: this.#damaged,
+      epochGone: this.#epochGone,
       restore: this.#restoreState,
     };
   }
