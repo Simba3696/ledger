@@ -419,9 +419,28 @@ export function rememberRestore(epoch: string): void {
   }
 }
 
-/** The epoch a restore in this tab wrote before the reload, once: compare
- * it with the epoch the engine ends on (SyncEngine.epochKey) to tell "your
- * restore replaced the ledger" from "Sam's restore replaced yours". */
+/** Forgets the epoch a restore remembered (rememberRestore), if it is still
+ * `epoch`: a full listing showed its genesis never landed (the engine's
+ * #settleRestore), so the reload after it has nothing to report. */
+export function forgetRestore(epoch: string): void {
+  try {
+    const storage = session();
+    if (storage?.getItem(RESTORED_KEY) === epoch) storage.removeItem(RESTORED_KEY);
+  } catch {
+    // Storage refused: the reload may report a restore that didn't land.
+  }
+}
+
+/** The epoch a restore in this tab wrote before the reload, once. Compare
+ * it with the epoch the engine ends on (SyncEngine.epochKey):
+ *   - equal: "your restore replaced the ledger";
+ *   - the engine's is greater: "Sam's restore replaced yours";
+ *   - the engine's is older: it hasn't landed. Its genesis PUT got no
+ *     answer (restore() said "unknown") and the reload came before any
+ *     full listing settled it. If it lands later the device switches to it
+ *     like any restore; once a full listing shows it never landed, the
+ *     engine forgets it (forgetRestore), and this is null.
+ * Null when no restore is remembered. */
 export function takeRestoredEpoch(): string | null {
   try {
     const storage = session();

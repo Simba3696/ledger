@@ -41,7 +41,7 @@ import {
   type LeftBehindItem,
   type ReapplyResult,
 } from "./leftBehind";
-import { damagedFileMessage, damagedGenesis, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
+import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
@@ -274,7 +274,8 @@ export type RestoreResult =
    * landed restore (reload to continue); a full one without it lets writes
    * go on, and a genesis that lands later still is switched to like any
    * other restore, own changes since offered (D18). The epoch is
-   * remembered for the reload (rememberRestore). */
+   * remembered for the reload (rememberRestore), and forgotten once a full
+   * listing shows it never landed (takeRestoredEpoch). */
   | { kind: "unknown"; epoch: string };
 
 /** The sync bookkeeping a remote join may record with its delta. */
@@ -1526,6 +1527,8 @@ export class SyncEngine {
       this.#log(`the restore's genesis ${epoch} isn't in the repo; writes go on`);
       this.#restoreUnknown = null;
       this.#restoreState = null;
+      // The reload after it has no restore to report (takeRestoredEpoch).
+      forgetRestore(epoch);
     }
   }
 
