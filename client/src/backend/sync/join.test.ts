@@ -5,7 +5,7 @@ import { canonicalJson } from "./canonical";
 import { decodeState, encodeState, vectorOf } from "./codec";
 import { FIELDS, TOGETHER, parseRegisterKey, type Coll } from "./keys";
 import { materialize } from "./materialize";
-import { applyOp, cloneState, emptyState, genesisState, join, joinInto, opState, type Op, type SyncState } from "./state";
+import { applyOp, cloneState, emptyState, genesisState, holdsOp, join, joinInto, opState, type Op, type SyncState } from "./state";
 import { Replica, Rng, deviceId, docText, emptyDocument, fingerprint, forEachSeed, randomOp, testEnv, type RecordPool } from "./testkit";
 
 // The join's laws (design sections 2.3 and 16.1): commutative, associative
@@ -214,6 +214,10 @@ describe(`join laws over ${LAW_SEEDS} random states`, () => {
       expect(fingerprint(join(a, b))).toBe(fingerprint(join(b, a)));
       expect(fingerprint(join(join(a, b), c))).toBe(fingerprint(join(a, join(b, c))));
       expect(fingerprint(join(a, a))).toBe(fingerprint(a));
+      // holdsOp says exactly whether joining an op would change the state.
+      for (const { device, op } of ops) {
+        expect(holdsOp(a, device, op)).toBe(fingerprint(join(a, opState(device, op))) === fingerprint(a));
+      }
       // A state survives its compact encoding (a snapshot) unchanged.
       const decoded = decodeState(JSON.parse(canonicalJson(encodeState(a))), vectorOf(a.seen), a.maxL, genesis);
       expect(typeof decoded === "string" ? decoded : fingerprint(decoded)).toBe(fingerprint(a));

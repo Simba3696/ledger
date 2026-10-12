@@ -494,6 +494,30 @@ describe("the gap check (section 8.2)", () => {
     expect(remarks(b).sort()).toEqual(["From c", "One", "Two"]);
     expect(status(b)).toBe("idle");
   });
+
+  it("a log waiting on a snapshot that can't be read is downloaded once, not on every poll, and is joined once a valid one is listed", async () => {
+    const a = await open(every(2));
+    const b = await open({ login: "sam" });
+    await write(a, "One", "Two");
+    await compactNow(a);
+    const good = stored(a, "snap")!.text;
+    await plant(w, file(a, "snap"), { fv: 1, kind: "snap", epoch: EPOCH, device: a.engine.deviceId });
+    await cycle(w, b);
+    expect(status(b)).toBe("needsAttention");
+    const logSha = stored(a, "log")!.sha;
+    const from = w.fake.requests.length;
+    await cycle(w, b);
+    await cycle(w, b);
+    await cycle(w, b);
+    // Each poll lists again (the head isn't handled), and reads nothing.
+    expect(readsOf(from, logSha)).toBe(0);
+    expect(blobReads(from)).toEqual([]);
+    expect(since(w, from).filter((r) => r.method === "GET" && r.path.includes("/git/trees/")).length).toBe(3);
+    await plant(w, file(a, "snap"), good);
+    await cycle(w, b);
+    expect(remarks(b)).toEqual(["One", "Two"]);
+    expect(status(b)).toBe("idle");
+  });
 });
 
 describe("cold start and offline catch-up (section 8.3)", () => {
@@ -796,6 +820,53 @@ describe("a snapshot's seen and joined name only devices and files the repo list
     expect(r.logs.some((l) => l.includes("no file in the repo"))).toBe(true);
   });
 
+  it("a snapshot refused because its seen names a device with no file is checked again against every listing: once that device is listed, a tab that refused it joins it as a cold start does", async () => {
+    const x = await open({ ...every(1), login: "sam" });
+    await write(x, "From x");
+    await compactNow(x);
+    const q = await open({ login: "alex" }); // no file yet
+    const snap = (await unseal(stored(x, "snap")!.text, w.key)) as SnapContent & { device: string; state: { rec: { e: { v: Record<string, unknown> }[] } } };
+    const z = `d${hex()}`;
+    snap.device = z;
+    snap.seen[z] = snap.through;
+    snap.seen[q.engine.deviceId!] = 1;
+    snap.seen = Object.fromEntries(Object.entries(snap.seen).sort(([a], [b]) => (a < b ? -1 : 1)));
+    snap.state.rec.e.find((rec) => rec.v.remarks === "From x")!.v.remarks = "~forged";
+    const zSnap: RepoFile = { kind: "snap", epoch: EPOCH, device: z };
+    expect(checkRepoFile(zSnap, snap, genesisState(w.doc)).ok).toBe(true);
+    // No log needs it.
+    await plant(w, zSnap, snap);
+    const zSha = w.fake.file(FULL, repoPath(zSnap))!.sha;
+    const r = await open({ login: "sam" });
+    expect(r.logs.some((l) => l.includes("no file in the repo"))).toBe(true);
+    expect(remarks(r)).toEqual(["From x"]);
+    expect(status(r)).toBe("idle");
+    // Another commit while q is still unlisted: checked again, not downloaded again.
+    await write(x, "More");
+    await cycle(w, x);
+    let from = w.fake.requests.length;
+    await cycle(w, r);
+    expect(readsOf(from, zSha)).toBe(0);
+    expect(remarks(r).sort()).toEqual(["From x", "More"]);
+    // q's file is listed: the snapshot now passes, and r joins it.
+    await write(q, "From q");
+    await cycle(w, q);
+    from = w.fake.requests.length;
+    await cycle(w, r);
+    expect(readsOf(from, zSha)).toBe(1);
+    const c = await open({ login: "sam" }); // cold start
+    await quiesce(w, x, q, r, c);
+    for (const d of [x, q, r, c]) expect(status(d)).toBe("idle");
+    expect(remarks(c)).toContain("~forged");
+    expectConverged(r, c);
+    expectConverged(x, q, c);
+    // A reload changes nothing.
+    r.engine.stop();
+    const again = await open({ store: r.store, login: "sam" });
+    await quiesce(w, again, c);
+    expectConverged(again, c);
+  });
+
   it("a snapshot's joined map is never taken: names no file lists never reach the reader's meta or its own snapshot", async () => {
     const x = await open({ ...every(1), login: "sam" });
     await write(x, "From x");
@@ -986,6 +1057,32 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     await cycle(w, r);
     expect(status(r)).toBe("idle");
     expect(remarks(r)).toEqual(["One", "Two", "Three", "Four", "Five", "Six", "Seven"]);
+  });
+
+  it("an op that the current version of a log holds below the last L an earlier version gave is joined: a device that read the earlier version converges with a cold start", async () => {
+    // Valid ops at L 2, 3 and 4, made in a scratch world.
+    const scratch = await world();
+    const src = await device(scratch, { login: "alex" });
+    running.push(src.engine);
+    await write(src, "One", "Two", "Three");
+    await cycle(scratch, src);
+    const ops = ((await unseal(scratch.fake.file(FULL, repoPath(file(src, "log")))!.text, scratch.key)) as LogContent).ops;
+    src.engine.stop();
+    expect(ops.map((op) => op.L)).toEqual([2, 3, 4]);
+    const z = `d${"ab".repeat(8)}`;
+    const zLog: RepoFile = { kind: "log", epoch: EPOCH, device: z };
+    // Lamport gaps are normal: L 2 and 4 first.
+    await plant(w, zLog, logFile(z, [ops[0], ops[2]]));
+    const r = await open({ login: "sam" });
+    expect(remarks(r).sort()).toEqual(["One", "Three"]);
+    await plant(w, zLog, logFile(z, ops));
+    await cycle(w, r);
+    const c = await open({ login: "sam" });
+    await quiesce(w, r, c);
+    expect(r.store.meta().joined).toMatchObject({ [`${EPOCH}.${z}.log.enc`]: w.fake.file(FULL, repoPath(zLog))!.sha });
+    expect(remarks(r).sort()).toEqual(["One", "Three", "Two"]);
+    expectConverged(r, c);
+    for (const d of [r, c]) expect(status(d)).toBe("idle");
   });
 
   it("a cold start reads every listed log and snapshot once; catch-up reads only the files changed since", async () => {

@@ -226,6 +226,28 @@ export function opState(device: string, op: Op): SyncState {
   return state;
 }
 
+/** Whether joining `device`'s `op` into `state` would change nothing: the
+ * same test joinInto makes, without changing `state`. The join is a
+ * semilattice, so an op that changes nothing now changes nothing after any
+ * later join either, and leaving it out is the same as joining it. */
+export function holdsOp(state: SyncState, device: string, op: Op): boolean {
+  const source = opState(device, op);
+  for (const [key, regs] of source.rec) {
+    const mine = state.rec.get(key);
+    if (!mine || joinRecord(key.slice(0, key.indexOf("/")) as Coll, new Map(mine), regs)) return false;
+  }
+  for (const [key, reg] of source.unit) {
+    const current = state.unit.get(key);
+    if (!current || beats(reg, current)) return false;
+  }
+  for (const [key, deletion] of source.del) {
+    const current = state.del.get(key);
+    if (!current || deletionBeats(deletion, current)) return false;
+  }
+  for (const marker of source.ra) if (!state.ra.has(marker)) return false;
+  return op.L <= (state.seen.get(device) ?? 0) && op.L <= state.maxL;
+}
+
 /** Joins one of `device`'s ops into `state`. */
 export function applyOp(state: SyncState, device: string, op: Op): Changes {
   return joinInto(state, opState(device, op));

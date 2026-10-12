@@ -26,7 +26,7 @@ import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, t
 import { LOCAL_FORMAT_VERSION, checkMeta, decodeDelta, decodeStoredState, isChainValue, seal, storedState, unseal, type Delta, type DeviceKey, type SyncMeta } from "./records";
 import { rehomeReissue } from "./rehome";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds, type FileRead } from "./repoFiles";
-import { applyOp, cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
+import { applyOp, cloneState, emptyState, genesisState, holdsOp, joinInto, opState, type Op, type SyncState } from "./state";
 import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type VersionVector } from "./tags";
 
 // The sync engine (design sections 3.4, 3.5, 7, 8, 10, 11 and 12): the
@@ -314,6 +314,10 @@ interface StreamSource {
    * and meta.snapReach). */
   logReach: Map<string, number>;
   snapReach: Map<string, number>;
+  /** The state the read's ops join into, if it holds anything yet: an op
+   * at or below its log's logReach is left out only when joining it would
+   * change nothing here. */
+  held: SyncState | null;
   /** The file versions that state already includes. */
   joined: Readonly<Record<string, string>>;
   /** The device whose files are not read (this device, in a cycle). */
@@ -491,6 +495,15 @@ export class SyncEngine {
    * a byte copy of a valid log under another device's name has the same
    * sha, and is refused only because its content doesn't match its name. */
   readonly #refused = new Map<string, Extract<FileRead, { ok: false }>>();
+  /** Snapshots refused because their `seen` names devices with no file
+   * listed, by `<name>@<blob sha>`, to those devices. Unlike #refused the
+   * verdict depends on the listing, so it is checked again against every
+   * listing; the snapshot is downloaded again only once all are listed. */
+  readonly #unlistedSeen = new Map<string, string[]>();
+  /** Logs read and found waiting for their snapshot (section 8.2), by
+   * `<name>@<blob sha>`: each poll checks them again without downloading
+   * them again. Dropped once joined or no longer listed at that sha. */
+  readonly #waitingLogs = new Map<string, FileRead>();
   /** The epoch's genesis is newer than this build: writes are refused. */
   #genesisBlocked = false;
   /** Own log PUTs sent in the last hour, and when one last landed
@@ -1162,6 +1175,7 @@ export class SyncEngine {
       genesis: () => this.#epochGenesis(listing),
       logReach: new Map(Object.entries(meta.logReach)),
       snapReach: new Map(Object.entries(meta.snapReach)),
+      held: this.#state,
       joined: meta.joined,
       skip: meta.deviceId,
       logs,
@@ -1175,6 +1189,13 @@ export class SyncEngine {
     for (const [name, halt] of streams.halted) this.#halted.set(name, halt);
     // A halted file that is no longer listed in this epoch halts nothing.
     for (const name of this.#halted.keys()) if (!listing.files.has(name)) this.#halted.delete(name);
+    // What was kept for a file version no longer listed is never asked for.
+    for (const kept of [this.#unlistedSeen, this.#waitingLogs]) {
+      for (const at of kept.keys()) {
+        const [name, sha] = at.split("@");
+        if (listing.files.get(name)?.sha !== sha) kept.delete(at);
+      }
+    }
     this.#gapWait = streams.gap;
     return streams;
   }
@@ -1197,9 +1218,10 @@ export class SyncEngine {
    * listed one or was joined in this read: an overwritten snapshot's word
    * closes no later log's gap. So every log whose version this device hasn't
    * joined is read and its ops joined, and the state is the join of the
-   * files read. The only ops left out are those at or below the last L of
-   * the version of the same log joined before: logs are cumulative, so that
-   * log already gave them. */
+   * files read. The only ops left out are those whose join would change
+   * nothing in the state already held, looked for only at or below the last
+   * L of the version of the same log joined before: an op a later version
+   * inserted or changed there is joined, as a cold start joins it. */
   async #readStreams(src: StreamSource): Promise<Streams> {
     const epoch = this.#meta!.epochKey;
     const out: Streams = {
@@ -1237,23 +1259,36 @@ export class SyncEngine {
     const listedDevices = new Set<string>();
     for (const { file } of src.listing.files.values()) if (file.kind !== "genesis" && file.epoch === epoch) listedDevices.add(file.device);
 
+    // A seen entry joined is carried in every later own op's vv and own
+    // snapshot. Entries for devices with no file would let one small file
+    // make every later own op too large to push. Whether a device has a
+    // file depends on the listing, not on the snapshot's bytes, so this
+    // refusal is never remembered as final (#refused): it is checked again
+    // against every listing, and a device listed later lets every device
+    // join the snapshot alike.
+    const unlistedIn = (devices: string[]) => (src.listing.truncated ? [] : devices.filter((device) => !listedDevices.has(device)));
+    const unlistedRefusal = (count: number) =>
+      ({ ok: false, problem: "malformed", detail: `its seen names ${count} devices with no file in the repo` }) satisfies FileRead;
+
     const joinSnap = async (name: string, listed: Listed): Promise<FileRead> => {
+      const at = `${name}@${listed.sha}`;
+      const named = this.#unlistedSeen.get(at);
+      if (named) {
+        const still = unlistedIn(named);
+        if (still.length > 0) return unlistedRefusal(still.length);
+      }
       const read = await this.#read(name, listed, await src.genesis());
       if (!read.ok) return read;
       const { file, state } = read.read;
       if (!state || file.kind !== "snap") return { ok: false, problem: "malformed", detail: "it is not a snapshot" };
-      // A seen entry joined is carried in every later own op's vv and own
-      // snapshot. Entries for devices with no file would let one small
-      // file make every later own op too large to push.
-      if (!src.listing.truncated) {
-        const unlisted = [...state.seen.keys()].filter((device) => device !== file.device && !listedDevices.has(device));
-        if (unlisted.length > 0) {
-          const refused: FileRead = { ok: false, problem: "malformed", detail: `its seen names ${unlisted.length} devices with no file in the repo` };
-          this.#refused.set(`${name}@${listed.sha}`, refused);
-          this.#log(`${name} can't be joined (malformed): ${refused.detail}`);
-          return refused;
-        }
+      const unlisted = unlistedIn([...state.seen.keys()].filter((device) => device !== file.device));
+      if (unlisted.length > 0) {
+        const refused = unlistedRefusal(unlisted.length);
+        this.#unlistedSeen.set(at, unlisted);
+        this.#log(`${name} can't be joined while the listing stays as it is (malformed): ${refused.detail}`);
+        return refused;
       }
+      this.#unlistedSeen.delete(at);
       out.states.push(state);
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
@@ -1291,7 +1326,8 @@ export class SyncEngine {
           done = true;
           break;
         }
-        const read = await this.#read(name, version);
+        const at = `${name}@${version.sha}`;
+        const read = this.#waitingLogs.get(at) ?? (await this.#read(name, version));
         if (!read.ok || read.read.file.kind !== "log") {
           if (listed) out.halted.set(name, haltOf(read));
           continue;
@@ -1310,15 +1346,21 @@ export class SyncEngine {
           if (log.snapThrough > heldOf(device)) {
             // Not joined across the gap: a stale snap read waits for the
             // next cycle, and a snap that can't be read halts the stream.
+            // The log is kept, so the next poll needn't download it again.
             if (listed && !out.halted.has(snapName)) out.gap = true;
+            this.#waitingLogs.set(at, read);
             continue;
           }
         }
+        this.#waitingLogs.delete(at);
         if (listed) {
           out.halted.delete(snapName);
           for (const healthy of [name, snapName]) out.healthy.add(healthy);
         }
-        for (const op of log.ops) if (op.L > logOf(device)) out.ops.push([device, op]);
+        // An op at or below what the version joined before gave is left out
+        // only when the state already holds it whole: a later version that
+        // inserts or changes one there is joined, as a cold start joins it.
+        for (const op of log.ops) if (op.L > logOf(device) || src.held === null || !holdsOp(src.held, device, op)) out.ops.push([device, op]);
         const last = log.ops.at(-1)?.L ?? 0;
         if (last > logOf(device)) src.logReach.set(device, last);
         out.joined[name] = version.sha;
@@ -1911,6 +1953,7 @@ export class SyncEngine {
       genesis: async () => genesis.state,
       logReach: new Map(),
       snapReach: new Map(),
+      held: null,
       joined: {},
       skip: null,
       logs,
