@@ -144,18 +144,18 @@ export interface EpochNow {
    * `winner` alone decides nothing (ADR-0008). A greater one listed is
    * there all the same. */
   truncated: boolean;
-  /** Every name the listing holds. */
-  names: readonly string[];
+  /** Every file the listing holds, by name, with its blob sha and size. */
+  files: ReadonlyMap<string, { sha: string; size: number }>;
 }
 
 /** The winning epoch in the repo now (section 9.1), and whether the
  * listing it comes from was cut. */
 export async function winningEpochNow(remote: Remote): Promise<EpochNow> {
   const listing = await listNow(remote);
-  if (listing === null) return { winner: null, sha: null, size: null, truncated: false, names: [] };
+  if (listing === null) return { winner: null, sha: null, size: null, truncated: false, files: new Map() };
   const winner = winningEpoch(listing.names);
   const listed = winner === null ? null : listing.files.get(repoFileName({ kind: "genesis", epoch: winner }))!;
-  return { winner, sha: listed?.sha ?? null, size: listed?.size ?? null, truncated: listing.truncated, names: listing.names };
+  return { winner, sha: listed?.sha ?? null, size: listed?.size ?? null, truncated: listing.truncated, files: listing.files };
 }
 
 /** "Is there a ledger?" (#8): the winning genesis and its header. */
@@ -163,10 +163,11 @@ export async function findLedger(remote: Remote): Promise<LedgerFound> {
   return findIn(remote, await listNow(remote));
 }
 
-/** findLedger on a listing already made. */
-async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow>>): Promise<LedgerFound> {
+/** findLedger on a listing already made: the winner's genesis, or `at`'s
+ * (a genesis listed in it) when given. */
+async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow>>, at?: string): Promise<LedgerFound> {
   if (listing === null) return { kind: "none" };
-  const epoch = winningEpoch(listing.names);
+  const epoch = at ?? winningEpoch(listing.names);
   if (epoch === null) return listing.truncated ? { kind: "unknown" } : { kind: "none" };
   const name = repoFileName({ kind: "genesis", epoch });
   const { sha, size } = listing.files.get(name)!;
@@ -321,7 +322,13 @@ export type CreateResult =
    * full after it, or its PUT got no answer and may still land: try again
    * later, and the next try joins what it finds. */
   | { kind: "unknown" }
-  | Exclude<GenesisWrite, { kind: "written" }>;
+  /** It didn't land (GenesisWrite's "failed"), or, with `damagedFile`,
+   * nothing was written: its epoch 1 would fill the gap below a genesis
+   * numbered past it that can't be opened, which would then count and win.
+   * That file counts for nothing now, so deleting it is safe (D26), and
+   * the create or restore then goes on. */
+  | { kind: "failed"; detail: string; damagedFile?: DamagedFile }
+  | Exclude<GenesisWrite, { kind: "written" | "failed" }>;
 
 /** #8 Create, and #9's restore into a repo with no ledger: one genesis PUT
  * for epoch 1 (section 9.5), `doc` an empty document or the backup, under
@@ -354,6 +361,18 @@ export async function createLedger(
     return listing!.truncated ? { kind: "unknown" } : { kind: "exists", damagedFile };
   }
   const epoch = nextEpochKey(null);
+  // Epoch 1 may fill the gap below a genesis numbered past it, which would
+  // then count and win: one that can't be opened would leave this create
+  // "replaced" by a ledger no device can join. Nothing is written; the file
+  // counts for nothing now, so it is named to delete (D26).
+  const after = listing === null ? null : winningEpoch([...listing.names, repoFileName({ kind: "genesis", epoch })]);
+  if (after !== null && after !== epoch) {
+    const gap = await findIn(remote, listing, after);
+    if (gap.kind !== "none" && gap.kind !== "unknown") {
+      const damagedFile = await damagedWinner(gap, key, reason);
+      if (damagedFile !== null) return { kind: "failed", detail: damagedFileMessage(damagedFile), damagedFile };
+    }
+  }
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
   // It may still land: the next try finds it, or not, and goes on from there.
   if (written.kind === "unknown") return { kind: "unknown" };
@@ -374,7 +393,8 @@ export async function createLedger(
   return { kind: "created", epoch, sha: written.sha, state: genesisState(doc) };
 }
 
-/** The winning genesis as a damaged file, as far as `key` can tell (D26),
+/** A listed genesis (the winner, or one a new epoch 1 would make count) as
+ * a damaged file, as far as `key` can tell (D26),
  * else null. One whose header doesn't parse is damaged whatever the key. A
  * restore's key is the household's (the backup opened with it), so it
  * tells the rest as the engine does: a genesis that decrypts but isn't a

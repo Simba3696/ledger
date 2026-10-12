@@ -248,8 +248,15 @@ export type RestoreResult =
   /** It landed, but a greater epoch was already listed: "Sam's restore
    * replaced yours. [Restore again]". Clear and reload as for "restored".
    * `reason`, `by` and `at` say who made the winner and when, when its
-   * genesis could be read (display only). */
-  | { kind: "replaced"; epoch: string; winner: string; reason?: GenesisContent["reason"]; by?: string; at?: number }
+   * genesis could be read (display only).
+   * `damagedFile` (and then no `reason`, `by` or `at`): the winner is a
+   * genesis this device can't open, which landed while the restore ran
+   * (D26). The caller must not clear and reload yet, since the reload
+   * would find only that file: show damagedFileMessage, and reload once
+   * EngineState.damagedFile is null again (the file was deleted, or its
+   * previous version restored), when the reload joins the winner, this
+   * restore's epoch once that file is gone. */
+  | { kind: "replaced"; epoch: string; winner: string; reason?: GenesisContent["reason"]; by?: string; at?: number; damagedFile?: DamagedFile }
   /** Own changes are not in the repo yet, or this device's own changes an
    * earlier restore left behind are not yet re-applied or discarded (they
    * are kept only on this device, D18): the reload after a restore would
@@ -2370,7 +2377,14 @@ export class SyncEngine {
         this.#log("the repo couldn't be listed after the restore landed; the reload finds the winner", err);
         return { kind: "restored", epoch, winnerUnknown: true };
       }
-      if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner, ...(await this.#madeBy(now.winner, now.sha!)) };
+      if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) {
+        // One this device can't open (a file changed outside the app that
+        // landed while this ran) is named, with no maker; named only from a
+        // full listing, as the cycle does (D26).
+        const damaged = now.truncated ? null : await this.#damagedWinner(now.winner, now.sha!, now.size!, now.files.keys());
+        if (damaged !== null) return { kind: "replaced", epoch, winner: now.winner, damagedFile: damaged };
+        return { kind: "replaced", epoch, winner: now.winner, ...(await this.#madeBy(now.winner, now.sha!)) };
+      }
       // A cut listing may leave out a greater epoch (ADR-0008).
       if (now.truncated) {
         this.#log("GitHub cut the listing after the restore landed; the reload finds the winner");
@@ -2469,7 +2483,9 @@ export class SyncEngine {
    * is too old to read it: updating the app is the fix. Nor when this
    * device can't open it (owner decision D26): the app never writes such a
    * genesis, and nothing is written past it; the result names the file,
-   * whose deletion on GitHub lets sync and the restore go on. Nor when this
+   * whose deletion on GitHub lets sync and the restore go on. Nor when the
+   * new genesis would fill the gap below such a genesis, which would then
+   * count and win (the result names it too). Nor when this
    * device's epoch no longer counts in a full listing (`epochGone`): a
    * restore numbered after it would write past the epoch that won. */
   async #writeRestore(doc: LedgerDocument): Promise<RestoreWrite> {
@@ -2494,11 +2510,22 @@ export class SyncEngine {
       return { kind: "failed", detail: EPOCH_GONE, epochGone };
     }
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
-      const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.names);
+      const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.files.keys());
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
       return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
     }
     const epoch = nextEpochKey(meta.epochKey);
+    // The new genesis may fill the gap below a genesis numbered past it,
+    // which then counts and wins: one this device can't open would leave
+    // the restore "replaced" by a file no device can open. Nothing is
+    // written; that file counts for nothing now, so it is named to delete
+    // (D26), and the restore goes on once it is gone.
+    const after = winningEpoch([...now.files.keys(), repoFileName({ kind: "genesis", epoch })]);
+    if (after !== null && after !== epoch) {
+      const gap = now.files.get(repoFileName({ kind: "genesis", epoch: after }))!;
+      const damaged = await this.#damagedWinner(after, gap.sha, gap.size, now.files.keys());
+      if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
+    }
     const content: GenesisContent = { epoch, reason: "restore", by: this.#actor, at: this.#now(), basedOn, doc };
     // Every PUT sent counts against the hourly cap, a second one after no
     // answer included (ADR-0008 stage 4).
