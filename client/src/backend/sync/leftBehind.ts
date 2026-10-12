@@ -306,6 +306,33 @@ export function inEffect(group: LeftBehindGroup, state: SyncState): boolean {
   return group.del.every((rk) => !isVisible(state, rk));
 }
 
+/** The part of `group` that `applied` (reapplyTo's) put back: what an own
+ * group keeps after its own re-apply, so it shows again if a concurrent
+ * re-apply from an older view sets any of it back (D18). Null when nothing
+ * was applied. */
+export function appliedPart(group: LeftBehindGroup, applied: readonly LeftBehindItem[]): LeftBehindGroup | null {
+  const keys = new Set<string>();
+  const dels = new Set<string>();
+  for (const item of applied) {
+    if (item.kind === "unit") keys.add(item.key);
+    else if (item.kind === "delete") dels.add(`${item.coll}/${item.id}`);
+    else {
+      const rk = `${item.coll}/${item.id}`;
+      if (item.kind === "add") keys.add(`${rk}/${CREATE}`);
+      for (const field of Object.keys(item.fields)) keys.add(`${rk}/${field}`);
+    }
+  }
+  const set = group.set.filter(([key]) => keys.has(key));
+  const del = group.del.filter((rk) => dels.has(rk));
+  if (set.length === 0 && del.length === 0) return null;
+  const touched = new Set(del);
+  for (const [key] of set) {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind === "field") touched.add(`${parsed.coll}/${parsed.id}`);
+  }
+  return { ...group, set, del, records: Object.fromEntries(Object.entries(group.records).filter(([rk]) => touched.has(rk))) };
+}
+
 // --- Re-apply ---------------------------------------------------------------------
 
 /** Why a change can't be re-applied now. */

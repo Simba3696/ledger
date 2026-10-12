@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
+import { appliedPart, checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
 import { genesisState } from "./state";
 import { ALL_MODULES, Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -261,6 +261,25 @@ describe("re-apply (section 9.4)", () => {
     // b's group sets only b's amount.
     reapplied(n, groupB);
     expect(taxi().amount).toBe("11.00");
+  });
+
+  it("an own group keeps what its re-apply put back, which is in effect, and nothing it skipped", async () => {
+    const doc = await backup();
+    const { a } = pair(doc);
+    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
+    await a.backend.setMonthIncome(2026, 6, { salary: 100, otherIncome: null, savings: [] });
+    await a.backend.updateDebt((await a.backend.getDebts())[0].row, { name: "Sam", amount: 450 });
+    const [group] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
+    const n = new Replica(N, doc, { actor: "kim", epoch: NEW });
+    await n.backend.setMonthLock(2026, 5, true);
+    const { result } = reapplied(n, group);
+    expect(result.skipped.map(({ item }) => item.kind)).toEqual(["add"]);
+    const kept = appliedPart(group, result.applied)!;
+    expect(leftBehindItems(kept).map((i) => (i.kind === "unit" ? i.key : `${i.kind}:${i.coll}`))).toEqual(["fm/2026-06", "edit:debt"]);
+    expect(Object.keys(kept.records)).toEqual([expect.stringMatching(/^debt\//)]);
+    expect(inEffect(kept, n.state)).toBe(true);
+    expect(inEffect(group, n.state)).toBe(false);
+    expect(appliedPart(group, [])).toBeNull();
   });
 
   it("is in effect once every register holds its value and every deleted record is gone", async () => {

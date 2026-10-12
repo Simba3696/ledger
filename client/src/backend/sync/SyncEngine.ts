@@ -22,7 +22,7 @@ import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opH
 import { diffDocuments } from "./diff";
 import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { appliedPart, checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { rememberRestore, winningEpochNow, writeGenesis, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
@@ -193,9 +193,10 @@ export interface LeftBehindView {
   who: string | null;
   /** The restore that left them behind. */
   into: { epoch: string; by: string; at: number };
-  /** Another device already resolved this group (re-applied or discarded
-   * it), but this device's own changes are not all in effect: shown until
-   * this device resolves it too. */
+  /** The group's marker is joined (another device re-applied or discarded
+   * it, or this device re-applied it and a re-apply from an older view set
+   * some of it back), but this device's own changes are not all in effect:
+   * shown until this device resolves it again. */
   resolvedElsewhere: boolean;
   items: LeftBehindItem[];
 }
@@ -525,6 +526,15 @@ interface NewEpoch {
   at: number;
 }
 
+/** A write that resolves a group a restore left behind (reapply, discard):
+ * its marker, carried as the op's `ra`, and what the device keeps of the
+ * group (an own group's re-applied part, hidden while it is in effect), or
+ * null to drop it in the op's own transaction. */
+interface Resolves {
+  marker: string;
+  keep: LeftBehindGroup | null;
+}
+
 /** A notice's key: (winner op, loser op), so each pair is stored once. */
 function noticeKey(notice: FenceNotice, mine: Tag): string {
   const id = (t: Tag) => `${t[0]}.${t[1]}`;
@@ -588,6 +598,9 @@ export class SyncEngine {
   #oldText: string | null = null;
   /** A tidy of hidden groups is queued. */
   #tidying = false;
+  /** The queued tidy may drop hidden own groups too: a join (or a switch,
+   * or a rehome) that found one asked for it since the last tidy began. */
+  #tidyOwn = false;
   /** The next epoch being written because no Lamport value is left. */
   #renumbering: Promise<void> | null = null;
   /** restore() is writing its genesis ("writing"), or wrote it ("written",
@@ -827,7 +840,7 @@ export class SyncEngine {
 
   /** A write's turn (beginWrite), whose commit may also resolve a group a
    * restore left behind (reapply, discard). */
-  #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, resolves?: string) => Promise<void>; end: () => void } {
+  #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, resolves?: Resolves) => Promise<void>; end: () => void } {
     const pin = this.#fence.pin();
     const ready = this.#writesSettled;
     let ended!: () => void;
@@ -858,16 +871,17 @@ export class SyncEngine {
     return this.#amend(run);
   }
 
-  /** amend(), and with `resolves` (a left-behind group's marker) the op
-   * carries it as `ra` even when `run` changes nothing, and the group is
-   * dropped from this device in the op's own transaction (section 9.4). */
-  async #amend(run: (doc: LedgerDocument) => void, resolves?: string): Promise<void> {
+  /** amend(), and with `resolves` (read once `run` has run) the op carries
+   * the group's marker as `ra` even when `run` changes nothing, and in the
+   * op's own transaction the group is dropped from this device or, for an
+   * own re-apply, kept as what was applied (section 9.4, D18). */
+  async #amend(run: (doc: LedgerDocument) => void, resolves?: () => Resolves): Promise<void> {
     const write = this.#turn();
     try {
       await write.ready;
       const next = structuredClone(this.current());
       run(next);
-      await write.commit(next, resolves);
+      await write.commit(next, resolves?.());
     } finally {
       write.end();
     }
@@ -875,7 +889,7 @@ export class SyncEngine {
 
   /** `asOf`: the revision on screen when the write was submitted.
    * `resolves`: a left-behind group's marker, carried as the op's `ra`. */
-  #commit(next: LedgerDocument, asOf: number, resolves?: string): Promise<void> {
+  #commit(next: LedgerDocument, asOf: number, resolves?: Resolves): Promise<void> {
     this.#assertWritable();
     this.#assertNotRestoring();
     // The epoch's genesis is a format this build can't read (section 12):
@@ -902,7 +916,7 @@ export class SyncEngine {
     if (fenced.body || resolves !== undefined) {
       const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
       if (meta.ownMaxL > 0) vv[meta.deviceId] = Math.max(vv[meta.deviceId] ?? 0, meta.ownMaxL);
-      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body?.set ?? [], del: fenced.body?.del ?? [], ...(resolves !== undefined ? { ra: [resolves] } : {}) };
+      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body?.set ?? [], del: fenced.body?.del ?? [], ...(resolves !== undefined ? { ra: [resolves.marker] } : {}) };
       const problem = opProblem(op);
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
@@ -910,7 +924,7 @@ export class SyncEngine {
     return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, resolves));
   }
 
-  async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, resolves?: string): Promise<void> {
+  async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, resolves?: Resolves): Promise<void> {
     this.#assertWritable();
     // Diffed before a restore took its turn (a direct commit()), but saved
     // after: the restore's cut may not hold it, and the reload after it
@@ -937,8 +951,9 @@ export class SyncEngine {
       writes.notices = { put: await Promise.all(notices.map(async (n): Promise<[string, string]> => [noticeKey(n, mine), await seal({ ...n, mine }, this.#key)])) };
     }
     if (resolves !== undefined) {
-      writes.leftBehind = { delete: [resolves] };
-      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => marker !== resolves));
+      const { marker, keep } = resolves;
+      writes.leftBehind = keep !== null ? { put: [[marker, await seal(keep, this.#key)]] } : { delete: [marker] };
+      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((m) => m !== marker || keep !== null));
       if (old !== undefined) writes.old = old;
     }
     // A reload (stop) or a takeover while this was being sealed writes nothing.
@@ -953,11 +968,14 @@ export class SyncEngine {
       this.#fence.wrote(this.#state!, me, op);
     }
     if (resolves !== undefined) {
-      this.#leftBehind.delete(resolves);
+      if (resolves.keep !== null) this.#leftBehind.set(resolves.marker, resolves.keep);
+      else this.#leftBehind.delete(resolves.marker);
       if (writes.old !== undefined) this.#oldText = writes.old;
     }
     this.#noticeCount += notices.length;
-    this.#refreshLeftBehind();
+    // An own group this write put in effect stays stored until a join finds
+    // it still in effect (#refreshLeftBehind).
+    this.#refreshLeftBehind("others");
     this.#emit();
     if (op && !this.#stopped) {
       this.#onCommitted();
@@ -2330,30 +2348,43 @@ export class SyncEngine {
 
   /** What reapply(id) would apply and skip now, without writing anything. */
   previewReapply(id: string): ReapplyResult {
-    const group = this.#leftBehind.get(id);
-    if (!group) throw new ApiError(404, ALREADY_RESOLVED);
-    return reapplyTo(structuredClone(this.current()), this.#state!, group, { at: this.#now(), by: this.#actor });
+    return reapplyTo(structuredClone(this.current()), this.#state!, this.#shownGroup(id), { at: this.#now(), by: this.#actor });
   }
 
   /** Re-apply (section 9.4): one write, at its turn, that puts the group's
    * changes back on the current document and carries its marker, which
    * resolves the group on every device. What can't be applied is skipped
-   * and listed. */
+   * and listed. This device's own group is kept as what was applied, hidden
+   * while it is in effect, so a concurrent re-apply of the same group from
+   * another device's older view, which may set some of it back, makes it
+   * show again (D18); it is dropped once a join finds it still in effect. */
   async reapply(id: string): Promise<ReapplyResult> {
     let result = undefined as ReapplyResult | undefined;
-    await this.#amend((doc) => {
-      const group = this.#leftBehind.get(id);
-      if (!group) throw new ApiError(404, ALREADY_RESOLVED);
-      result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
-    }, id);
+    let group = undefined as LeftBehindGroup | undefined;
+    await this.#amend(
+      (doc) => {
+        group = this.#shownGroup(id);
+        result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
+      },
+      () => ({ marker: id, keep: group!.own ? appliedPart(group!, result!.applied) : null }),
+    );
     return result!;
   }
 
   /** Discard (section 9.4): an op with only the group's marker. */
   discard(id: string): Promise<void> {
-    return this.#amend(() => {
-      if (!this.#leftBehind.has(id)) throw new ApiError(404, ALREADY_RESOLVED);
-    }, id);
+    return this.#amend(
+      () => void this.#shownGroup(id),
+      () => ({ marker: id, keep: null }),
+    );
+  }
+
+  /** The group `id` while it is shown; a 404 once it is resolved (gone, or
+   * stored but hidden). */
+  #shownGroup(id: string): LeftBehindGroup {
+    const group = this.#leftBehind.get(id);
+    if (!group || this.#isHidden(group, this.#state!)) throw new ApiError(404, ALREADY_RESOLVED);
+    return group;
   }
 
   /** Section 9.2 steps 3 to 5: the genesis of the epoch after this device's
@@ -2650,16 +2681,19 @@ export class SyncEngine {
     return !group.own || inEffect(group, state);
   }
 
-  /** Counts the groups shown, and (unless `tidy` is false) drops the
-   * hidden ones from the device. */
-  #refreshLeftBehind(tidy = true): void {
+  /** Counts the groups shown, and drops the hidden ones from the device:
+   * every one for "all" (after a join, a switch or a rehome), other
+   * devices' only for "others" (after an own write: an own group it put in
+   * effect may be set back by a concurrent re-apply not joined yet, so it
+   * waits for a join that finds it still in effect), none for "none". */
+  #refreshLeftBehind(tidy: "all" | "others" | "none" = "all"): void {
     const state = this.#state;
     let shown = 0;
     let own = 0;
     let hidden = false;
     if (state !== null) {
       for (const group of this.#leftBehind.values()) {
-        if (this.#isHidden(group, state)) hidden = true;
+        if (this.#isHidden(group, state)) hidden ||= tidy === "all" || !group.own;
         else {
           shown++;
           if (group.own) own++;
@@ -2668,20 +2702,24 @@ export class SyncEngine {
     }
     this.#leftBehindCount = shown;
     this.#leftBehindOwnCount = own;
-    if (hidden && tidy) this.#tidyLeftBehind();
+    if (hidden && tidy !== "none") this.#tidyLeftBehind(tidy === "all");
   }
 
-  /** Drops the groups no longer shown, and the old states no group needs
+  /** Drops the groups no longer shown (this device's own only when a join
+   * asked, #refreshLeftBehind), and the old states no group needs
    * (#oldKeeping), in one transaction. Housekeeping: a failure is only
    * logged, and the next refresh tries again. */
-  #tidyLeftBehind(): void {
+  #tidyLeftBehind(own: boolean): void {
+    if (own) this.#tidyOwn = true;
     if (this.#tidying) return;
     this.#tidying = true;
     this.#enqueue(async () => {
       try {
         this.#assertWritable();
         const state = this.#state!;
-        const hidden = [...this.#leftBehind.values()].filter((group) => this.#isHidden(group, state)).map((group) => group.marker);
+        const own = this.#tidyOwn;
+        this.#tidyOwn = false;
+        const hidden = [...this.#leftBehind.values()].filter((group) => this.#isHidden(group, state) && (own || !group.own)).map((group) => group.marker);
         if (hidden.length === 0) return;
         const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => !hidden.includes(marker)));
         this.#assertWritable();
@@ -2888,7 +2926,7 @@ export class SyncEngine {
     this.#oldText = loaded.old;
     // Counted only: hidden groups are dropped by the next refresh, once the
     // load has finished.
-    this.#refreshLeftBehind(false);
+    this.#refreshLeftBehind("none");
     this.#needsInit = false;
     this.#unreadable = null;
     this.#setStatus("idle");
@@ -2898,7 +2936,7 @@ export class SyncEngine {
     this.#meta = this.#state = this.#doc = null;
     this.#leftBehind = new Map();
     this.#oldText = null;
-    this.#refreshLeftBehind(false);
+    this.#refreshLeftBehind("none");
     this.#needsInit = false;
     this.#unreadable = reason;
     this.#setStatus("unreadable");
