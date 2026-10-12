@@ -31,8 +31,10 @@ import type { VersionVector } from "./tags";
 //   - Create is one genesis PUT for epoch 1 (createLedger), then a listing:
 //     a racing create's greater epoch 1 wins, and is joined instead.
 //     Restoring a backup into a repo with no ledger is the same PUT with
-//     reason "restore". Restoring over an existing ledger is the engine's
-//     (SyncEngine.restore), which needs what the device has seen.
+//     reason "restore", and so is restoring into one whose winning genesis
+//     is damaged, numbered after it. Restoring over an existing ledger is
+//     the engine's (SyncEngine.restore), which needs what the device has
+//     seen.
 //   - A genesis is written under a fresh random name, never over a file. A
 //     lost answer is settled by listing the path: the sha of the bytes sent
 //     there means it landed; otherwise it is sent once more. An answer that
