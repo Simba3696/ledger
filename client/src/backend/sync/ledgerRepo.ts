@@ -165,8 +165,16 @@ function isFinal(err: unknown): boolean {
  * Checked first with the validator every reader runs and against the write
  * bounds. A lost answer is settled by listing the path; a branch race or no
  * answer is sent once more; a stale-sha answer (the name is taken) is a
- * failure. Throws for a token, repo or rate-limit answer. */
-export async function writeGenesis(remote: Remote, content: GenesisContent, key: DeviceKey, bounds: FileBounds = WRITE_BOUNDS): Promise<GenesisWrite> {
+ * failure. Throws for a token, repo or rate-limit answer. `onPut` is called
+ * before each PUT is sent (the engine counts each against its hourly cap,
+ * ADR-0008 stage 4). */
+export async function writeGenesis(
+  remote: Remote,
+  content: GenesisContent,
+  key: DeviceKey,
+  bounds: FileBounds = WRITE_BOUNDS,
+  onPut: () => void = () => {},
+): Promise<GenesisWrite> {
   const file: RepoFile = { kind: "genesis", epoch: content.epoch };
   const plain = { fv: FORMAT_VERSION, kind: "genesis", ...content };
   const check = checkRepoFile(file, plain);
@@ -180,6 +188,7 @@ export async function writeGenesis(remote: Remote, content: GenesisContent, key:
   const message = content.reason === "create" ? "Create ledger" : "Restore from backup";
   for (let attempt = 1; ; attempt++) {
     try {
+      onPut();
       const res = await remote.client.putFile({ path, text, sha: null, message });
       return { kind: "written", sha: res.sha };
     } catch (err) {

@@ -2337,8 +2337,9 @@ export class SyncEngine {
     }
     const epoch = nextEpochKey(meta.epochKey);
     const content: GenesisContent = { epoch, reason: "restore", by: this.#actor, at: this.#now(), basedOn, doc };
-    this.#putTimes.push(this.#monotonic());
-    const written = await writeGenesis(remote, content, this.#key, this.#bounds.write);
+    // Every PUT sent counts against the hourly cap, a second one after no
+    // answer included (ADR-0008 stage 4).
+    const written = await writeGenesis(remote, content, this.#key, this.#bounds.write, () => this.#putTimes.push(this.#monotonic()));
     if (written.kind !== "written") return written;
     return { kind: "written", genesis: { epoch, sha: written.sha, state: genesisState(doc), basedOn, by: content.by, at: content.at } };
   }
