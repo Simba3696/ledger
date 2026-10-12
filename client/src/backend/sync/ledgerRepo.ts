@@ -31,10 +31,11 @@ import type { VersionVector } from "./tags";
 //   - Create is one genesis PUT for epoch 1 (createLedger), then a listing:
 //     a racing create's greater epoch 1 wins, and is joined instead.
 //     Restoring a backup into a repo with no ledger is the same PUT with
-//     reason "restore", and so is restoring into one whose winning genesis
-//     is damaged, numbered after it. Restoring over an existing ledger is
-//     the engine's (SyncEngine.restore), which needs what the device has
-//     seen.
+//     reason "restore". Restoring over an existing ledger is the engine's
+//     (SyncEngine.restore), which needs what the device has seen.
+//   - A winning genesis that can't be opened is never written past (owner
+//     decision D26): findLedger, openGenesis and createLedger name it
+//     (DamagedFile), and deleting it on GitHub lets them go on.
 //   - A genesis is written under a fresh random name, never over a file. A
 //     lost answer is settled by listing the path: the sha of the bytes sent
 //     there means it landed; otherwise it is sent once more. An answer that
@@ -64,8 +65,12 @@ export type LedgerFound =
    * header names: what the passphrase is derived with. */
   | { kind: "ledger"; epoch: string; name: string; sha: string; text: string; salt: string; iter: number }
   /** The winning genesis has a header this build can't read: a newer
-   * build wrote it ("needsUpdate"), or it is damaged ("malformed"). */
-  | { kind: "needsUpdate" | "malformed"; epoch: string };
+   * build wrote it. */
+  | { kind: "needsUpdate"; epoch: string }
+  /** The winning genesis is damaged: its header doesn't parse, or it is
+   * larger than any real one. Nothing can join or be written past it until
+   * it is deleted (D26, damagedFileMessage). */
+  | { kind: "malformed"; epoch: string; damagedFile: DamagedFile };
 
 /** The listing of ledger/ at the branch head now, or null for an empty
  * repo. */
@@ -146,7 +151,11 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
   if (epoch === null) return listing.truncated ? { kind: "unknown" } : { kind: "none" };
   const name = repoFileName({ kind: "genesis", epoch });
   const { sha, size } = listing.files.get(name)!;
-  if (size > READ_BOUNDS.bytes) return { kind: "malformed", epoch };
+  // A damaged winner is named only from a full listing: a cut one may have
+  // left out a greater epoch, and deleting a genesis under it would leave
+  // that epoch uncounted (the counted-run rule).
+  const damaged = listing.truncated ? ({ kind: "unknown" } as const) : ({ kind: "malformed", epoch, damagedFile: damagedGenesis(epoch, "malformed") } as const);
+  if (size > READ_BOUNDS.bytes) return damaged;
   const text = await remote.client.readBlob(sha);
   const newline = text.indexOf("\n");
   try {
@@ -155,7 +164,7 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
     const header = parseHeader(text);
     return { kind: "ledger", epoch, name, sha, text, salt: header.salt, iter: header.iter };
   } catch {
-    return { kind: "malformed", epoch };
+    return damaged;
   }
 }
 
@@ -164,19 +173,25 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
  * yours" (section 9.2 step 7). */
 export type GenesisOpen =
   | { ok: true; epoch: string; sha: string; state: SyncState; doc: LedgerDocument; reason: GenesisContent["reason"]; by: string; at: number }
-  | { ok: false; problem: "wrongPassphrase" | "needsUpdate" | "malformed" };
+  | { ok: false; problem: "wrongPassphrase" | "needsUpdate" }
+  /** It decrypts but isn't a genesis this build would write: damaged, and
+   * named so it can be deleted (D26). */
+  | { ok: false; problem: "malformed"; damagedFile: DamagedFile };
 
 /** Opens the genesis findLedger found with the household key: the state a
  * first start begins from (SyncEngine.initialize). A key that doesn't fit
- * is a wrong passphrase, since only the genesis can say so (section 12). */
+ * is a wrong passphrase, since only the genesis can say so (section 12):
+ * a key derived from the genesis's own salt can't tell an altered body
+ * from a wrong passphrase. */
 export async function openGenesis(found: Extract<LedgerFound, { kind: "ledger" }>, key: DeviceKey): Promise<GenesisOpen> {
   const read = await openRepoFile({ kind: "genesis", epoch: found.epoch }, found.text, key);
+  const malformed = { ok: false, problem: "malformed", damagedFile: damagedGenesis(found.epoch, "malformed") } as const;
   if (!read.ok) {
-    const problem = read.problem === "needsUpdate" || read.problem === "malformed" ? read.problem : "wrongPassphrase";
-    return { ok: false, problem };
+    if (read.problem === "malformed") return malformed;
+    return { ok: false, problem: read.problem === "needsUpdate" ? "needsUpdate" : "wrongPassphrase" };
   }
   const file = read.read.file;
-  if (file.kind !== "genesis") return { ok: false, problem: "malformed" };
+  if (file.kind !== "genesis") return malformed;
   return { ok: true, epoch: found.epoch, sha: found.sha, state: genesisState(file.doc), doc: file.doc, reason: file.reason, by: file.by, at: file.at };
 }
 
@@ -273,10 +288,13 @@ export async function writeGenesis(
 export type CreateResult =
   | { kind: "created"; epoch: string; sha: string; state: SyncState }
   /** The repo already holds a ledger (or one this build can't read, or
-   * this key can't open): join it instead. */
-  | { kind: "exists" }
+   * this key can't open): join it instead. Nothing was written.
+   * `damagedFile`: the winning genesis is one the app never writes (D26);
+   * nothing is written past it, and deleting it on GitHub lets the create
+   * or restore go on (damagedFileMessage). */
+  | { kind: "exists"; damagedFile?: DamagedFile }
   /** Another device's create landed beside this one and wins (a greater
-   * epoch 1 is listed after this one landed): join the winner instead
+   * epoch is listed after this one landed): join the winner instead
    * (findLedger). Nothing was started on this device. */
   | { kind: "replaced"; epoch: string; winner: string }
   /** A cut listing, this create landed but the repo couldn't be listed in
@@ -288,13 +306,10 @@ export type CreateResult =
 /** #8 Create, and #9's restore into a repo with no ledger: one genesis PUT
  * for epoch 1 (section 9.5), `doc` an empty document or the backup, under
  * `key` (the household's, or a backup's own salt and iterations). Returns
- * the state the engine's first start begins from. A restore into a repo
- * whose winning genesis is damaged (no device can read it) is numbered
- * after that genesis instead, based on nothing, so a household with no
- * working device can still recover from a backup (ADR-0008). A genesis
- * under another salt is "exists", since it may be a ledger that is fine
- * under another passphrase, and so is one this build is too old to read
- * (isDamaged). Two devices creating at
+ * the state the engine's first start begins from. Any listed genesis is
+ * "exists", and nothing is written: a damaged one too (D26), which is named
+ * (damagedWinner) so the person can delete it, after which the create or
+ * restore goes on. Two devices creating at
  * once each write their own epoch 1, and the greater key wins. Each derived
  * its key with a fresh salt, so a device started on the losing epoch could
  * never read the winner's files, nor offer its writes. So the repo is
@@ -312,14 +327,13 @@ export async function createLedger(
   const listing = await listNow(remote);
   const found = await findIn(remote, listing);
   if (found.kind === "unknown") return found;
-  let after: string | null = null;
   if (found.kind !== "none") {
-    if (reason !== "restore" || !(await isDamaged(found, key))) return { kind: "exists" };
-    // A cut listing may leave out a greater epoch that opens (ADR-0008).
-    if (listing!.truncated) return { kind: "unknown" };
-    after = found.epoch;
+    const damagedFile = await damagedWinner(found, key, reason);
+    if (damagedFile === null) return { kind: "exists" };
+    // Named only from a full listing, as findLedger does.
+    return listing!.truncated ? { kind: "unknown" } : { kind: "exists", damagedFile };
   }
-  const epoch = nextEpochKey(after);
+  const epoch = nextEpochKey(null);
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
   // It may still land: the next try finds it, or not, and goes on from there.
   if (written.kind === "unknown") return { kind: "unknown" };
@@ -334,25 +348,30 @@ export async function createLedger(
     return { kind: "unknown" };
   }
   if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner };
-  // A cut listing may leave out a greater epoch 1 (ADR-0008): as unknown as
+  // A cut listing may leave out a greater epoch (ADR-0008): as unknown as
   // no listing at all.
   if (now.truncated) return { kind: "unknown" };
   return { kind: "created", epoch, sha: written.sha, state: genesisState(doc) };
 }
 
-/** Whether the winning genesis is damaged: its header doesn't parse, it
- * doesn't open as a genesis, or it names `key`'s own salt and iterations
- * and still doesn't decrypt. AES-GCM can't tell a cut or altered body from
- * a wrong key, but the caller's key opened the backup, and a create always
- * draws a fresh salt, so under the same salt only damage explains it. A
- * genesis under another salt may be a ledger that is fine under another
- * passphrase, and one this build is too old to read is fixed by updating:
- * neither is damaged. */
-async function isDamaged(found: Exclude<LedgerFound, { kind: "none" | "unknown" }>, key: DeviceKey): Promise<boolean> {
-  if (found.kind !== "ledger") return found.kind === "malformed";
+/** The winning genesis as a damaged file, as far as `key` can tell (D26),
+ * else null. One whose header doesn't parse is damaged whatever the key. A
+ * restore's key is the household's (the backup opened with it), so it
+ * tells the rest as the engine does: a genesis that decrypts but isn't a
+ * ledger is `malformed`; one under the key's own salt and iterations that
+ * doesn't decrypt is `undecryptable` (AES-GCM can't tell an altered body
+ * from a wrong key, but under the same salt only damage explains it); one
+ * under another salt is `foreignKey`, which may mean the household
+ * passphrase changed. A create's key is new, drawn with a fresh salt, so
+ * every genesis is under another salt to it: a ledger to join, not damage.
+ * One this build is too old to read is fixed by updating. */
+async function damagedWinner(found: Exclude<LedgerFound, { kind: "none" | "unknown" }>, key: DeviceKey, reason: GenesisContent["reason"]): Promise<DamagedFile | null> {
+  if (found.kind === "malformed") return found.damagedFile;
+  if (found.kind !== "ledger" || reason !== "restore") return null;
   const opened = await openGenesis(found, key);
-  if (opened.ok || opened.problem === "needsUpdate") return false;
-  return opened.problem === "malformed" || (found.salt === key.salt && found.iter === key.iter);
+  if (opened.ok || opened.problem === "needsUpdate") return null;
+  if (opened.problem === "malformed") return opened.damagedFile;
+  return damagedGenesis(found.epoch, found.salt === key.salt && found.iter === key.iter ? "undecryptable" : "foreignKey");
 }
 
 /** What a backup file opens to. */
