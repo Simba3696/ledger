@@ -173,7 +173,7 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     w.fake.failNext({ method: "PUT", network: true });
     w.fake.failNext({ method: "PUT", network: true });
     const before = puts(w).length;
-    expect(await a.engine.restore(backup)).toEqual({ kind: "unsynced", pendingCount: 2 });
+    expect(await a.engine.restore(backup)).toEqual({ kind: "unsynced", pendingCount: 2, leftBehindOwnCount: 0 });
     expect(await findLedger({ client: a.client, branch: "main" })).toMatchObject({ kind: "ledger", epoch: EPOCH });
     expect(puts(w).length).toBe(before + 1);
     const result = await a.engine.restore(backup, { discardUnsynced: true });
@@ -188,6 +188,24 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     const bad = { ...structuredClone(a.engine.current()), version: 2 } as unknown as LedgerDocument;
     expect(await a.engine.restore(bad)).toEqual({ kind: "invalid" });
     expect(puts(w).length).toBe(before);
+  });
+
+  it("refuses while this device's own changes a restore left behind are unresolved, and drops them only on Restore anyway (D18)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ pendingCount: 0, leftBehindOwnCount: 1 });
+    // Taxi is only in b's own group: the reload after b's restore would lose it.
+    const before = puts(w).length;
+    expect(await b.engine.restore(structuredClone(b.engine.current()))).toEqual({ kind: "unsynced", pendingCount: 0, leftBehindOwnCount: 1 });
+    expect(puts(w).length).toBe(before);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Taxi" } }] }]);
+    expect((await b.engine.restore(structuredClone(b.engine.current()), { discardUnsynced: true })).kind).toBe("restored");
   });
 
   it("AC14: a device holding an old tombstone keeps the restored record", async () => {

@@ -204,10 +204,13 @@ export type RestoreResult =
   /** It landed, but a greater epoch was already listed: "Sam's restore
    * replaced yours. [Restore again]". Clear and reload as for "restored". */
   | { kind: "replaced"; epoch: string; winner: string }
-  /** Own changes are not in the repo yet and would be lost: "N changes on
-   * this device haven't synced. [Try again] [Restore anyway]". Nothing
-   * was written. */
-  | { kind: "unsynced"; pendingCount: number }
+  /** Own changes are not in the repo yet, or this device's own changes an
+   * earlier restore left behind are not yet re-applied or discarded (they
+   * are kept only on this device, D18): the reload after a restore would
+   * lose them. "N changes on this device haven't synced. [Try again]
+   * [Restore anyway]", and for the groups "[Review]". Nothing was
+   * written. */
+  | { kind: "unsynced"; pendingCount: number; leftBehindOwnCount: number }
   /** Not a document this build writes (isWritableDocument). */
   | { kind: "invalid" }
   /** Larger than every reader allows. Nothing was written. */
@@ -2136,7 +2139,8 @@ export class SyncEngine {
   /** Restore (#9, section 9.2): writes `doc`, a backup, as the genesis of
    * the epoch after the winning one, based on what this device has seen.
    * It runs one sync cycle first; if own changes are still not in the
-   * repo, it writes nothing and says how many, unless `discardUnsynced`.
+   * repo, or own changes an earlier restore left behind are still shown, it
+   * writes nothing and says how many, unless `discardUnsynced`.
    * It takes a write turn, so no write is saved while it runs. On
    * "restored" or "replaced" the caller clears this device's sync state
    * (clearSyncState) and reloads, and the device starts in the winning
@@ -2153,7 +2157,8 @@ export class SyncEngine {
       await turn.ready;
       this.#assertWritable();
       const pendingCount = this.#pendingCount();
-      if (pendingCount > 0 && !discardUnsynced) return { kind: "unsynced", pendingCount };
+      const leftBehindOwnCount = this.#leftBehindOwnCount;
+      if ((pendingCount > 0 || leftBehindOwnCount > 0) && !discardUnsynced) return { kind: "unsynced", pendingCount, leftBehindOwnCount };
       const written = await this.#writeRestore(structuredClone(doc));
       if (written.kind !== "written") return written;
       const epoch = written.genesis.epoch;

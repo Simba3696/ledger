@@ -193,8 +193,8 @@ describe("forget this device (section 9.5)", () => {
     await openSyncStore().mutate({ expect: null, meta: { formatVersion: 1, writerToken: "t" }, base: "b" });
     expect(await databases()).toEqual(expect.arrayContaining(["ledger:sync", "ledger:github"]));
     let pendingCount = 2;
-    const engine = { syncNow: vi.fn(async () => void (pendingCount = 1)), getState: () => ({ pendingCount }) };
-    expect(await forgetThisDevice(engine)).toEqual({ ok: false, pendingCount: 1 });
+    const engine = { syncNow: vi.fn(async () => void (pendingCount = 1)), getState: () => ({ pendingCount, leftBehindOwnCount: 0 }) };
+    expect(await forgetThisDevice(engine)).toEqual({ ok: false, pendingCount: 1, leftBehindOwnCount: 0 });
     expect(engine.syncNow).toHaveBeenCalledTimes(1);
     expect(await loadKey()).not.toBeNull();
     expect(await forgetThisDevice(engine, { force: true })).toEqual({ ok: true });
@@ -205,5 +205,26 @@ describe("forget this device (section 9.5)", () => {
     pendingCount = 0;
     expect(await forgetThisDevice(engine)).toEqual({ ok: true });
     expect(engine.syncNow).toHaveBeenCalledTimes(1);
+  });
+  it("forgets nothing while this device's own changes a restore left behind are unresolved, unless forced (D18)", async () => {
+    const created = await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 });
+    if (created.kind !== "created") throw new Error(created.kind);
+    const w = { fake, key, doc: emptyDocument(), clock: { wall: Date.UTC(2026, 4, 10, 9), mono: 1_000_000 } };
+    const a = await device(w, { login: "alex", init: { epoch: created.epoch, state: created.state } });
+    const b = await device(w, { login: "sam", init: { epoch: created.epoch, state: created.state } });
+    running.push(a.engine, b.engine);
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi")); // never pushed
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    w.clock.mono += 10_000;
+    await b.engine.sync();
+    expect(b.engine.getState()).toMatchObject({ leftBehindOwnCount: 1, pendingCount: 0 });
+    await saveKey({ key: key.key, salt: key.salt, iter: key.iter });
+    expect(await forgetThisDevice(b.engine)).toEqual({ ok: false, pendingCount: 0, leftBehindOwnCount: 1 });
+    expect(await loadKey()).not.toBeNull();
+    expect(await forgetThisDevice(b.engine, { force: true })).toEqual({ ok: true });
+    expect(await loadKey()).toBeNull();
   });
 });

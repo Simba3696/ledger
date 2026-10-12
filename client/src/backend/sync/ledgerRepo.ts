@@ -38,7 +38,9 @@ import type { VersionVector } from "./tags";
 //   - Export is the current document sealed in the repo files' format; a
 //     backup opens with the same key (readBackup).
 //   - Forget this device clears the sync state and the device's key and
-//     connection, and writes nothing to GitHub (forgetThisDevice).
+//     connection, and writes nothing to GitHub (forgetThisDevice). It
+//     refuses, unless forced, while own changes are unsynced or own changes
+//     a restore left behind are unresolved.
 
 /** The repo as these hooks read and write it. */
 interface Remote {
@@ -276,21 +278,27 @@ export function takeRestoredEpoch(): string | null {
 // --- Forget this device ----------------------------------------------------------
 
 /** What "Forget this device" needs from a running engine: its unsynced
- * count and a sync now. */
+ * count, its own groups a restore left behind, and a sync now. */
 interface Syncing {
   syncNow(): Promise<void>;
-  getState(): { pendingCount: number };
+  getState(): { pendingCount: number; leftBehindOwnCount: number };
 }
 
 /** "Forget this device" (section 9.5): with changes not yet in the repo, a
  * sync first, and if any are still unsynced, nothing is forgotten unless
- * `force` (the person chose to drop them). Then this device's sync state,
- * key and connection go. Nothing is written to GitHub. */
-export async function forgetThisDevice(engine: Syncing | null, { force = false }: { force?: boolean } = {}): Promise<{ ok: true } | { ok: false; pendingCount: number }> {
-  if (engine && !force && engine.getState().pendingCount > 0) {
-    await engine.syncNow();
-    const pendingCount = engine.getState().pendingCount;
-    if (pendingCount > 0) return { ok: false, pendingCount };
+ * `force` (the person chose to drop them). This device's own changes that a
+ * restore left behind and that it hasn't re-applied or discarded hold it
+ * back too: they are kept only on this device (owner decision D18), and no
+ * sync sends them. Then this device's sync state, key and connection go.
+ * Nothing is written to GitHub. */
+export async function forgetThisDevice(
+  engine: Syncing | null,
+  { force = false }: { force?: boolean } = {},
+): Promise<{ ok: true } | { ok: false; pendingCount: number; leftBehindOwnCount: number }> {
+  if (engine && !force) {
+    if (engine.getState().pendingCount > 0) await engine.syncNow();
+    const { pendingCount, leftBehindOwnCount } = engine.getState();
+    if (pendingCount > 0 || leftBehindOwnCount > 0) return { ok: false, pendingCount, leftBehindOwnCount };
   }
   await clearSyncState();
   await forgetDevice();
