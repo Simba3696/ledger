@@ -995,6 +995,35 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     expect(remarks(await reload(a))).toEqual(["Groceries", "Bus"]);
   });
 
+  it("a restore whose genesis would fill the gap below a genesis it can't open, on a cut listing, writes nothing and names no file (stage 6 final review)", async () => {
+    let cut = false;
+    const a = await open({
+      login: "alex",
+      // GitHub cuts every tree listing short, leaving nothing out.
+      wrapFetch: (inner) => async (input, init) => {
+        const res = await inner(input, init);
+        const url = String(input instanceof Request ? input.url : input);
+        if (!cut || !url.includes("/git/trees/") || !res.ok) return res;
+        const json = (await res.json()) as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...json, truncated: true }), { status: res.status, headers: res.headers });
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    cut = true;
+    const before = puts(w).length;
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed", detail: expect.stringContaining("cut the file listing short") });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(puts(w).length).toBe(before);
+    // A full listing names it.
+    cut = false;
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed", damagedFile: { path: `ledger/${gapped}.genesis.enc`, reason: "malformed" } });
+  });
+
   it("a restore replaced by a greater genesis no device can open, which landed while it ran, names the file and no maker: the caller must not reload yet", async () => {
     const damaged = "e000002-ffffffff";
     let tamper = true;

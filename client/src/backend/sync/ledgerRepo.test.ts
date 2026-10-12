@@ -178,6 +178,17 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", await encryptDocument({ fv: 1, kind: "genesis" }, other.key, { salt: other.salt, iter: other.iter }));
     expect(await createLedger({ client: cut, branch: "main" }, key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "unknown" });
     expect(puts()).toHaveLength(0);
+    // One that decrypts but isn't a genesis: join (#8) finds it on the cut
+    // listing, and openGenesis says it is malformed but names no file to
+    // delete (stage 6 final review).
+    await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", await encryptDocument({ fv: 1, kind: "genesis" }, key.key, { salt: key.salt, iter: key.iter }));
+    const found = await findLedger({ client: cut, branch: "main" });
+    if (found.kind !== "ledger") throw new Error(found.kind);
+    expect(await openGenesis(found, key)).toEqual({ ok: false, problem: "malformed" });
+    // On a full listing it is named.
+    const full = await findLedger(remote());
+    if (full.kind !== "ledger") throw new Error(full.kind);
+    expect(await openGenesis(full, key)).toEqual({ ok: false, problem: "malformed", damagedFile: { path: "ledger/e000001-0000000b.genesis.enc", epoch: "e000001-0000000b", reason: "malformed" } });
   });
 
   it("a restore into a repo with no ledger whose genesis would fill the gap below a genesis no device can open writes nothing and names that file (D26)", async () => {
