@@ -2313,11 +2313,17 @@ export class SyncEngine {
   /** Section 9.2 steps 3 to 5: the genesis of the epoch after this device's
    * own, holding `doc`, based on what this device has seen with every own
    * op, written once. Nothing is written when a fresh listing's winner is
-   * newer than this device's epoch: a restore based on an epoch another
-   * restore already replaced would leave out, on every device, what the
-   * winner holds and this device never joined (a device that resolved its
-   * groups no longer offers it), so the device switches first, on its next
-   * cycle, and the restore is tried again from there. */
+   * newer than this device's epoch and can be read: a restore based on an
+   * epoch another restore already replaced would leave out, on every
+   * device, what the winner holds and this device never joined (a device
+   * that resolved its groups no longer offers it), so the device switches
+   * first, on its next cycle, and the restore is tried again from there.
+   * Nor when this build is too old to read it: updating the app is the fix.
+   * A newer winner this device read and found it can't open (damaged, or
+   * under another key) is one it can never switch to, and refusing would
+   * stop sync for good (guarantee 2): the restore is numbered after it,
+   * still based on this device's own epoch, the last it joined
+   * (ADR-0008). */
   async #writeRestore(doc: LedgerDocument): Promise<RestoreWrite> {
     const remote = this.#remote!;
     const meta = this.#meta!;
@@ -2331,17 +2337,31 @@ export class SyncEngine {
     if (now.truncated && now.winner !== meta.epochKey) {
       return { kind: "failed", detail: "GitHub cut the file listing short, so the winning epoch is unknown; try again later" };
     }
+    let after = meta.epochKey;
     const listed = now.winner;
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
-      return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
+      if (!this.#cannotOpen(listed, now.sha!)) {
+        return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
+      }
+      this.#log(`the winning epoch ${listed} can't be opened on this device; the restore is numbered after it`);
+      after = listed;
     }
-    const epoch = nextEpochKey(meta.epochKey);
+    const epoch = nextEpochKey(after);
     const content: GenesisContent = { epoch, reason: "restore", by: this.#actor, at: this.#now(), basedOn, doc };
     // Every PUT sent counts against the hourly cap, a second one after no
     // answer included (ADR-0008 stage 4).
     const written = await writeGenesis(remote, content, this.#key, this.#bounds.write, () => this.#putTimes.push(this.#monotonic()));
     if (written.kind !== "written") return written;
     return { kind: "written", genesis: { epoch, sha: written.sha, state: genesisState(doc), basedOn, by: content.by, at: content.at } };
+  }
+
+  /** Whether this device read epoch `epoch`'s genesis at blob `sha` and
+   * found it can't open it: damaged (needsAttention) or under another key
+   * (needsPassphrase), never one this build is too old to read
+   * (#switchToListed). */
+  #cannotOpen(epoch: string, sha: string): boolean {
+    const refused = this.#refused.get(`${repoFileName({ kind: "genesis", epoch })}@${sha}`);
+    return refused !== undefined && refused.problem !== "needsUpdate";
   }
 
   /** No Lamport value is left in this epoch (a file's L near 2^50): the
@@ -2379,7 +2399,9 @@ export class SyncEngine {
    * and, at a write turn of its own, switches to it. A genesis that can't
    * be read keeps the device where it is, writing nothing more there:
    * needsUpdate for a newer format, needsPassphrase for a key that doesn't
-   * fit, needsAttention for anything else (section 9.1). */
+   * fit, needsAttention for anything else (section 9.1). In the last two
+   * cases a restore, or a renumber, is numbered after it (#writeRestore),
+   * and the device switches to that once it is listed. */
   async #switchToListed(listing: Listing, winner: string): Promise<boolean> {
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const listed = listing.files.get(name)!;

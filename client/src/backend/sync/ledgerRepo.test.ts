@@ -110,7 +110,7 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     }
   });
 
-  it("restoring a backup over a ledger whose genesis this key can't open is refused: the key may be the wrong one, and the ledger fine", async () => {
+  it("restoring a backup over a ledger whose genesis is under another salt is refused: it may be fine under another passphrase", async () => {
     await plantCreate("e000001-0000000b", await testKey());
     expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "exists" });
     expect(puts()).toHaveLength(0);

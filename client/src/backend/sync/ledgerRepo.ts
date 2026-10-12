@@ -77,6 +77,8 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
 export interface EpochNow {
   /** The greatest counted epoch listed, or null when none is. */
   winner: string | null;
+  /** The winner's genesis blob sha, or null when there is no winner. */
+  sha: string | null;
   /** GitHub cut the listing short: a greater epoch may be left out, so
    * `winner` alone decides nothing (ADR-0008). A greater one listed is
    * there all the same. */
@@ -87,13 +89,19 @@ export interface EpochNow {
  * listing it comes from was cut. */
 export async function winningEpochNow(remote: Remote): Promise<EpochNow> {
   const listing = await listNow(remote);
-  if (listing === null) return { winner: null, truncated: false };
-  return { winner: winningEpoch(listing.names), truncated: listing.truncated };
+  if (listing === null) return { winner: null, sha: null, truncated: false };
+  const winner = winningEpoch(listing.names);
+  const sha = winner === null ? null : listing.files.get(repoFileName({ kind: "genesis", epoch: winner }))!.sha;
+  return { winner, sha, truncated: listing.truncated };
 }
 
 /** "Is there a ledger?" (#8): the winning genesis and its header. */
 export async function findLedger(remote: Remote): Promise<LedgerFound> {
-  const listing = await listNow(remote);
+  return findIn(remote, await listNow(remote));
+}
+
+/** findLedger on a listing already made. */
+async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow>>): Promise<LedgerFound> {
   if (listing === null) return { kind: "none" };
   const epoch = winningEpoch(listing.names);
   if (epoch === null) return listing.truncated ? { kind: "unknown" } : { kind: "none" };
@@ -209,8 +217,8 @@ export async function writeGenesis(
 
 export type CreateResult =
   | { kind: "created"; epoch: string; sha: string; state: SyncState }
-  /** The repo already holds a ledger (or one this build can't read): join
-   * it instead. */
+  /** The repo already holds a ledger (or one this build can't read, or
+   * this key can't open): join it instead. */
   | { kind: "exists" }
   /** Another device's create landed beside this one and wins (a greater
    * epoch 1 is listed after this one landed): join the winner instead
@@ -225,7 +233,13 @@ export type CreateResult =
 /** #8 Create, and #9's restore into a repo with no ledger: one genesis PUT
  * for epoch 1 (section 9.5), `doc` an empty document or the backup, under
  * `key` (the household's, or a backup's own salt and iterations). Returns
- * the state the engine's first start begins from. Two devices creating at
+ * the state the engine's first start begins from. A restore into a repo
+ * whose winning genesis is damaged (no device can read it) is numbered
+ * after that genesis instead, based on nothing, so a household with no
+ * working device can still recover from a backup (ADR-0008). A genesis
+ * under another salt is "exists", since it may be a ledger that is fine
+ * under another passphrase, and so is one this build is too old to read
+ * (isDamaged). Two devices creating at
  * once each write their own epoch 1, and the greater key wins. Each derived
  * its key with a fresh salt, so a device started on the losing epoch could
  * never read the winner's files, nor offer its writes. So the repo is
@@ -240,10 +254,17 @@ export async function createLedger(
   { doc, by, at, reason = "create" }: { doc: LedgerDocument; by: string; at: number; reason?: GenesisContent["reason"] },
 ): Promise<CreateResult> {
   if (!isWritableDocument(doc)) throw new Error("A ledger can only be created from a writable document");
-  const found = await findLedger(remote);
+  const listing = await listNow(remote);
+  const found = await findIn(remote, listing);
   if (found.kind === "unknown") return found;
-  if (found.kind !== "none") return { kind: "exists" };
-  const epoch = nextEpochKey(null);
+  let after: string | null = null;
+  if (found.kind !== "none") {
+    if (reason !== "restore" || !(await isDamaged(found, key))) return { kind: "exists" };
+    // A cut listing may leave out a greater epoch that opens (ADR-0008).
+    if (listing!.truncated) return { kind: "unknown" };
+    after = found.epoch;
+  }
+  const epoch = nextEpochKey(after);
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
   if (written.kind !== "written") return written;
   let now: EpochNow;
@@ -260,6 +281,21 @@ export async function createLedger(
   // no listing at all.
   if (now.truncated) return { kind: "unknown" };
   return { kind: "created", epoch, sha: written.sha, state: genesisState(doc) };
+}
+
+/** Whether the winning genesis is damaged: its header doesn't parse, it
+ * doesn't open as a genesis, or it names `key`'s own salt and iterations
+ * and still doesn't decrypt. AES-GCM can't tell a cut or altered body from
+ * a wrong key, but the caller's key opened the backup, and a create always
+ * draws a fresh salt, so under the same salt only damage explains it. A
+ * genesis under another salt may be a ledger that is fine under another
+ * passphrase, and one this build is too old to read is fixed by updating:
+ * neither is damaged. */
+async function isDamaged(found: Exclude<LedgerFound, { kind: "none" | "unknown" }>, key: DeviceKey): Promise<boolean> {
+  if (found.kind !== "ledger") return found.kind === "malformed";
+  const opened = await openGenesis(found, key);
+  if (opened.ok || opened.problem === "needsUpdate") return false;
+  return opened.problem === "malformed" || (found.salt === key.salt && found.iter === key.iter);
 }
 
 /** What a backup file opens to. */
