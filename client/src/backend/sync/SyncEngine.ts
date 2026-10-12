@@ -908,8 +908,8 @@ export class SyncEngine {
     }
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
-      // The last group resolved: the old states are no longer needed.
-      if ([...this.#leftBehind.keys()].every((marker) => marker === resolves) && this.#oldText !== null) writes.old = null;
+      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => marker !== resolves));
+      if (old !== undefined) writes.old = old;
     }
     // A reload (stop) or a takeover while this was being sealed writes nothing.
     this.#assertWritable();
@@ -924,7 +924,7 @@ export class SyncEngine {
     }
     if (resolves !== undefined) {
       this.#leftBehind.delete(resolves);
-      if (writes.old === null) this.#oldText = null;
+      if (writes.old !== undefined) this.#oldText = writes.old;
     }
     this.#noticeCount += notices.length;
     this.#refreshLeftBehind();
@@ -2361,7 +2361,10 @@ export class SyncEngine {
    * restores: a device that switched to the losing one switches again, its
    * writes there all left behind (cut {}); the epoch both were based on is
    * projected again with the winner's cut, from the state kept in `old`,
-   * leaving out groups resolved meanwhile. */
+   * leaving out other devices' groups resolved meanwhile. This device's own
+   * group there is kept (D18): its marker joined in the losing epoch says
+   * only that the group was resolved in an epoch that lost, and what was in
+   * effect there (the losing genesis included) is not in the winner. */
   async #adoptEpoch(from: string, genesis: NewEpoch): Promise<boolean> {
     this.#assertWritable();
     const meta = this.#meta!;
@@ -2375,8 +2378,15 @@ export class SyncEngine {
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
       if (cut === null || entry.epoch === from) continue;
-      for (const marker of [...groups.keys()]) if (marker.startsWith(`${entry.epoch}/`)) groups.delete(marker);
-      for (const group of leftBehind(entry.state, cut, into, { epoch: entry.epoch, me: entry.device })) if (!pre.ra.has(group.marker)) groups.set(group.marker, group);
+      // The winner's cut decides what of this epoch is left behind. Another
+      // device's group the losing epoch resolved stays resolved. This
+      // device's own group never is on that word alone: only this device
+      // holds its unpushed changes, and a group shown now stays unless the
+      // projection replaces it under its marker.
+      const projected = leftBehind(entry.state, cut, into, { epoch: entry.epoch, me: entry.device }).filter((group) => group.own || !pre.ra.has(group.marker));
+      const replaced = new Set(projected.map((group) => group.marker));
+      for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && !(group.own && !replaced.has(marker))) groups.delete(marker);
+      for (const group of projected) groups.set(group.marker, group);
     }
     for (const group of leftBehind(pre, cutFor(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
     // The epoch switched from is kept even with no group: a restore that
@@ -2455,6 +2465,11 @@ export class SyncEngine {
   /** The previous epochs' states kept in `old`. One that can't be read is
    * logged and left out: its groups stay as they were. */
   async #readOld(): Promise<OldEpoch[]> {
+    return (await this.#decodeOld()) ?? [];
+  }
+
+  /** `old` decoded, or null (logged) when it can't be read. */
+  async #decodeOld(): Promise<OldEpoch[] | null> {
     if (this.#oldText === null) return [];
     try {
       const old = decodeOld(await this.#open(this.#oldText));
@@ -2462,8 +2477,24 @@ export class SyncEngine {
       return old;
     } catch (err) {
       this.#log("the previous epochs' saved states can't be read; their groups stay as they are", err);
-      return [];
+      return null;
     }
+  }
+
+  /** The `old` record to keep once only the groups `markers` are left:
+   * the epoch this device last switched from (meta.prev) is kept even with
+   * no group, since a restore that raced the one switched to may be based
+   * on it with another cut, until the device switches again; an earlier
+   * epoch only while a group from it is left. Undefined when that changes
+   * nothing, or when `old` can't be read (it is then left as it is). */
+  async #oldKeeping(markers: readonly string[]): Promise<string | null | undefined> {
+    if (this.#oldText === null) return undefined;
+    const entries = await this.#decodeOld();
+    if (entries === null) return undefined;
+    const from = this.#meta!.prev?.epoch;
+    const keep = entries.filter((entry) => entry.epoch === from || markers.some((marker) => marker.startsWith(`${entry.epoch}/`)));
+    if (keep.length === entries.length) return undefined;
+    return keep.length === 0 ? null : seal(storedOld(keep), this.#key);
   }
 
   /** Whether a group is no longer shown: its marker joined (another device
@@ -2497,9 +2528,9 @@ export class SyncEngine {
     if (hidden && tidy) this.#tidyLeftBehind();
   }
 
-  /** Drops the groups no longer shown, and the old states once no group is
-   * left, in one transaction. Housekeeping: a failure is only logged, and
-   * the next refresh tries again. */
+  /** Drops the groups no longer shown, and the old states no group needs
+   * (#oldKeeping), in one transaction. Housekeeping: a failure is only
+   * logged, and the next refresh tries again. */
   #tidyLeftBehind(): void {
     if (this.#tidying) return;
     this.#tidying = true;
@@ -2509,10 +2540,11 @@ export class SyncEngine {
         const state = this.#state!;
         const hidden = [...this.#leftBehind.values()].filter((group) => this.#isHidden(group, state)).map((group) => group.marker);
         if (hidden.length === 0) return;
-        const none = hidden.length === this.#leftBehind.size && this.#oldText !== null;
-        await this.#mutate(this.#meta!, { leftBehind: { delete: hidden }, ...(none ? { old: null } : {}) }, true);
+        const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => !hidden.includes(marker)));
+        this.#assertWritable();
+        await this.#mutate(this.#meta!, { leftBehind: { delete: hidden }, ...(old !== undefined ? { old } : {}) }, true);
         for (const marker of hidden) this.#leftBehind.delete(marker);
-        if (none) this.#oldText = null;
+        if (old !== undefined) this.#oldText = old;
       } finally {
         this.#tidying = false;
       }

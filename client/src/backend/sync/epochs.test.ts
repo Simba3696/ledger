@@ -138,8 +138,9 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     await quiesce(w, a2, b2);
     expect(remarks(a2).sort()).toEqual(["Groceries", "Taxi"]);
     expectConverged(a2, b2);
-    // The old states go once no group is left.
-    expect((await b2.store.load())?.old).toBeUndefined();
+    // The epoch switched from stays in `old` with no group left, until the
+    // device switches again: a restore that raced this one may be based on it.
+    expect((await b2.store.load())?.old).toBeDefined();
     await expect(b2.engine.reapply(group.id)).rejects.toMatchObject({ status: 404, message: ALREADY_RESOLVED });
     await expect(b2.engine.discard(group.id)).rejects.toMatchObject({ status: 404 });
   });
@@ -430,6 +431,64 @@ describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
     const a2 = await reload(a);
     await quiesce(w, a2, c);
     expectConverged(a2, c);
+  });
+});
+
+describe("racing restores and what a device keeps for them (stage 6 review)", () => {
+  const offered = (d: Device, own?: boolean) =>
+    d.engine
+      .leftBehind()
+      .filter((g) => own === undefined || g.own === own)
+      .flatMap((g) => g.items.map((i) => (i.kind === "add" ? `add:${String(i.record.remarks)}` : i.kind)));
+
+  it("re-projecting the old epoch for a racing restore keeps this device's own group that another device resolved there (D18)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, c);
+    await b.backend.addEntry(entry("Taxi")); // unpushed: only b holds it
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, c, b);
+    expect(offered(b, true).sort()).toEqual(["add:Bus", "add:Taxi"]);
+    await c.engine.discard(c.engine.leftBehind()[0].id);
+    await cycle(w, c, b);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, resolvedElsewhere: true }]);
+    // Sam's restore, based on the first epoch with nothing seen, wins.
+    await plantRestore("e000002-ffffffff", backup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(offered(b, true)).toContain("add:Taxi");
+  });
+
+  it("the epoch switched from stays in `old` once every group is resolved, so a racing restore listed later still offers what it lacks", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const samBackup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, a);
+    await b.backend.addEntry(entry("Taxi")); // unpushed
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    await cycle(w, b);
+    expect(offered(b)).toEqual(["add:Taxi"]);
+    await b.engine.reapply(b.engine.leftBehind()[0].id);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect((await b.store.load())?.old).toBeDefined();
+    // Sam's restore, based on the first epoch with nothing seen, wins. Bus
+    // was in the losing epoch's genesis and re-applied Taxi in effect there,
+    // but neither is in the winner.
+    await plantRestore("e000002-ffffffff", samBackup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(remarks(b)).not.toContain("Bus");
+    expect(offered(b, true)).toContain("add:Bus");
+    expect(offered(b, true)).toContain("add:Taxi");
   });
 });
 
