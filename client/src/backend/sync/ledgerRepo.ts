@@ -122,9 +122,11 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
   }
 }
 
-/** A genesis opened with a key, or why it can't be. */
+/** A genesis opened with a key, or why it can't be. `reason`, `by` and
+ * `at` say who made it and when (display only): "Sam's restore replaced
+ * yours" (section 9.2 step 7). */
 export type GenesisOpen =
-  | { ok: true; epoch: string; sha: string; state: SyncState; doc: LedgerDocument }
+  | { ok: true; epoch: string; sha: string; state: SyncState; doc: LedgerDocument; reason: GenesisContent["reason"]; by: string; at: number }
   | { ok: false; problem: "wrongPassphrase" | "needsUpdate" | "malformed" };
 
 /** Opens the genesis findLedger found with the household key: the state a
@@ -136,9 +138,9 @@ export async function openGenesis(found: Extract<LedgerFound, { kind: "ledger" }
     const problem = read.problem === "needsUpdate" || read.problem === "malformed" ? read.problem : "wrongPassphrase";
     return { ok: false, problem };
   }
-  if (read.read.file.kind !== "genesis") return { ok: false, problem: "malformed" };
-  const doc = read.read.file.doc;
-  return { ok: true, epoch: found.epoch, sha: found.sha, state: genesisState(doc), doc };
+  const file = read.read.file;
+  if (file.kind !== "genesis") return { ok: false, problem: "malformed" };
+  return { ok: true, epoch: found.epoch, sha: found.sha, state: genesisState(file.doc), doc: file.doc, reason: file.reason, by: file.by, at: file.at };
 }
 
 /** A genesis file's content (section 6). */

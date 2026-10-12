@@ -210,8 +210,10 @@ export type RestoreResult =
    * after the reload, takeRestoredEpoch() against epochKey still tells. */
   | { kind: "restored"; epoch: string; winnerUnknown?: true }
   /** It landed, but a greater epoch was already listed: "Sam's restore
-   * replaced yours. [Restore again]". Clear and reload as for "restored". */
-  | { kind: "replaced"; epoch: string; winner: string }
+   * replaced yours. [Restore again]". Clear and reload as for "restored".
+   * `reason`, `by` and `at` say who made the winner and when, when its
+   * genesis could be read (display only). */
+  | { kind: "replaced"; epoch: string; winner: string; reason?: GenesisContent["reason"]; by?: string; at?: number }
   /** Own changes are not in the repo yet, or this device's own changes an
    * earlier restore left behind are not yet re-applied or discarded (they
    * are kept only on this device, D18): the reload after a restore would
@@ -2301,7 +2303,7 @@ export class SyncEngine {
         this.#log("the repo couldn't be listed after the restore landed; the reload finds the winner", err);
         return { kind: "restored", epoch, winnerUnknown: true };
       }
-      if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner };
+      if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner, ...(await this.#madeBy(now.winner, now.sha!)) };
       // A cut listing may leave out a greater epoch (ADR-0008).
       if (now.truncated) {
         this.#log("GitHub cut the listing after the restore landed; the reload finds the winner");
@@ -2311,6 +2313,21 @@ export class SyncEngine {
     } finally {
       if (this.#restore === "writing") this.#restore = null;
       turn.end();
+    }
+  }
+
+  /** Who made epoch `epoch`'s genesis (blob `sha`) and when, for "Sam's
+   * restore replaced yours"; nothing when it can't be read. Never throws:
+   * display only, and asked once the restore has landed. */
+  async #madeBy(epoch: string, sha: string): Promise<{ reason?: GenesisContent["reason"]; by?: string; at?: number }> {
+    try {
+      const read = await this.#read(repoFileName({ kind: "genesis", epoch }), { file: { kind: "genesis", epoch }, sha, size: 0 });
+      if (!read.ok || read.read.file.kind !== "genesis") return {};
+      const { reason, by, at } = read.read.file;
+      return { reason, by, at };
+    } catch (err) {
+      this.#log("the winning restore's genesis couldn't be read", err);
+      return {};
     }
   }
 
