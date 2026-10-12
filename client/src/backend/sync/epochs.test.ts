@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { EPOCH, FULL, cycle, device, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
+import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { findLedger, openGenesis, readBackup } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
@@ -478,6 +478,110 @@ describe("re-apply and discard (section 9.4)", () => {
     await quiesce(w, a, b, c);
     expectConverged(a, b, c);
     expect(taxi(a).amount).toBe("20.00");
+    for (const d of [b, c]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+
+  const taxi = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).find((e) => e.remarks === "Taxi");
+
+  it("D27: this device's own edit after re-applying its group supersedes the change, so the group never shows again", async () => {
+    const { a2, b, c } = await leftOnTwo();
+    const [own] = b.engine.leftBehind();
+    await b.engine.reapply(own.id);
+    // Before any join: b changes its mind about the Taxi it put back.
+    await b.backend.updateEntry(2026, 5, await row(b, "Taxi"), edits("Taxi", 25));
+    expect(b.engine.leftBehind()).toEqual([]);
+    await quiesce(w, a2, b, c);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
+    for (const d of [a2, b, c]) expect(taxi(d)?.amount).toBe("25.00");
+    expectConverged(a2, b, c);
+  });
+
+  it("D27: another device's edit made after it saw the re-apply supersedes the change, and once every device has seen it the kept group is dropped", async () => {
+    const { a2, b, c } = await leftOnTwo();
+    const [own] = b.engine.leftBehind();
+    await b.engine.reapply(own.id);
+    await cycle(w, b);
+    // a2 sees the re-apply, then deliberately edits the Taxi it brought back.
+    await cycle(w, a2);
+    expect(taxi(a2)?.amount).toBe("10.00");
+    await a2.backend.updateEntry(2026, 5, await row(a2, "Taxi"), edits("Taxi", 30));
+    await cycle(w, a2, b);
+    expect(b.engine.leftBehind()).toEqual([]);
+    await quiesce(w, a2, b, c);
+    expect(b.engine.leftBehind()).toEqual([]);
+    for (const d of [a2, b, c]) expect(taxi(d)?.amount).toBe("30.00");
+    expectConverged(a2, b, c);
+    // Every other device with a file in the epoch (a2) has shown it saw the
+    // re-apply: nothing is kept for it any more.
+    expect((await b.store.load())?.leftBehind).toEqual([]);
+  });
+
+  for (const by of ["this device", "a device that saw the re-apply"]) {
+    it(`D27: a delete of the re-created record by ${by} supersedes it, so the group never shows again`, async () => {
+      const { a2, b, c } = await leftOnTwo();
+      const [own] = b.engine.leftBehind();
+      await b.engine.reapply(own.id);
+      if (by === "this device") {
+        await b.backend.deleteEntry(2026, 5, await row(b, "Taxi"));
+      } else {
+        await cycle(w, b, a2);
+        await a2.backend.deleteEntry(2026, 5, await row(a2, "Taxi"));
+        await cycle(w, a2, b);
+      }
+      expect(b.engine.leftBehind()).toEqual([]);
+      await quiesce(w, a2, b, c);
+      expect(b.engine.leftBehind()).toEqual([]);
+      for (const d of [a2, b, c]) expect(remarks(d)).toEqual(["Groceries"]);
+      expectConverged(a2, b, c);
+    });
+  }
+
+  it("D27: an unrelated join doesn't drop the kept group, so a stale re-apply from an offline device that arrives later still shows it again", async () => {
+    let cOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex", wrapFetch: (inner) => (input, init) => (cOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi", 10));
+    await cycle(w, b, c);
+    // b changes Taxi to 20 and never pushes it: c's view of b's group has 10.
+    await b.backend.updateEntry(2026, 5, await row(b, "Taxi"), edits("Taxi", 20));
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    a = await reload(a);
+    await cycle(w, b, c);
+    const [own] = b.engine.leftBehind();
+    const [theirs] = c.engine.leftBehind();
+    expect(own.id).toBe(theirs.id);
+    // c writes in the new epoch (so it has a file there), then goes offline.
+    await c.backend.addEntry(entry("Pens"));
+    await cycle(w, c);
+    cOffline = true;
+    await b.engine.reapply(own.id);
+    await cycle(w, b, a);
+    // An unrelated change b joins while its Taxi 20 is in effect.
+    await a.backend.addEntry(entry("Milk"));
+    await cycle(w, a, b);
+    expect(remarks(b)).toContain("Milk");
+    expect(b.engine.leftBehind()).toEqual([]);
+    // Offline, c writes more (so its L is the greater) and re-applies its
+    // stale view of b's group: Taxi 10.
+    await c.backend.addEntry(entry("Rent"));
+    await c.backend.addEntry(entry("Bus"));
+    await c.engine.reapply(theirs.id);
+    cOffline = false;
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    expect(taxi(a)?.amount).toBe("10.00");
+    // b's newer value is not lost: its own group shows again.
+    expect(b.engine.leftBehind()).toMatchObject([{ id: own.id, own: true, resolvedElsewhere: true, items: [{ kind: "add", record: { amount: "20.00" } }] }]);
+    await b.engine.reapply(own.id);
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    expect(taxi(a)?.amount).toBe("20.00");
     for (const d of [b, c]) expect(d.engine.leftBehind()).toEqual([]);
   });
 
