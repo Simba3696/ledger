@@ -12,11 +12,10 @@ import { Rng, deviceId, testEnv } from "./testkit";
 // Compaction, the gap check and cold start (design section 8), against the
 // fake GitHub: a device snapshots its own log with no agreement between
 // devices (8.1), a reader never joins a log across a snapshot it hasn't read
-// (8.2), a new or long-offline device catches up by reading every log it
-// hasn't joined and the snapshots those logs need, never taking a
-// snapshot's coverage claims on its word (8.3, owner decision D24), and the
-// device folds its saved tail into its base
-// (8.4). Acceptance item 12: no op is lost for any reader at any point, and
+// (8.2), every device reads every log and snapshot it hasn't joined at its
+// listed version, never taking a snapshot's coverage claims on its word
+// (8.3, owner decision D24), and the device folds its saved tail into its
+// base (8.4). Acceptance item 12: no op is lost for any reader at any point, and
 // a device offline past several compactions catches up and publishes its
 // own offline writes. Fictional data only.
 
@@ -429,7 +428,7 @@ describe("the gap check (section 8.2)", () => {
     expect(b.store.meta().joined).toMatchObject({ [`${EPOCH}.${a.engine.deviceId}.snap.enc`]: stored(a, "snap")!.sha });
   });
 
-  it("a reader already past K never reads the snapshot", async () => {
+  it("a reader already past K doesn't need the snapshot to join the log, but reads it once, so it holds what a cold start holds (D24)", async () => {
     const a = await open(every(3));
     const b = await open({ login: "sam" });
     await write(a, "One", "Two", "Three");
@@ -438,10 +437,16 @@ describe("the gap check (section 8.2)", () => {
     await compactNow(a);
     await write(a, "Four");
     await cycle(w, a);
-    const from = w.fake.requests.length;
+    let from = w.fake.requests.length;
+    await cycle(w, b);
+    expect(readsOf(from, stored(a, "snap")!.sha)).toBe(1);
+    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four"]);
+    await write(a, "Five");
+    await cycle(w, a);
+    from = w.fake.requests.length;
     await cycle(w, b);
     expect(readsOf(from, stored(a, "snap")!.sha)).toBe(0);
-    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four"]);
+    expect(remarks(b)).toEqual(["One", "Two", "Three", "Four", "Five"]);
   });
 
   it("a snapshot older than the log's snapThrough (a stale read) is joined, the log waits, saving, until the newer snapshot is read", async () => {
@@ -492,7 +497,7 @@ describe("the gap check (section 8.2)", () => {
 });
 
 describe("cold start and offline catch-up (section 8.3)", () => {
-  it("a snapshot no listed log needs is never read: a cold start doesn't start from the largest one, and a garbage one halts nothing", async () => {
+  it("a snapshot no listed log needs is still read, once (D24), and a garbage one halts nothing", async () => {
     const a = await open(every(2));
     await write(a, "One", "Two");
     await compactNow(a);
@@ -500,11 +505,19 @@ describe("cold start and offline catch-up (section 8.3)", () => {
     const X = deviceId(0xc);
     const padding = bytesToBase64(crypto.getRandomValues(new Uint8Array(20_000)));
     const garbage = await plant(w, { kind: "snap", epoch: EPOCH, device: X }, { fv: 1, kind: "snap", epoch: EPOCH, device: X, padding });
-    const from = w.fake.requests.length;
+    let from = w.fake.requests.length;
     const fresh = await open({ login: "sam" });
-    expect(readsOf(from, garbage)).toBe(0);
+    expect(readsOf(from, garbage)).toBe(1);
     expect(readsOf(from, stored(a, "snap")!.sha)).toBe(1);
     expect(remarks(fresh)).toEqual(["One", "Two"]);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
+    // Its refusal is remembered by sha: it isn't read again.
+    await write(a, "Three");
+    await cycle(w, a);
+    from = w.fake.requests.length;
+    await cycle(w, fresh);
+    expect(readsOf(from, garbage)).toBe(0);
+    expect(remarks(fresh)).toEqual(["One", "Two", "Three"]);
     expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
   });
 
@@ -893,7 +906,89 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
   });
 
-  it("a cold start reads every listed log once, and exactly the snapshots those logs need; catch-up reads only the logs changed since", async () => {
+  it("a snapshot holding a value no log holds reaches every device, not only those that read it cold: a device that kept up and a cold start converge", async () => {
+    const x = await open({ login: "alex" });
+    await write(x, "From x");
+    await cycle(w, x);
+    const r = await open({ login: "alex" }); // keeps up
+    const y = await open({ ...every(1), login: "sam" });
+    await write(y, "From y");
+    await cycle(w, y); // y's log, untrimmed
+    await cycle(w, r); // r joins y's op from the log, so no log ever needs y's snapshot for r
+    await compactNow(y);
+    y.engine.stop();
+    await cycle(w, r);
+    // y's snapshot is re-planted with x's record's value changed at the same
+    // tag: no log holds that value.
+    const snap = (await unseal(stored(y, "snap")!.text, w.key)) as { state: { rec: { e: { v: Record<string, unknown> }[] } } };
+    const xs = snap.state.rec.e.find((rec) => rec.v.remarks === "From x")!;
+    xs.v.remarks = "~forged";
+    expect(checkRepoFile(file(y, "snap"), snap, genesisState(w.doc)).ok).toBe(true);
+    await plant(w, file(y, "snap"), snap);
+    const c = await open({ login: "sam" }); // cold start
+    await quiesce(w, x, r, c);
+    for (const d of [x, r, c]) expect(status(d)).toBe("idle");
+    expectConverged(r, c);
+    expectConverged(x, c);
+  });
+
+  it("a snapshot over-claiming its own through, once overwritten, never closes a later log's gap: a device offline across the next compaction still reads the new snapshot", async () => {
+    const x = await open(every(3));
+    await write(x, "One", "Two", "Three");
+    await compactNow(x);
+    const honest = stored(x, "snap")!;
+    const snap = (await unseal(honest.text, w.key)) as SnapContent & { maxL: number };
+    snap.through = 50;
+    snap.seen[x.engine.deviceId!] = 50;
+    snap.maxL = Math.max(snap.maxL, 50);
+    expect(checkRepoFile(file(x, "snap"), snap, genesisState(w.doc)).ok).toBe(true);
+    await plant(w, file(x, "snap"), snap);
+    const r = await open({ login: "sam" });
+    expect(remarks(r)).toEqual(["One", "Two", "Three"]);
+    // The honest snapshot back, at the same sha: x never sees a fork.
+    expect(await w.fake.seedFile(FULL, repoPath(file(x, "snap")), honest.text)).toBe(honest.sha);
+    // r is offline while x writes and compacts again.
+    await write(x, "Four", "Five", "Six");
+    await compactNow(x);
+    await write(x, "Seven");
+    await cycle(w, x);
+    expect(x.engine.getState()).toMatchObject({ status: "idle" });
+    const fresh = await open({ login: "sam" });
+    expect(remarks(fresh)).toEqual(["One", "Two", "Three", "Four", "Five", "Six", "Seven"]);
+    await cycle(w, r);
+    await cycle(w, r);
+    expect(status(r)).toBe("idle");
+    expect(remarks(r)).toEqual(remarks(fresh));
+  });
+
+  it("a snapshot over-claiming its own through, once overwritten by one that can't be read, leaves the next log waiting: it is never joined across the gap", async () => {
+    const x = await open(every(3));
+    await write(x, "One", "Two", "Three");
+    await compactNow(x);
+    const honest = stored(x, "snap")!;
+    const snap = (await unseal(honest.text, w.key)) as SnapContent & { maxL: number };
+    snap.through = 50;
+    snap.seen[x.engine.deviceId!] = 50;
+    snap.maxL = Math.max(snap.maxL, 50);
+    await plant(w, file(x, "snap"), snap);
+    const r = await open({ login: "sam" });
+    await w.fake.seedFile(FULL, repoPath(file(x, "snap")), honest.text);
+    await write(x, "Four", "Five", "Six");
+    await compactNow(x);
+    await write(x, "Seven");
+    await cycle(w, x);
+    const good = stored(x, "snap")!.text;
+    await plant(w, file(x, "snap"), { fv: 1, kind: "snap", epoch: EPOCH, device: x.engine.deviceId });
+    await cycle(w, r);
+    expect(status(r)).toBe("needsAttention");
+    expect(remarks(r)).toEqual(["One", "Two", "Three"]);
+    await w.fake.seedFile(FULL, repoPath(file(x, "snap")), good);
+    await cycle(w, r);
+    expect(status(r)).toBe("idle");
+    expect(remarks(r)).toEqual(["One", "Two", "Three", "Four", "Five", "Six", "Seven"]);
+  });
+
+  it("a cold start reads every listed log and snapshot once; catch-up reads only the files changed since", async () => {
     const retired = await open({ ...every(1), login: "sam" });
     await write(retired, "Retired");
     await compactNow(retired);
@@ -911,7 +1006,7 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     expect(claimed).toMatchObject({ [logName(retired)]: stored(retired, "log")!.sha, [logName(b)]: stored(b, "log")!.sha });
     const genesis = w.fake.file(FULL, `ledger/${GENESIS}`)!.sha;
     const logs = [a, b, retired].map((d) => stored(d, "log")!.sha);
-    // b's log names no snapshot point, so b has none to read.
+    // b never compacted, so b has no snapshot to read.
     const snaps = [a, retired].map((d) => stored(d, "snap")!.sha);
     let from = w.fake.requests.length;
     const fresh = await open({ login: "sam" });

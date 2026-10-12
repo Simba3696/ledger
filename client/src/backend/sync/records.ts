@@ -63,11 +63,13 @@ export interface SyncMeta {
   seen: VersionVector;
   /** Per other device, what this device read from that device's own files
    * (owner decision D24): the last L of the version of its log joined, and
-   * the `through` of the version of its snapshot joined. A log's ops at or
-   * below `logReach` are not joined again (that log gave them), and a log
-   * whose snapThrough is past both waits for its snapshot (section 8.2).
-   * Neither is ever `seen`, which another device's snapshot raises on its
-   * word alone, and a snapshot's `through` never leaves a log's ops out. */
+   * the `through` of the version of its snapshot last joined (the one
+   * `joined` names). A log's ops at or below `logReach` are not joined again
+   * (that log gave them), and a log whose snapThrough is past both waits
+   * for its snapshot (section 8.2); `snapReach` counts only while that
+   * snapshot version is still the listed one. Neither is ever `seen`, which
+   * another device's snapshot raises on its word alone, and a snapshot's
+   * `through` never leaves a log's ops out. */
   logReach: VersionVector;
   snapReach: VersionVector;
   lastSeenCommit: string | null;

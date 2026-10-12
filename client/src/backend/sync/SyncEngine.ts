@@ -308,9 +308,10 @@ interface StreamSource {
   listing: Listing;
   /** The epoch's genesis state, which every snap is checked against. */
   genesis: () => Promise<SyncState>;
-  /** Per device, the last L of its log and the `through` of its snapshot
-   * that the state being built holds, as read from that device's own files
-   * (meta.logReach and meta.snapReach): raised as they are read. */
+  /** Per device, the last L of its log that the state being built holds,
+   * and the `through` of the version of its snapshot last joined (the one
+   * `joined` names), as read from that device's own files (meta.logReach
+   * and meta.snapReach). */
   logReach: Map<string, number>;
   snapReach: Map<string, number>;
   /** The file versions that state already includes. */
@@ -319,6 +320,8 @@ interface StreamSource {
   skip: string | null;
   /** The logs to read, by name. */
   logs: string[];
+  /** The snapshots to read whether or not a log needs them, by name. */
+  snaps: string[];
   /** A file's versions to try, the listed one first. */
   versions: (name: string) => Listed[];
 }
@@ -1137,18 +1140,23 @@ export class SyncEngine {
     return isChainValue(value) ? value : undefined;
   }
 
-  /** Step 4: every other device's log in the epoch that this device hasn't
-   * joined at its listed sha, read by blob sha, and a device's snapshot
-   * only when its log needs it (sections 8.2 and 8.3; a first start is no
-   * different, owner decision D24). A file that can't be read halts its
-   * stream (section 12); a log whose snapshot point is past what this device
-   * holds from its device's own files waits for that snapshot. Neither is joined in part, and
-   * neither sha is recorded, so the next cycle tries again. `complete` says
-   * nothing was left out. */
+  /** Step 4: every other device's log and snapshot in the epoch that this
+   * device hasn't joined at its listed sha, read by blob sha (sections 8.2
+   * and 8.3; a first start is no different, owner decision D24). A log that
+   * can't be read halts its stream (section 12), and so does a snapshot a
+   * log needs; a log whose snapshot point is past what this device holds
+   * from its device's own listed files waits for that snapshot. Neither is
+   * joined in part, and neither sha is recorded, so the next cycle tries
+   * again. `complete` says nothing was left out. */
   async #readOthers(listing: Listing): Promise<Streams> {
     const meta = this.#meta!;
     const logs: string[] = [];
-    for (const [name, { file }] of listing.files) if (file.kind === "log" && file.epoch === meta.epochKey && file.device !== meta.deviceId) logs.push(name);
+    const snaps: string[] = [];
+    for (const [name, { file }] of listing.files) {
+      if (file.kind === "genesis" || file.epoch !== meta.epochKey || file.device === meta.deviceId) continue;
+      if (file.kind === "log") logs.push(name);
+      else if (file.kind === "snap") snaps.push(name);
+    }
     const streams = await this.#readStreams({
       listing,
       genesis: () => this.#epochGenesis(listing),
@@ -1157,6 +1165,7 @@ export class SyncEngine {
       joined: meta.joined,
       skip: meta.deviceId,
       logs,
+      snaps,
       versions: (name) => {
         const listed = listing.files.get(name);
         return listed ? [listed] : [];
@@ -1170,20 +1179,27 @@ export class SyncEngine {
     return streams;
   }
 
-  /** Reads the epoch's device streams (sections 8.2 and 8.3): for each log,
-   * the first of its versions that can be joined. A log whose snapThrough
-   * is past what the state holds from its device's own files needs that
-   * device's snapshot first, and is never joined across the gap: its snap
-   * is read (each version not yet joined, in order) and joined, and if
-   * none reaches the log's snapThrough (a stale read) the log waits. A
-   * snapshot's coverage claims are never taken for correctness (owner
-   * decision D24): its `joined` and its `seen` for other devices never mark
-   * a file joined, skip a log's ops or close another device's gap, and its
-   * `through` only closes its own device's gap. So every log whose version
-   * this device hasn't joined is read and its ops joined, and the state is
-   * the join of the files read. The only ops left out are those at or below
-   * the last L of the version of the same log joined before: logs are
-   * cumulative, so that log already gave them. */
+  /** Reads the epoch's device streams (sections 8.2 and 8.3). First every
+   * snapshot in `snaps` not joined at its listed version, needed or not:
+   * the first of its versions that can be joined. So every device that has
+   * read a listing holds the same snapshot versions, whatever they hold,
+   * and devices holding the same files converge (owner decision D24). One
+   * that can't be read halts nothing unless a log needs it. Then, for each
+   * log, the first of its versions that can be joined. A log whose
+   * snapThrough is past what the state holds from its device's own files
+   * needs that device's snapshot first, and is never joined across the gap:
+   * its snap is read (each version not yet joined, in order) and joined,
+   * and if none reaches the log's snapThrough (a stale read) the log waits.
+   * A snapshot's coverage claims are never taken for correctness (D24): its
+   * `joined` and its `seen` for other devices never mark a file joined, skip
+   * a log's ops or close another device's gap, and its `through` closes only
+   * its own device's gap, and only while that snapshot version is the
+   * listed one or was joined in this read: an overwritten snapshot's word
+   * closes no later log's gap. So every log whose version this device hasn't
+   * joined is read and its ops joined, and the state is the join of the
+   * files read. The only ops left out are those at or below the last L of
+   * the version of the same log joined before: logs are cumulative, so that
+   * log already gave them. */
   async #readStreams(src: StreamSource): Promise<Streams> {
     const epoch = this.#meta!.epochKey;
     const out: Streams = {
@@ -1199,9 +1215,21 @@ export class SyncEngine {
     };
     const holds = (name: string, sha: string) => (out.joined[name] ?? src.joined[name]) === sha;
     const logOf = (device: string) => src.logReach.get(device) ?? 0;
-    // What the state holds of a device's ops from its own files.
-    const heldOf = (device: string) => Math.max(logOf(device), src.snapReach.get(device) ?? 0);
     const isListed = (name: string, sha: string) => src.listing.files.get(name)?.sha === sha;
+    // Devices with a snapshot version joined in this read: snapReach is then
+    // the `through` of what this read joined, not an earlier read's.
+    const snapJoinedNow = new Set<string>();
+    // What the state holds of a device's ops from its own files. A
+    // snapshot's `through` counts only while the version last joined is the
+    // listed one, or was joined in this read: once its device lists another,
+    // the old version's word (over-claimed, perhaps) closes no gap.
+    const snapOf = (device: string) => {
+      const snapName = repoFileName({ kind: "snap", epoch, device });
+      const sha = out.joined[snapName] ?? src.joined[snapName];
+      const current = snapJoinedNow.has(device) || (sha !== undefined && isListed(snapName, sha));
+      return current ? (src.snapReach.get(device) ?? 0) : 0;
+    };
+    const heldOf = (device: string) => Math.max(logOf(device), snapOf(device));
     // The devices with a file in the epoch. A device's ops reach another
     // only through its log, and nothing is ever deleted, so every device an
     // honest snapshot has seen has a file in any listing that holds that
@@ -1229,10 +1257,25 @@ export class SyncEngine {
       out.states.push(state);
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
-      if (file.through > (src.snapReach.get(file.device) ?? 0)) src.snapReach.set(file.device, file.through);
+      // Every version joined in this read is in the state, so the greatest
+      // of them counts; an earlier read's doesn't.
+      const before = snapJoinedNow.has(file.device) ? (src.snapReach.get(file.device) ?? 0) : 0;
+      src.snapReach.set(file.device, Math.max(before, file.through));
+      snapJoinedNow.add(file.device);
       out.joined[name] = listed.sha;
       return read;
     };
+
+    // Every snapshot not joined at its listed version, whether a log needs
+    // it or not (D24): a device that kept up then holds the same snapshot
+    // versions as a cold start, so a value only a snapshot holds reaches
+    // both. A refusal here halts nothing; a log that needs it halts below.
+    for (const name of src.snaps) {
+      for (const version of src.versions(name)) {
+        if (holds(name, version.sha)) break;
+        if ((await joinSnap(name, version)).ok) break;
+      }
+    }
 
     for (const name of src.logs) {
       const file = parseRepoFileName(name);
@@ -1833,9 +1876,9 @@ export class SyncEngine {
     }
   }
 
-  /** The epoch rebuilt from its files (section 8.3): the genesis, then every
-   * log, each device's snapshot read where its log needs it (section 8.2),
-   * none skipped on another file's word (D24). A version that can't be joined
+  /** The epoch rebuilt from its files (section 8.3): the genesis, every
+   * snapshot, then every log (section 8.2), none skipped on another file's
+   * word (D24). A version that can't be joined
    * now is replaced by the one this device joined before, which still reads
    * by its sha, so nothing this device had from another device is dropped.
    * A listed file that wasn't joined is reported as #readOthers would find
@@ -1871,6 +1914,7 @@ export class SyncEngine {
       joined: {},
       skip: null,
       logs,
+      snaps: [...versions.keys()].filter((name) => parseRepoFileName(name)?.kind === "snap"),
       versions: (name) => versions.get(name) ?? [],
     });
     for (const part of streams.states) joinInto(state, part);
