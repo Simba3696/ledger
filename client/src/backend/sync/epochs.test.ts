@@ -18,6 +18,10 @@ import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit
 // racing restores; re-apply and discard markers propagating; a double
 // re-apply; AC14; and the new epoch Lamport exhaustion starts. Fictional
 // data only.
+//
+// Old-bug catalogue (section 13): B1 and B20 are named on their tests. B15
+// (a restore needed a `restoredAt` marker) has no test of its own: epochs
+// replace the marker, and every restore here runs without one.
 
 const running: SyncEngine[] = [];
 let w: World;
@@ -308,7 +312,7 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expectConverged(a2, b);
   });
 
-  it("a delete the restorer hadn't seen is offered to its device, and the record stays until it is re-applied", async () => {
+  it("B1: a delete the restorer hadn't seen is offered to its device, and the record stays until it is re-applied", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
     await a.backend.addEntry(entry("Groceries"));
@@ -387,7 +391,7 @@ describe("re-apply and discard (section 9.4)", () => {
 });
 
 describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
-  it("the losing restorer is told: its restore landed, but a greater epoch was listed", async () => {
+  it("B20: the losing restorer is told: its restore landed, but a greater epoch was listed", async () => {
     const a = await open({ login: "alex" });
     await a.backend.addEntry(entry("Groceries"));
     await quiesce(w, a);
@@ -402,7 +406,7 @@ describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
     expect(a2.engine.epochKey).toBe("e000002-ffffffff");
   });
 
-  it("a device that switched to the losing epoch switches again: its writes there, and the old epoch's under the winner's cut, are offered", async () => {
+  it("B20: a device that switched to the losing epoch switches again: its writes there, and the old epoch's under the winner's cut, are offered", async () => {
     const a = await open({ login: "alex" });
     const c = await open({ login: "alex" });
     await c.backend.addEntry(entry("Bus"));
