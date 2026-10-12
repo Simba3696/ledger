@@ -3,8 +3,8 @@ import type { ExpenseRecord, LedgerDocument } from "../document/types";
 import { sameValue } from "./canonical";
 import { isEpochKey } from "./epoch";
 import { COLLECTIONS, CREATE, FIELDS, STAMP, TOGETHER, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
-import { emptyState, joinInto, type Register, type SyncState } from "./state";
-import { GENESIS_TAG, compareTags, isDeviceId, type Tag, type VersionVector } from "./tags";
+import type { Register, SyncState } from "./state";
+import { GENESIS_TAG, isDeviceId, type VersionVector } from "./tags";
 
 // What a restore left behind, and putting it back (design sections 9.3 and
 // 9.4). A restore starts a new epoch from a backup; nothing of the old
@@ -27,22 +27,6 @@ import { GENESIS_TAG, compareTags, isDeviceId, type Tag, type VersionVector } fr
 //   - What the restored ledger already holds is not left behind: a
 //     register whose value the new genesis has, a create of a record the
 //     genesis has, a delete of a record it lacks (ADR-0008, stage 6).
-//
-// When this device re-applies its own group, it keeps what the re-apply
-// put back (owner decision D27), hidden, with the re-apply op's L: only it
-// holds the changes it never pushed, and another device's re-apply of the
-// same group from an older view could set them back. What happens to each
-// kept change after that is decided causally, by whether the write that
-// changed it had seen the re-apply:
-//   - a later own write that sets its register, or deletes its record,
-//     supersedes it (the change leaves the kept group);
-//   - so does a joined write that had seen the re-apply (its vv names the
-//     re-apply's L), whether it set the register or deleted the record;
-//   - a joined write that hadn't (concurrent or stale) and now holds the
-//     register, or deleted the record, sets it back: the group shows again
-//     (resolvedElsewhere), and Re-apply can put it back once more.
-// A value, not a write, never decides it: a deliberate later edit can't
-// make the group show again, and no unrelated join can drop it.
 //
 // Re-apply builds one write against the current document: a record created
 // above the cut that is absent now is created again with its old id and the
@@ -75,17 +59,6 @@ export interface LeftBehindGroup {
    * (`_c` and `_s` included): what a re-created record is made from, and
    * what a list shows. */
   records: Record<string, Record<string, unknown>>;
-  /** An own group this device re-applied (owner decision D27): the
-   * re-apply op's L and the device id it was written under. The group then
-   * holds only what that op put back, kept and hidden while nothing that
-   * hadn't seen the re-apply has set any of it back. */
-  applied?: { L: number; device: string };
-  /** Of a kept group, the register keys a write that hadn't seen the
-   * re-apply set back: shown again while any is. */
-  setBack?: string[];
-  /** Of a kept group, the devices whose files show they saw the re-apply
-   * (an op's vv, or a snapshot's seen). */
-  seenBy?: string[];
 }
 
 /** The restore a projection is for: the new epoch's genesis state and who
@@ -237,162 +210,6 @@ export function withoutHeld(group: LeftBehindGroup, restored: SyncState): LeftBe
   return { ...group, set, del, records };
 }
 
-// --- A kept own group (owner decision D27) -------------------------------------
-
-/** The plain group: its changes, and nothing kept about a re-apply. */
-function plain(group: LeftBehindGroup): LeftBehindGroup {
-  const { marker, epoch, device, own, who, into, set, del, records } = group;
-  return { marker, epoch, device, own, who, into, set, del, records };
-}
-
-/** `part`, what this device's own re-apply put back (appliedPart), kept as
- * of that re-apply op: its L and the device id that wrote it. */
-export function keptAfterReapply(part: LeftBehindGroup, applied: { L: number; device: string }): LeftBehindGroup {
-  return { ...plain(part), applied };
-}
-
-/** A kept group as an ordinary own group again: what a switch carries into
- * the next epoch, where the re-apply's L means nothing. */
-export function unkept(group: LeftBehindGroup): LeftBehindGroup {
-  return group.applied === undefined ? group : plain(group);
-}
-
-/** `group` less the changes at register keys `keys` and every change of the
- * records `records`: null once nothing is left. */
-function without(group: LeftBehindGroup, keys: ReadonlySet<string>, records: ReadonlySet<string>): LeftBehindGroup | null {
-  const recordOf = (key: string) => {
-    const parsed = parseRegisterKey(key);
-    return parsed?.kind === "field" ? `${parsed.coll}/${parsed.id}` : null;
-  };
-  const gone = (key: string) => {
-    const rk = recordOf(key);
-    return keys.has(key) || (rk !== null && records.has(rk));
-  };
-  const set = group.set.filter(([key]) => !gone(key));
-  const del = group.del.filter((rk) => !records.has(rk));
-  if (set.length === 0 && del.length === 0) return null;
-  const touched = new Set(del);
-  for (const [key] of set) {
-    const rk = recordOf(key);
-    if (rk !== null) touched.add(rk);
-  }
-  const next: LeftBehindGroup = { ...group, set, del, records: Object.fromEntries(Object.entries(group.records).filter(([rk]) => touched.has(rk))) };
-  const setBack = group.setBack?.filter((key) => !gone(key)) ?? [];
-  if (setBack.length > 0) next.setBack = setBack;
-  else delete next.setBack;
-  return next;
-}
-
-/** A kept group after one own write (D27): a change whose register the
- * write sets, or whose record it deletes, is superseded. `group` itself
- * when the write touches none of it, null once nothing is left. */
-export function supersededByOwn(group: LeftBehindGroup, write: { set: readonly [string, unknown][]; del: readonly string[] }): LeftBehindGroup | null {
-  const keys = new Set(write.set.map(([key]) => key));
-  const records = new Set(write.del);
-  const touches = group.set.some(([key]) => {
-    const parsed = parseRegisterKey(key);
-    return keys.has(key) || (parsed?.kind === "field" && records.has(`${parsed.coll}/${parsed.id}`));
-  });
-  return touches || group.del.some((rk) => records.has(rk)) ? without(group, keys, records) : group;
-}
-
-/** Whether the write now holding a kept change had seen the re-apply. */
-export interface KeptJudge {
-  /** The write tagged `tag` that holds register `key` now. */
-  register(key: string, tag: Tag): boolean;
-  /** The deletion of a kept change's record now in the state. */
-  deletion(deletion: { L: number; by: string; vv: VersionVector }): boolean;
-}
-
-/** The register `key` (a record field or a unit) in `state`, if any. */
-export function registerAt(state: SyncState, key: string): Register | undefined {
-  const parsed = parseRegisterKey(key);
-  if (parsed?.kind === "field") return state.rec.get(`${parsed.coll}/${parsed.id}`)?.get(parsed.field);
-  return state.unit.get(key);
-}
-
-/** A kept group after the state went from `before` to `after` (a join or
- * a rehome, D27). For each change: back in effect, it is no longer set back;
- * its record newly deleted, or its register now held by another write, the
- * write is judged: one that had seen the re-apply supersedes the change,
- * one that hadn't sets it back (the group shows again). A register whose
- * value is in effect, or that this change didn't alter, decides nothing.
- * `group` itself when nothing changed, null once nothing is left. */
-export function keptAfterChange(group: LeftBehindGroup, before: SyncState, after: SyncState, judge: KeptJudge): LeftBehindGroup | null {
-  const superseded = new Set<string>();
-  const setBack = new Set(group.setBack ?? []);
-  const judged = (key: string, saw: boolean) => {
-    if (saw) superseded.add(key);
-    else setBack.add(key);
-  };
-  for (const [key, value] of group.set) {
-    const parsed = parseRegisterKey(key);
-    if (parsed?.kind === "field") {
-      const rk = `${parsed.coll}/${parsed.id}`;
-      if (!isVisible(after, rk)) {
-        // Only a deletion takes a record out of view, and only a new one
-        // is this change's to judge.
-        const deletion = after.del.get(rk);
-        if (deletion !== undefined && !before.del.has(rk)) judged(key, judge.deletion(deletion));
-        continue;
-      }
-      if (parsed.field === CREATE) {
-        setBack.delete(key);
-        continue;
-      }
-    }
-    const now = registerAt(after, key);
-    const inEffectNow = parsed?.kind === "field" ? sameValue(now?.v, value) : sameValue(readValue(key, now), readValue(key, { v: value, t: GENESIS_TAG }));
-    if (inEffectNow) {
-      setBack.delete(key);
-      continue;
-    }
-    const prior = registerAt(before, key);
-    if (now === undefined || (prior !== undefined && compareTags(prior.t, now.t) === 0)) continue;
-    judged(key, judge.register(key, now.t));
-  }
-  const back = [...setBack].filter((key) => group.set.some(([k]) => k === key)).sort(compareText);
-  const sameBack = back.length === (group.setBack?.length ?? 0) && back.every((key, i) => group.setBack![i] === key);
-  if (superseded.size === 0 && sameBack) return group;
-  const next: LeftBehindGroup = { ...group };
-  if (back.length > 0) next.setBack = back;
-  else delete next.setBack;
-  return superseded.size === 0 ? next : without(next, superseded, new Set());
-}
-
-/** `state` narrowed to what `groups` touch, joined with `source` narrowed
- * the same way: the registers and deletions of `groups`' changes as they
- * will stand once `source` is joined, without copying the whole state. */
-export function keptAfterJoin(groups: readonly LeftBehindGroup[], state: SyncState, source: SyncState): SyncState {
-  const records = new Set<string>();
-  const units = new Set<string>();
-  for (const group of groups) {
-    for (const [key] of group.set) {
-      const parsed = parseRegisterKey(key);
-      if (parsed?.kind === "field") records.add(`${parsed.coll}/${parsed.id}`);
-      else units.add(key);
-    }
-    for (const rk of group.del) records.add(rk);
-  }
-  const narrow = (from: SyncState): SyncState => {
-    const out = emptyState();
-    for (const rk of records) {
-      const regs = from.rec.get(rk);
-      if (regs) out.rec.set(rk, new Map(regs));
-      const deletion = from.del.get(rk);
-      if (deletion) out.del.set(rk, deletion);
-    }
-    for (const key of units) {
-      const reg = from.unit.get(key);
-      if (reg) out.unit.set(key, reg);
-    }
-    return out;
-  };
-  const after = narrow(state);
-  joinInto(after, narrow(source));
-  return after;
-}
-
 // --- Stored groups ----------------------------------------------------------
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -409,10 +226,6 @@ export function checkGroup(value: unknown): LeftBehindGroup | null {
   if (!Array.isArray(set) || !set.every((entry) => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === "string" && parseRegisterKey(entry[0]) !== null)) return null;
   if (!Array.isArray(del) || !del.every((key) => typeof key === "string" && parseRecordKey(key) !== null)) return null;
   if (!isPlainObject(records) || !Object.values(records).every(isPlainObject)) return null;
-  const { applied, setBack, seenBy } = value;
-  if (applied !== undefined && (!isPlainObject(applied) || !Number.isSafeInteger(applied.L) || (applied.L as number) < 1 || !isDeviceId(applied.device))) return null;
-  if (setBack !== undefined && (!Array.isArray(setBack) || !setBack.every((key) => typeof key === "string" && parseRegisterKey(key) !== null))) return null;
-  if (seenBy !== undefined && (!Array.isArray(seenBy) || !seenBy.every(isDeviceId))) return null;
   return value as unknown as LeftBehindGroup;
 }
 
@@ -491,33 +304,6 @@ export function inEffect(group: LeftBehindGroup, state: SyncState): boolean {
     }
   }
   return group.del.every((rk) => !isVisible(state, rk));
-}
-
-/** The part of `group` that `applied` (reapplyTo's) put back: what an own
- * group keeps after its own re-apply, so it shows again if a concurrent
- * re-apply from an older view sets any of it back (D18). Null when nothing
- * was applied. */
-export function appliedPart(group: LeftBehindGroup, applied: readonly LeftBehindItem[]): LeftBehindGroup | null {
-  const keys = new Set<string>();
-  const dels = new Set<string>();
-  for (const item of applied) {
-    if (item.kind === "unit") keys.add(item.key);
-    else if (item.kind === "delete") dels.add(`${item.coll}/${item.id}`);
-    else {
-      const rk = `${item.coll}/${item.id}`;
-      if (item.kind === "add") keys.add(`${rk}/${CREATE}`);
-      for (const field of Object.keys(item.fields)) keys.add(`${rk}/${field}`);
-    }
-  }
-  const set = group.set.filter(([key]) => keys.has(key));
-  const del = group.del.filter((rk) => dels.has(rk));
-  if (set.length === 0 && del.length === 0) return null;
-  const touched = new Set(del);
-  for (const [key] of set) {
-    const parsed = parseRegisterKey(key);
-    if (parsed?.kind === "field") touched.add(`${parsed.coll}/${parsed.id}`);
-  }
-  return { ...group, set, del, records: Object.fromEntries(Object.entries(group.records).filter(([rk]) => touched.has(rk))) };
 }
 
 // --- Re-apply ---------------------------------------------------------------------

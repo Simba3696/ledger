@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { appliedPart, checkGroup, inEffect, keptAfterChange, keptAfterReapply, leftBehind, leftBehindItems, reapplyTo, supersededByOwn, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
-import { cloneState, genesisState } from "./state";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
+import { genesisState } from "./state";
 import { ALL_MODULES, Replica, deviceId, docText, emptyDocument } from "./testkit";
 
 // What a restore leaves behind, and re-applying it (design sections 9.3 and
@@ -263,25 +263,6 @@ describe("re-apply (section 9.4)", () => {
     expect(taxi().amount).toBe("11.00");
   });
 
-  it("an own group keeps what its re-apply put back, which is in effect, and nothing it skipped", async () => {
-    const doc = await backup();
-    const { a } = pair(doc);
-    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
-    await a.backend.setMonthIncome(2026, 6, { salary: 100, otherIncome: null, savings: [] });
-    await a.backend.updateDebt((await a.backend.getDebts())[0].row, { name: "Sam", amount: 450 });
-    const [group] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
-    const n = new Replica(N, doc, { actor: "kim", epoch: NEW });
-    await n.backend.setMonthLock(2026, 5, true);
-    const { result } = reapplied(n, group);
-    expect(result.skipped.map(({ item }) => item.kind)).toEqual(["add"]);
-    const kept = appliedPart(group, result.applied)!;
-    expect(leftBehindItems(kept).map((i) => (i.kind === "unit" ? i.key : `${i.kind}:${i.coll}`))).toEqual(["fm/2026-06", "edit:debt"]);
-    expect(Object.keys(kept.records)).toEqual([expect.stringMatching(/^debt\//)]);
-    expect(inEffect(kept, n.state)).toBe(true);
-    expect(inEffect(group, n.state)).toBe(false);
-    expect(appliedPart(group, [])).toBeNull();
-  });
-
   it("is in effect once every register holds its value and every deleted record is gone", async () => {
     const doc = await backup();
     const { a } = pair(doc);
@@ -294,44 +275,6 @@ describe("re-apply (section 9.4)", () => {
     expect(inEffect(group, n.state)).toBe(false);
     await n.backend.setMonthLock(2026, 5, true);
     expect(inEffect(group, n.state)).toBe(true);
-  });
-
-  it("D27: a kept group follows the writes that change it, not the values: one that saw the re-apply supersedes, one that didn't sets back, an own write supersedes", async () => {
-    const doc = await backup();
-    const { a } = pair(doc);
-    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
-    const [group] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
-    const n = new Replica(N, doc, { actor: "kim", epoch: NEW });
-    const m = new Replica(B, doc, { actor: "sam", epoch: NEW });
-    const { result, op } = reapplied(n, group);
-    const kept = keptAfterReapply(appliedPart(group, result.applied)!, { L: op!.L, device: N });
-    expect(kept).toMatchObject({ applied: { L: op!.L, device: N } });
-    const amount = kept.set.find(([key]) => key.endsWith("/amount"))![0];
-    const judge = (sawIt: boolean) => ({ register: () => sawIt, deletion: () => sawIt });
-    // m, which never saw the re-apply, edits a Taxi it re-created itself.
-    const stale = reapplied(m, group).op!;
-    const m2 = new Replica(B, doc, { actor: "sam", epoch: NEW });
-    m2.receive(B, stale);
-    await m2.backend.updateEntry(2026, 5, await rowOf(m2, "Taxi"), { amount: 12, remarks: "Taxi", category: "transportation", isCard: false });
-    const before = cloneState(n.state);
-    for (const o of m2.ops) n.receive(B, o);
-    const back = keptAfterChange(kept, before, n.state, judge(false))!;
-    expect(back.setBack).toEqual([amount]);
-    expect(keptAfterChange(kept, before, n.state, judge(true))!.set.map(([key]) => key)).not.toContain(amount);
-    // Nothing changed: the same group.
-    expect(keptAfterChange(kept, n.state, n.state, judge(false))).toBe(kept);
-    // An own write that sets the amount supersedes it, set back or not.
-    const own = supersededByOwn(back, { set: [[amount, "13.00"]], del: [] })!;
-    expect(own.set.map(([key]) => key)).not.toContain(amount);
-    expect(own.setBack).toBeUndefined();
-    // A delete of the record supersedes every change of it: nothing is left.
-    expect(supersededByOwn(kept, { set: [], del: [amount.slice(0, amount.lastIndexOf("/"))] })).toBeNull();
-    // Stored and read back.
-    const stored = { ...back, seenBy: [B] };
-    expect(checkGroup(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
-    for (const bad of [{ ...kept, applied: { L: 0, device: N } }, { ...kept, applied: { L: 2, device: "x" } }, { ...kept, setBack: ["nope"] }, { ...kept, seenBy: ["x"] }]) {
-      expect(checkGroup(bad)).toBeNull();
-    }
   });
 
   it("stored groups read back as they were written, and anything else is refused", async () => {
