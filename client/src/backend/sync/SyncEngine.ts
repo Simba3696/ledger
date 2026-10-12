@@ -20,7 +20,7 @@ import {
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
-import { compareEpochKeys, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
@@ -182,11 +182,14 @@ export interface EngineState {
    * opened here (owner decision D26): sync stops, local writes go on, and
    * deleting this file on GitHub resumes it, or, for "joined", restoring
    * its previous version does (damagedFileMessage says how). Null
-   * otherwise, a genesis too new for this build included. */
+   * otherwise, a genesis too new for this build included, and while this
+   * device's epoch is gone (epochGone): such a device may be the one that
+   * lost, so it never advises deleting or rolling back the winner. */
   damagedFile: DamagedFile | null;
   /** This device's epoch no longer counts in a full listing (its genesis,
    * or one below it, was deleted on GitHub) and the listing's winner is
-   * older or another: nothing the device can switch to. Sync stays
+   * older, or newer but can't be opened here: nothing the device can
+   * switch to. Sync stays
    * pending, local writes go on, a restore is refused (it would write
    * past `winner`), and #8 offers joining the ledger that's there now
    * (EPOCH_GONE). Null otherwise. */
@@ -1331,14 +1334,17 @@ export class SyncEngine {
       this.#log(`the repo listing is older than what this device has joined, or its epoch ${epoch} is gone (the winner is ${winner}); trying again later`);
       return null;
     }
-    this.#epochGone = null;
     if (move === "switch") {
       // A restore won (section 9.3): switch to its epoch, then read that
       // epoch's files from this same listing. Nothing more is read from or
-      // written to the old epoch.
-      if (!(await this.#switchToListed(listing, winner))) return null;
+      // written to the old epoch. This device's epoch may be gone from this
+      // full listing (a cut one stopped above) while a newer one wins: a
+      // winner it can't open is then never named (stage 6 final review).
+      const gone = !epochCounted(listing.files.keys(), epoch);
+      if (!(await this.#switchToListed(listing, winner, gone))) return null;
       return this.#pull(listing);
     }
+    this.#epochGone = null;
     // This device's epoch wins: nothing newer stands in the way (a damaged
     // genesis that did was deleted, D26).
     this.#damaged = null;
@@ -2506,8 +2512,11 @@ export class SyncEngine {
     const listed = now.winner;
     // This device's epoch no longer counts: a restore based on it, numbered
     // after it, would write past the epoch listed now (a racing create's
-    // flip-flop, D26). Join that ledger instead.
-    if (!now.truncated && (listed === null || compareEpochKeys(listed, meta.epochKey) < 0)) {
+    // flip-flop, D26). Join that ledger instead. Checked before a newer
+    // winner is named: a device whose epoch is gone gives no advice to
+    // delete or roll back the household's newer epoch (stage 6 final
+    // review). A cut listing got here only showing this epoch winning.
+    if (!now.truncated && !epochCounted(now.files.keys(), meta.epochKey)) {
       const epochGone = { epoch: meta.epochKey, winner: listed };
       return { kind: "failed", detail: EPOCH_GONE, epochGone };
     }
@@ -2603,13 +2612,31 @@ export class SyncEngine {
    * (`damagedFile`) and stays stopped, its local writes kept, until the
    * file is deleted on GitHub and a listing no longer counts it, or, when
    * a device file of that epoch is listed ("joined": deleting it would
-   * strand that device), until its previous version is restored. */
-  async #switchToListed(listing: Listing, winner: string): Promise<boolean> {
+   * strand that device), until its previous version is restored.
+   *
+   * `gone`: this device's own epoch doesn't count in the listing (its
+   * genesis, or one below it, was deleted). A winner it can't open is then
+   * not named: the device may be the one that lost (a racing create's
+   * other creator, whose genesis was deleted), and the winner the
+   * household's valid ledger, which no advice may delete or roll back. The
+   * state says the epoch is gone (EpochGone) instead, and #8 offers to join
+   * the winner. A winner it can open is switched to as always. */
+  async #switchToListed(listing: Listing, winner: string, gone: boolean): Promise<boolean> {
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const listed = listing.files.get(name)!;
     const read = await this.#read(name, listed);
     if (!read.ok || read.read.file.kind !== "genesis") {
       const problem = read.ok ? "malformed" : read.problem;
+      if (gone) {
+        const epoch = this.#meta!.epochKey;
+        if (this.#epochGone?.epoch !== epoch || this.#epochGone.winner !== winner) this.#epochGone = { epoch, winner };
+        this.#damaged = null;
+        // A newer build may open it: updating the app is still a way on.
+        if (problem === "needsUpdate") this.#blocker = "needsUpdate";
+        this.#log(`this device's epoch ${epoch} is gone, and the winner ${winner} can't be read here (${problem}); nothing is named`);
+        return false;
+      }
+      this.#epochGone = null;
       this.#blocker = problem === "needsUpdate" ? "needsUpdate" : problem === "malformed" ? "needsAttention" : "needsPassphrase";
       // Another device already joined it: never named as one to delete.
       const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
@@ -2619,6 +2646,7 @@ export class SyncEngine {
       return false;
     }
     this.#damaged = null;
+    this.#epochGone = null;
     const file = read.read.file;
     const from = this.#meta!.epochKey;
     const turn = this.#turn();

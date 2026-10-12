@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch } from "./epoch";
+import { compareEpochKeys, epochCounted, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch } from "./epoch";
 import { createOrderKey, genesisOrderKey, parseRecordKey, parseRegisterKey } from "./keys";
 import { LamportExhausted, MAX_L, compareTags, isDeviceId, isTag, nextLamport, newDeviceId } from "./tags";
 
@@ -135,6 +135,23 @@ describe("epochs", () => {
     expect(winningEpoch([`${E1}.genesis.enc`, `${E3}.genesis.enc`, `${E10}.genesis.enc`])).toBe(E1);
     expect(winningEpoch([`${E2a}.genesis.enc`])).toBeNull();
     expect(winningEpoch(["e000000-00000000.genesis.enc"])).toBeNull();
+  });
+
+  it("say whether an epoch counts: its genesis is listed, and one for every number below it", () => {
+    const E3 = "e000003-00000000";
+    const listing = [`${E1}.genesis.enc`, `${E2a}.genesis.enc`, `${E3}.genesis.enc`, `${E2b}.${D1}.log.enc`];
+    expect(epochCounted(listing, E1)).toBe(true);
+    expect(epochCounted(listing, E3)).toBe(true);
+    // E2b is beside the counted E2a, but its own genesis isn't listed.
+    expect(epochCounted(listing, E2a)).toBe(true);
+    expect(epochCounted(listing, E2b)).toBe(false);
+    // A gap below, or no genesis at all.
+    expect(epochCounted([`${E1}.genesis.enc`, `${E3}.genesis.enc`], E3)).toBe(false);
+    expect(epochCounted([`${E2a}.genesis.enc`], E2a)).toBe(false);
+    expect(epochCounted([], E1)).toBe(false);
+    expect(epochCounted(["e000000-00000000.genesis.enc"], "e000000-00000000")).toBe(false);
+    // A crafted number far past the run ends at the first gap.
+    expect(epochCounted([`${E1}.genesis.enc`, "e99999999999-00000000.genesis.enc"], "e99999999999-00000000")).toBe(false);
   });
 
   it("say whether a listing is stale, the same epoch, or a restore to switch to", () => {
