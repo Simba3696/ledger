@@ -180,8 +180,9 @@ export interface EngineState {
   leftBehindOwnCount: number;
   /** The winning genesis is newer than this device's epoch and can't be
    * opened here (owner decision D26): sync stops, local writes go on, and
-   * deleting this file on GitHub resumes it (damagedFileMessage says how).
-   * Null otherwise, a genesis too new for this build included. */
+   * deleting this file on GitHub resumes it, or, for "joined", restoring
+   * its previous version does (damagedFileMessage says how). Null
+   * otherwise, a genesis too new for this build included. */
   damagedFile: DamagedFile | null;
   /** This device's epoch no longer counts in a full listing (its genesis,
    * or one below it, was deleted on GitHub) and the listing's winner is
@@ -2481,9 +2482,10 @@ export class SyncEngine {
    * groups no longer offers it), so the device switches first, on its next
    * cycle, and the restore is tried again from there. Nor when this build
    * is too old to read it: updating the app is the fix. Nor when this
-   * device can't open it (owner decision D26): the app never writes such a
-   * genesis, and nothing is written past it; the result names the file,
-   * whose deletion on GitHub lets sync and the restore go on. Nor when the
+   * device can't open it (owner decision D26): damaged outside the app, or
+   * a racing create's under another salt, and nothing is written past it;
+   * the result names the file (DamagedFile says what to do with it). Nor
+   * when the
    * new genesis would fill the gap below such a genesis, which would then
    * count and win (the result names it too). Nor when this
    * device's epoch no longer counts in a full listing (`epochGone`): a

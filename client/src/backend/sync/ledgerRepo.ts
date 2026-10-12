@@ -87,13 +87,15 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
   return { names: [...files.keys()], files, truncated: listing.truncated };
 }
 
-/** A winning genesis this device can't open (owner decision D26): one the
- * app never writes, so a git client, a manual edit or a bad commit put it
- * there. `malformed`: it doesn't parse or open as a genesis.
- * `undecryptable`: it names the household's salt and iterations and still
- * doesn't decrypt (AES-GCM can't tell an altered body from another key, but
- * under the household's own salt only damage explains it). `foreignKey`: it
- * is sealed under another salt and iterations, another passphrase's. Sync
+/** A winning genesis this device can't open (owner decision D26).
+ * `malformed`: it doesn't parse or open as a genesis. `undecryptable`: it
+ * names the household's salt and iterations and still doesn't decrypt
+ * (AES-GCM can't tell an altered body from another key, but under the
+ * household's own salt only damage explains it). The app never writes
+ * either, so a git client, a manual edit or a bad commit put it there.
+ * `foreignKey`: it is sealed under another salt and iterations, another
+ * passphrase's: a create that raced this device's under its own new salt,
+ * or a household passphrase changed; deleting it removes that ledger. Sync
  * stops, with nothing lost, until the file is deleted on GitHub; nothing is
  * ever written past it. `joined`, whatever is wrong with it: a log or snap
  * of its epoch is listed, so another device already uses that epoch, and
@@ -310,9 +312,10 @@ export type CreateResult =
   | { kind: "created"; epoch: string; sha: string; state: SyncState }
   /** The repo already holds a ledger (or one this build can't read, or
    * this key can't open): join it instead. Nothing was written.
-   * `damagedFile`: the winning genesis is one the app never writes (D26);
-   * nothing is written past it, and deleting it on GitHub lets the create
-   * or restore go on (damagedFileMessage). */
+   * `damagedFile`: the winning genesis can't be opened with this key
+   * (D26); nothing is written past it, and deleting it on GitHub (or, for
+   * "joined", restoring its previous version) lets the create or restore
+   * go on (damagedFileMessage). */
   | { kind: "exists"; damagedFile?: DamagedFile }
   /** Another device's create landed beside this one and wins (a greater
    * epoch is listed after this one landed): join the winner instead
