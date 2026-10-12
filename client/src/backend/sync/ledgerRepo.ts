@@ -29,7 +29,8 @@ import type { VersionVector } from "./tags";
 //     genesis with the key (openGenesis), which the engine's first start
 //     takes as its state.
 //   - Create is one genesis PUT for epoch 1 (createLedger), then a listing:
-//     a racing create's greater epoch 1 wins, and is joined instead.
+//     a greater epoch listed (a racing create's) wins, and is joined
+//     instead.
 //     Restoring a backup into a repo with no ledger is the same PUT with
 //     reason "restore". Restoring over an existing ledger is the engine's
 //     (SyncEngine.restore), which needs what the device has seen.
@@ -309,12 +310,12 @@ export type CreateResult =
  * the state the engine's first start begins from. Any listed genesis is
  * "exists", and nothing is written: a damaged one too (D26), which is named
  * (damagedWinner) so the person can delete it, after which the create or
- * restore goes on. Two devices creating at
- * once each write their own epoch 1, and the greater key wins. Each derived
+ * restore goes on. Two devices creating at once each write their own
+ * epoch 1, and the greater key wins. Each derived
  * its key with a fresh salt, so a device started on the losing epoch could
  * never read the winner's files, nor offer its writes. So the repo is
  * listed again once the genesis lands (as a restore's step 6 does): a
- * greater epoch 1 listed is "replaced", and the caller joins the winner
+ * greater epoch listed is "replaced", and the caller joins the winner
  * before anything is written on this device. A create that listed before
  * the winner's landed is still told "created" (ADR-0008, design
  * questions). */
