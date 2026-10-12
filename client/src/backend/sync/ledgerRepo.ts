@@ -67,8 +67,11 @@ export type LedgerFound =
   | { kind: "unknown" }
   /** The winning epoch's genesis, as text, and the salt and iterations its
    * header names: what the passphrase is derived with. `joined`: a log or
-   * snap of the epoch is listed, so a device already joined it (D26). */
-  | { kind: "ledger"; epoch: string; name: string; sha: string; text: string; salt: string; iter: number; joined: boolean }
+   * snap of the epoch is listed, so a device already joined it (D26).
+   * `truncated`: GitHub cut the listing short, so a greater epoch may be
+   * left out, and openGenesis names no file (nothing is named from a cut
+   * listing). */
+  | { kind: "ledger"; epoch: string; name: string; sha: string; text: string; salt: string; iter: number; joined: boolean; truncated: boolean }
   /** The winning genesis has a header this build can't read: a newer
    * build wrote it. */
   | { kind: "needsUpdate"; epoch: string }
@@ -185,7 +188,7 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
     const raw = JSON.parse(newline < 0 ? text : text.slice(0, newline)) as { v?: unknown } | null;
     if (Number.isSafeInteger(raw?.v) && (raw!.v as number) > 1) return { kind: "needsUpdate", epoch };
     const header = parseHeader(text);
-    return { kind: "ledger", epoch, name, sha, text, salt: header.salt, iter: header.iter, joined };
+    return { kind: "ledger", epoch, name, sha, text, salt: header.salt, iter: header.iter, joined, truncated: listing.truncated };
   } catch {
     return damaged;
   }
@@ -198,8 +201,9 @@ export type GenesisOpen =
   | { ok: true; epoch: string; sha: string; state: SyncState; doc: LedgerDocument; reason: GenesisContent["reason"]; by: string; at: number }
   | { ok: false; problem: "wrongPassphrase" | "needsUpdate" }
   /** It decrypts but isn't a genesis this build would write: damaged, and
-   * named so it can be deleted (D26). */
-  | { ok: false; problem: "malformed"; damagedFile: DamagedFile };
+   * named so it can be deleted (D26). Named only when findLedger's listing
+   * was full: a cut one may have left out a greater epoch. */
+  | { ok: false; problem: "malformed"; damagedFile?: DamagedFile };
 
 /** Opens the genesis findLedger found with the household key: the state a
  * first start begins from (SyncEngine.initialize). A key that doesn't fit
@@ -208,7 +212,7 @@ export type GenesisOpen =
  * from a wrong passphrase. */
 export async function openGenesis(found: Extract<LedgerFound, { kind: "ledger" }>, key: DeviceKey): Promise<GenesisOpen> {
   const read = await openRepoFile({ kind: "genesis", epoch: found.epoch }, found.text, key);
-  const malformed = { ok: false, problem: "malformed", damagedFile: damagedGenesis(found.epoch, "malformed", found.joined) } as const;
+  const malformed: GenesisOpen = found.truncated ? { ok: false, problem: "malformed" } : { ok: false, problem: "malformed", damagedFile: damagedGenesis(found.epoch, "malformed", found.joined) };
   if (!read.ok) {
     if (read.problem === "malformed") return malformed;
     return { ok: false, problem: read.problem === "needsUpdate" ? "needsUpdate" : "wrongPassphrase" };
@@ -413,7 +417,8 @@ async function damagedWinner(found: Exclude<LedgerFound, { kind: "none" | "unkno
   if (found.kind !== "ledger" || reason !== "restore") return null;
   const opened = await openGenesis(found, key);
   if (opened.ok || opened.problem === "needsUpdate") return null;
-  if (opened.problem === "malformed") return opened.damagedFile;
+  // Named whatever the listing; the caller names nothing from a cut one.
+  if (opened.problem === "malformed") return damagedGenesis(found.epoch, "malformed", found.joined);
   return damagedGenesis(found.epoch, found.salt === key.salt && found.iter === key.iter ? "undecryptable" : "foreignKey", found.joined);
 }
 

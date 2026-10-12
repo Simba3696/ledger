@@ -2535,9 +2535,8 @@ export class SyncEngine {
     // device's own epoch winning: the restore is then numbered from that
     // epoch, as a cycle on the same listing would go on syncing in it, and a
     // greater epoch the cut left out is a race step 6 reports.
-    if (now.truncated && now.winner !== meta.epochKey) {
-      return { kind: "failed", detail: "GitHub cut the file listing short, so the winning epoch is unknown; try again later" };
-    }
+    const cutDetail = "GitHub cut the file listing short, so the winning epoch is unknown; try again later";
+    if (now.truncated && now.winner !== meta.epochKey) return { kind: "failed", detail: cutDetail };
     const listed = now.winner;
     // This device's epoch no longer counts: a restore based on it, numbered
     // after it, would write past the epoch listed now (a racing create's
@@ -2562,6 +2561,9 @@ export class SyncEngine {
     // (D26), and the restore goes on once it is gone.
     const after = winningEpoch([...now.files.keys(), repoFileName({ kind: "genesis", epoch })]);
     if (after !== null && after !== epoch) {
+      // Nothing is named from a cut listing (ADR-0008), and the cut may
+      // have left out what decides which genesis would count.
+      if (now.truncated) return { kind: "failed", detail: cutDetail };
       const gap = now.files.get(repoFileName({ kind: "genesis", epoch: after }))!;
       const damaged = await this.#damagedWinner(after, gap.sha, gap.size, now.files.keys());
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
