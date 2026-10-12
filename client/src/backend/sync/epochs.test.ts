@@ -1145,6 +1145,36 @@ describe("racing creates with two salts (D26)", () => {
   });
 });
 
+describe("a device whose epoch is gone (stage 6 final review)", () => {
+  it("one stale listing never sets epochGone; two full listings in a row that don't count the epoch do, and a listing that counts it clears it", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const e2 = (restored as { epoch: string }).epoch;
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(e2);
+    expect(b.engine.getState().epochGone).toBeNull();
+    // A read that lags one commit shows the repo before e2's genesis.
+    w.fake.staleReads(1);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "pending", epochGone: null });
+    w.fake.staleReads(0);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+    // A lag that lasts two listings looks like a gone epoch, and passes.
+    w.fake.staleReads(1);
+    await cycle(w, b, b);
+    expect(b.engine.getState()).toMatchObject({ status: "pending", epochGone: { epoch: e2, winner: EPOCH } });
+    w.fake.staleReads(0);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+    expect(b.engine.epochKey).toBe(e2);
+  });
+});
+
 describe("Lamport exhaustion (ADR-0008)", () => {
   /** A valid log from X whose one op is at the last L there is. */
   async function plantTopOfRange(): Promise<void> {
