@@ -20,7 +20,7 @@ import {
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
-import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
@@ -383,7 +383,7 @@ export const NEEDS_NEW_EPOCH = "Ledger needs to reach GitHub to save more change
  * newer genesis this device can't open is listed: no epoch is written past
  * it (owner decision D26), so the write waits until it is deleted. */
 const needsNewEpochPast = (file: DamagedFile) =>
-  `Ledger can't save more changes until sync resumes: it needs a new epoch to number them, and none can start while ${file.path} is in the repo. ${damagedFileMessage(file)}`;
+  `Ledger can't save more changes until sync resumes: it needs a new epoch to number them, and none can start while ${file.path} can't be opened. ${damagedFileMessage(file)}`;
 /** Why a write is refused while a restore writes its genesis, and for good
  * once it landed: the caller clears this device's sync state and reloads
  * (section 9.2 step 7), so a write saved now would be lost with it. */
@@ -2449,7 +2449,7 @@ export class SyncEngine {
     }
     const listed = now.winner;
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
-      const damaged = await this.#damagedWinner(listed, now.sha!, now.size!);
+      const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.names);
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
       return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
     }
@@ -2463,15 +2463,17 @@ export class SyncEngine {
     return { kind: "written", genesis: { epoch, sha: written.sha, state: genesisState(doc), basedOn, by: content.by, at: content.at } };
   }
 
-  /** Epoch `epoch`'s genesis, listed at blob `sha`, as a damaged file when
-   * this device can't open it (D26), else null: it opens, it is too new for
-   * this build, or it couldn't be read now. A refusal is remembered by name
-   * and sha (#read), so the cycle's read is not repeated. */
-  async #damagedWinner(epoch: string, sha: string, size: number): Promise<DamagedFile | null> {
+  /** Epoch `epoch`'s genesis, listed at blob `sha` in a full listing of
+   * `names`, as a damaged file when this device can't open it (D26), else
+   * null: it opens, it is too new for this build, or it couldn't be read
+   * now. "joined" when a device file of the epoch is listed. A refusal is
+   * remembered by name and sha (#read), so the cycle's read is not
+   * repeated. */
+  async #damagedWinner(epoch: string, sha: string, size: number, names: Iterable<string>): Promise<DamagedFile | null> {
     try {
       const read = await this.#read(repoFileName({ kind: "genesis", epoch }), { file: { kind: "genesis", epoch }, sha, size });
-      if (read.ok) return read.read.file.kind === "genesis" ? null : damagedGenesis(epoch, "malformed");
-      return read.problem === "needsUpdate" ? null : damagedGenesis(epoch, read.problem);
+      if (read.ok) return read.read.file.kind === "genesis" ? null : damagedGenesis(epoch, "malformed", epochJoined(names, epoch));
+      return read.problem === "needsUpdate" ? null : damagedGenesis(epoch, read.problem, epochJoined(names, epoch));
     } catch (err) {
       this.#log(`the winning genesis ${epoch} couldn't be read`, err);
       return null;
@@ -2524,7 +2526,9 @@ export class SyncEngine {
    * fit, needsAttention for anything else (section 9.1). In the last two
    * cases the app never wrote it (owner decision D26): the device names it
    * (`damagedFile`) and stays stopped, its local writes kept, until the
-   * file is deleted on GitHub and a listing no longer counts it. */
+   * file is deleted on GitHub and a listing no longer counts it, or, when
+   * a device file of that epoch is listed ("joined": deleting it would
+   * strand that device), until its previous version is restored. */
   async #switchToListed(listing: Listing, winner: string): Promise<boolean> {
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const listed = listing.files.get(name)!;
@@ -2532,7 +2536,8 @@ export class SyncEngine {
     if (!read.ok || read.read.file.kind !== "genesis") {
       const problem = read.ok ? "malformed" : read.problem;
       this.#blocker = problem === "needsUpdate" ? "needsUpdate" : problem === "malformed" ? "needsAttention" : "needsPassphrase";
-      const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem);
+      // Another device already joined it: never named as one to delete.
+      const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
       // The same object while nothing changes, so no listener is told again.
       if (damaged === null || this.#damaged?.path !== damaged.path || this.#damaged.reason !== damaged.reason) this.#damaged = damaged;
       this.#log(`a restore's epoch ${winner} can't be read (${problem}); this device stays where it is and sends nothing more`);

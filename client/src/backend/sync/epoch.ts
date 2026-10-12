@@ -81,6 +81,18 @@ export function winningEpoch(names: readonly string[]): string | null {
   return winner;
 }
 
+/** Whether a listing (`names`) holds a log or snap file of `epoch`: some
+ * device joined that epoch and wrote there. Its genesis is then never one
+ * to delete (owner decision D26): that would leave the epoch uncounted and
+ * strand every device in it. */
+export function epochJoined(names: Iterable<string>, epoch: string): boolean {
+  for (const name of names) {
+    const file = parseRepoFileName(name);
+    if (file !== null && file.kind !== "genesis" && file.epoch === epoch) return true;
+  }
+  return false;
+}
+
 /** What a listing's winner means for a device on epoch `persisted`:
  * "stale" (a listing older than what this device already joined: end the
  * cycle), "same", or "switch" (a restore won: move to it, section 9.3). */

@@ -13,7 +13,7 @@ import {
 } from "../github/contents";
 import { forgetDevice } from "../github/deviceStore";
 import { FORMAT_VERSION, checkRepoFile } from "./codec";
-import { compareEpochKeys, nextEpochKey, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, epochJoined, nextEpochKey, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { clearSyncState } from "./persist";
 import { seal, type DeviceKey } from "./records";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds } from "./repoFiles";
@@ -36,7 +36,10 @@ import type { VersionVector } from "./tags";
 //     (SyncEngine.restore), which needs what the device has seen.
 //   - A winning genesis that can't be opened is never written past (owner
 //     decision D26): findLedger, openGenesis and createLedger name it
-//     (DamagedFile), and deleting it on GitHub lets them go on.
+//     (DamagedFile), and deleting it on GitHub lets them go on. One whose
+//     epoch some device already joined (a log or snap of it is listed) is
+//     named as "joined" instead: deleting it would strand those devices, so
+//     its previous version is restored from the repo's history.
 //   - A genesis is written under a fresh random name, never over a file. A
 //     lost answer is settled by listing the path: the sha of the bytes sent
 //     there means it landed; otherwise it is sent once more. An answer that
@@ -63,8 +66,9 @@ export type LedgerFound =
   /** GitHub cut the listing short before any genesis: try again later. */
   | { kind: "unknown" }
   /** The winning epoch's genesis, as text, and the salt and iterations its
-   * header names: what the passphrase is derived with. */
-  | { kind: "ledger"; epoch: string; name: string; sha: string; text: string; salt: string; iter: number }
+   * header names: what the passphrase is derived with. `joined`: a log or
+   * snap of the epoch is listed, so a device already joined it (D26). */
+  | { kind: "ledger"; epoch: string; name: string; sha: string; text: string; salt: string; iter: number; joined: boolean }
   /** The winning genesis has a header this build can't read: a newer
    * build wrote it. */
   | { kind: "needsUpdate"; epoch: string }
@@ -91,22 +95,33 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
  * under the household's own salt only damage explains it). `foreignKey`: it
  * is sealed under another salt and iterations, another passphrase's. Sync
  * stops, with nothing lost, until the file is deleted on GitHub; nothing is
- * ever written past it. */
+ * ever written past it. `joined`, whatever is wrong with it: a log or snap
+ * of its epoch is listed, so another device already uses that epoch, and
+ * deleting the genesis would leave the epoch uncounted and strand that
+ * device; its previous version is restored from the repo's history
+ * instead. */
 export interface DamagedFile {
   /** Its path in the repo, "ledger/<epoch>.genesis.enc". */
   path: string;
   epoch: string;
-  reason: "malformed" | "undecryptable" | "foreignKey";
+  reason: "malformed" | "undecryptable" | "foreignKey" | "joined";
 }
 
-export function damagedGenesis(epoch: string, reason: DamagedFile["reason"]): DamagedFile {
-  return { path: repoPath({ kind: "genesis", epoch }), epoch, reason };
+/** Epoch `epoch`'s genesis as a damaged file, for `reason`, or "joined"
+ * when `joined` (a device file of the epoch is listed, epochJoined). */
+export function damagedGenesis(epoch: string, reason: Exclude<DamagedFile["reason"], "joined">, joined: boolean): DamagedFile {
+  return { path: repoPath({ kind: "genesis", epoch }), epoch, reason: joined ? "joined" : reason };
 }
 
 /** What to tell the person about a damaged genesis: which file to delete,
- * where, and that deleting it resumes sync (D26). */
+ * where, and that deleting it resumes sync (D26); or, for one another
+ * device already uses, not to delete it but to restore its previous
+ * version. */
 export function damagedFileMessage(file: DamagedFile): string {
   const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+  if (file.reason === "joined") {
+    return `Sync is paused: the file ${file.path} in your GitHub repo can't be opened on this device, and another device is already using this ledger version, so don't delete it: that would cut that device off. Restore the file's previous version from the repo's history instead: on GitHub, open the repo, then the ${LEDGER_DIR} folder, then ${name}, then its History, open the version before the change, and commit that version back as the file. Sync then resumes, and nothing on this device is lost. If the household passphrase was changed, join the ledger with the new passphrase instead.`;
+  }
   const why =
     file.reason === "foreignKey"
       ? "it is sealed with a different passphrase, which may mean the household passphrase was changed"
@@ -128,16 +143,18 @@ export interface EpochNow {
    * `winner` alone decides nothing (ADR-0008). A greater one listed is
    * there all the same. */
   truncated: boolean;
+  /** Every name the listing holds. */
+  names: readonly string[];
 }
 
 /** The winning epoch in the repo now (section 9.1), and whether the
  * listing it comes from was cut. */
 export async function winningEpochNow(remote: Remote): Promise<EpochNow> {
   const listing = await listNow(remote);
-  if (listing === null) return { winner: null, sha: null, size: null, truncated: false };
+  if (listing === null) return { winner: null, sha: null, size: null, truncated: false, names: [] };
   const winner = winningEpoch(listing.names);
   const listed = winner === null ? null : listing.files.get(repoFileName({ kind: "genesis", epoch: winner }))!;
-  return { winner, sha: listed?.sha ?? null, size: listed?.size ?? null, truncated: listing.truncated };
+  return { winner, sha: listed?.sha ?? null, size: listed?.size ?? null, truncated: listing.truncated, names: listing.names };
 }
 
 /** "Is there a ledger?" (#8): the winning genesis and its header. */
@@ -155,7 +172,8 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
   // A damaged winner is named only from a full listing: a cut one may have
   // left out a greater epoch, and deleting a genesis under it would leave
   // that epoch uncounted (the counted-run rule).
-  const damaged = listing.truncated ? ({ kind: "unknown" } as const) : ({ kind: "malformed", epoch, damagedFile: damagedGenesis(epoch, "malformed") } as const);
+  const joined = epochJoined(listing.names, epoch);
+  const damaged = listing.truncated ? ({ kind: "unknown" } as const) : ({ kind: "malformed", epoch, damagedFile: damagedGenesis(epoch, "malformed", joined) } as const);
   if (size > READ_BOUNDS.bytes) return damaged;
   const text = await remote.client.readBlob(sha);
   const newline = text.indexOf("\n");
@@ -163,7 +181,7 @@ async function findIn(remote: Remote, listing: Awaited<ReturnType<typeof listNow
     const raw = JSON.parse(newline < 0 ? text : text.slice(0, newline)) as { v?: unknown } | null;
     if (Number.isSafeInteger(raw?.v) && (raw!.v as number) > 1) return { kind: "needsUpdate", epoch };
     const header = parseHeader(text);
-    return { kind: "ledger", epoch, name, sha, text, salt: header.salt, iter: header.iter };
+    return { kind: "ledger", epoch, name, sha, text, salt: header.salt, iter: header.iter, joined };
   } catch {
     return damaged;
   }
@@ -186,7 +204,7 @@ export type GenesisOpen =
  * from a wrong passphrase. */
 export async function openGenesis(found: Extract<LedgerFound, { kind: "ledger" }>, key: DeviceKey): Promise<GenesisOpen> {
   const read = await openRepoFile({ kind: "genesis", epoch: found.epoch }, found.text, key);
-  const malformed = { ok: false, problem: "malformed", damagedFile: damagedGenesis(found.epoch, "malformed") } as const;
+  const malformed = { ok: false, problem: "malformed", damagedFile: damagedGenesis(found.epoch, "malformed", found.joined) } as const;
   if (!read.ok) {
     if (read.problem === "malformed") return malformed;
     return { ok: false, problem: read.problem === "needsUpdate" ? "needsUpdate" : "wrongPassphrase" };
@@ -372,7 +390,7 @@ async function damagedWinner(found: Exclude<LedgerFound, { kind: "none" | "unkno
   const opened = await openGenesis(found, key);
   if (opened.ok || opened.problem === "needsUpdate") return null;
   if (opened.problem === "malformed") return opened.damagedFile;
-  return damagedGenesis(found.epoch, found.salt === key.salt && found.iter === key.iter ? "undecryptable" : "foreignKey");
+  return damagedGenesis(found.epoch, found.salt === key.salt && found.iter === key.iter ? "undecryptable" : "foreignKey", found.joined);
 }
 
 /** What a backup file opens to. */
