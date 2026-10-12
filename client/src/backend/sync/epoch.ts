@@ -81,6 +81,40 @@ export function winningEpoch(names: readonly string[]): string | null {
   return winner;
 }
 
+/** Whether `epoch` counts in a listing (`names`): its genesis is listed,
+ * and so is a genesis for every number from 1 below it (the counted-run
+ * rule winningEpoch applies). A device whose epoch doesn't count in a full
+ * listing has lost it: its genesis, or one below it, was deleted. */
+export function epochCounted(names: Iterable<string>, epoch: string): boolean {
+  const numbers = new Set<string>();
+  let listed = false;
+  for (const name of names) {
+    const file = parseRepoFileName(name);
+    if (file?.kind !== "genesis") continue;
+    numbers.add(epochDigits(file.epoch));
+    if (file.epoch === epoch) listed = true;
+  }
+  if (!listed) return false;
+  const top = Number(epochDigits(epoch));
+  if (!(top >= 1)) return false;
+  // Ends at the first number missing, so at most one step past the
+  // genesis files listed, however long the number is.
+  for (let n = 1; n < top; n++) if (!numbers.has(spellEpoch(n))) return false;
+  return true;
+}
+
+/** Whether a listing (`names`) holds a log or snap file of `epoch`: some
+ * device joined that epoch and wrote there. Its genesis is then never one
+ * to delete (owner decision D26): that would leave the epoch uncounted and
+ * strand every device in it. */
+export function epochJoined(names: Iterable<string>, epoch: string): boolean {
+  for (const name of names) {
+    const file = parseRepoFileName(name);
+    if (file !== null && file.kind !== "genesis" && file.epoch === epoch) return true;
+  }
+  return false;
+}
+
 /** What a listing's winner means for a device on epoch `persisted`:
  * "stale" (a listing older than what this device already joined: end the
  * cycle), "same", or "switch" (a restore won: move to it, section 9.3). */

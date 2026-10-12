@@ -36,6 +36,9 @@ const FORBIDDEN_IN_DEFAULT = [
   'own snapshot in the repo is not its history',
   'its log is not compacted',
   'own log would be refused',
+  'ledger:restored',
+  'Ledger needs to reach GitHub to save more changes',
+  'Those changes were already re-applied or discarded',
 ]
 
 // No file in the default build may have these in its name.

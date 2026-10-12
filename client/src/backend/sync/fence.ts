@@ -226,6 +226,15 @@ export class Fence {
     }
   }
 
+  /** The state was replaced by a new epoch's (a restore, section 9.3), as
+   * replace() does for a rehome. A write submitted before the switch had
+   * seen nothing of the new epoch, so its vv is empty: never the old
+   * epoch's device ids, which name no one in this one. */
+  switchEpoch(before: SyncState, after: SyncState, changed: boolean): void {
+    this.replace(before, after, changed);
+    for (const r of [...this.#seenAt.keys()]) this.#seenAt.set(r, {});
+  }
+
   #keep(key: string, value: unknown): void {
     const list = this.#pre.get(key);
     if (!list) this.#pre.set(key, [{ value, rev: this.#revision }]);

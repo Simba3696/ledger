@@ -1,0 +1,1491 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LedgerDocument } from "../document/types";
+import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
+import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
+import { testKey } from "./localTestkit";
+import { seal, unseal, type DeviceKey } from "./records";
+import { repoPath } from "./repoFiles";
+import { genesisState, type Op } from "./state";
+import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
+import { MAX_L } from "./tags";
+import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
+
+// Restore epochs against the fake GitHub (design sections 9 and 15 AC13,
+// 16.2 "Restore"): a restore by one device; every other device switching,
+// with what the restore left out offered and re-applied only on Re-apply
+// (owner decision D18: own changes prominently, other devices' in a
+// collapsed list); a log PUT that lands in the old epoch after the genesis;
+// racing restores; re-apply and discard markers propagating; a double
+// re-apply; AC14; and the new epoch Lamport exhaustion starts. Fictional
+// data only.
+//
+// Old-bug catalogue (section 13): B1 and B20 are named on their tests. B15
+// (a restore needed a `restoredAt` marker) has no test of its own: epochs
+// replace the marker, and every restore here runs without one.
+
+const running: SyncEngine[] = [];
+let w: World;
+const X = deviceId(0xc);
+
+beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  w = await world();
+});
+
+afterEach(() => {
+  for (const engine of running.splice(0)) engine.stop();
+  vi.useRealTimers();
+});
+
+async function open(options: DeviceOptions = {}): Promise<Device> {
+  const d = await device(w, options);
+  running.push(d.engine);
+  return d;
+}
+
+/** After a restore (section 9.2 step 7): the device's sync state is
+ * cleared and the page reloads, so it joins the winning epoch afresh, as
+ * #8 join does (findLedger, then openGenesis with the household key). */
+async function reload(d: Device): Promise<Device> {
+  d.engine.stop();
+  const found = await findLedger({ client: d.client, branch: "main" });
+  if (found.kind !== "ledger") throw new Error(`no ledger: ${found.kind}`);
+  const opened = await openGenesis(found, w.key);
+  if (!opened.ok) throw new Error(opened.problem);
+  return open({ login: d.login, init: { epoch: opened.epoch, state: opened.state } });
+}
+
+/** A restore genesis another device wrote, planted as it would land. */
+async function plantRestore(epoch: string, doc: LedgerDocument, seen: Record<string, number> = {}, basedOn = EPOCH): Promise<void> {
+  await plant(w, { kind: "genesis", epoch }, { fv: 1, kind: "genesis", epoch, reason: "restore", by: "sam", at: 7, basedOn: { epoch: basedOn, seen }, doc });
+}
+
+/** The ops in a device's log file, as the repo holds it. */
+async function logOps(epoch: string, device: string): Promise<Op[]> {
+  const file = w.fake.file(FULL, repoPath({ kind: "log", epoch, device }));
+  return file ? ((await unseal(file.text, w.key)) as { ops: Op[] }).ops : [];
+}
+
+const opRemarks = (ops: Op[]) => ops.flatMap((op) => op.set.filter(([key]) => key.endsWith("/remarks")).map(([, value]) => value));
+const status = (d: Device) => d.engine.getState().status;
+
+describe("restore (section 9.2) and switching (section 9.3)", () => {
+  it("every device ends on the backup, in the new epoch under a new id, and never writes to the old epoch again (AC13)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await b.backend.addEntry(entry("Bus"));
+    await quiesce(w, a, b);
+    // Export, then restore what it opens to (section 9.5: they round-trip).
+    const opened = await readBackup(await a.engine.exportBackup(), w.key.key);
+    if (!opened.ok) throw new Error(opened.problem);
+    // A change the restorer sees before restoring is replaced on purpose.
+    await b.backend.addEntry(entry("Taxi"));
+    await cycle(w, b);
+    const oldB = b.engine.deviceId!;
+    const result = await a.engine.restore(opened.doc);
+    expect(result).toMatchObject({ kind: "restored", epoch: expect.stringMatching(/^e000002-[0-9a-f]{8}$/) });
+    const epoch = (result as { epoch: string }).epoch;
+    const genesisPut = puts(w).length;
+    expect(w.fake.commits.at(-1)).toMatchObject({ path: `ledger/${epoch}.genesis.enc`, message: "Restore from backup" });
+
+    const a2 = await reload(a);
+    await quiesce(w, a2, b);
+    expect(b.engine.epochKey).toBe(epoch);
+    expect(b.engine.deviceId).not.toBe(oldB);
+    expect(remarks(b).sort()).toEqual(["Bus", "Groceries"]);
+    expect(docText(b.engine.current())).toBe(docText(opened.doc));
+    expectConverged(a2, b);
+    for (const d of [a2, b]) expect(d.engine.getState()).toMatchObject({ status: "idle", leftBehindCount: 0, pendingCount: 0 });
+    // Writes go on in the new epoch, and only there.
+    await b.backend.addEntry(entry("Rent"));
+    await quiesce(w, a2, b);
+    expect(remarks(a2)).toContain("Rent");
+    for (const put of puts(w).slice(genesisPut)) expect(put.path).toContain(`/contents/ledger/${epoch}.`);
+    // b's first log in the new epoch names the id it had before.
+    const log = (await unseal(w.fake.file(FULL, repoPath({ kind: "log", epoch, device: b.engine.deviceId! }))!.text, w.key)) as { prev?: unknown };
+    expect(log.prev).toEqual({ epoch: EPOCH, device: oldB });
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  it("a device's unpushed changes are its own left-behind group, shown prominently, and re-applied only on Re-apply (AC13, D18)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    const oldB = b.engine.deviceId!;
+    const result = await a.engine.restore(backup);
+    expect(result.kind).toBe("restored");
+    await cycle(w, b);
+    expect(remarks(b)).toEqual(["Groceries"]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 1, leftBehindOwnCount: 1, pendingCount: 0 });
+    const [group] = b.engine.leftBehind();
+    expect(group).toMatchObject({ own: true, who: "sam", resolvedElsewhere: false, into: { by: "alex" }, items: [{ kind: "add", coll: "e", record: { remarks: "Taxi" } }] });
+    // Unpushed ops are never pushed into the old epoch.
+    expect(opRemarks(await logOps(EPOCH, oldB))).toEqual([]);
+
+    // Kept over a reload, and nothing is re-applied until asked.
+    b.engine.stop();
+    const b2 = await open({ login: "sam", store: b.store });
+    const a2 = await reload(a);
+    await quiesce(w, a2, b2);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+    expect(b2.engine.leftBehind().map((g) => g.id)).toEqual([group.id]);
+
+    expect(b2.engine.previewReapply(group.id)).toMatchObject({ skipped: [] });
+    const done = await b2.engine.reapply(group.id);
+    expect(done).toMatchObject({ applied: [{ kind: "add" }], skipped: [] });
+    expect(b2.engine.leftBehind()).toEqual([]);
+    expect(b2.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
+    await quiesce(w, a2, b2);
+    expect(remarks(a2).sort()).toEqual(["Groceries", "Taxi"]);
+    expectConverged(a2, b2);
+    // The epoch switched from stays in `old` with no group left, until the
+    // device switches again: a restore that raced this one may be based on it.
+    expect((await b2.store.load())?.old).toBeDefined();
+    await expect(b2.engine.reapply(group.id)).rejects.toMatchObject({ status: 404, message: ALREADY_RESOLVED });
+    await expect(b2.engine.discard(group.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("a log PUT that lands in the old epoch after the genesis is left behind on its device, never lost (AC13)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    const oldB = b.engine.deviceId!;
+    w.fake.landLater(1000, { method: "PUT" });
+    await cycle(w, b);
+    expect(b.engine.getState().pendingCount).toBe(1);
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    // b's log lands now, in the old epoch, after the restore's genesis.
+    w.fake.landPending();
+    expect(opRemarks(await logOps(EPOCH, oldB))).toEqual(["Taxi"]);
+    await cycle(w, c, b);
+    expect(c.engine.leftBehind()).toEqual([]);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Taxi" } }] }]);
+    expect(remarks(b)).toEqual([]);
+  });
+
+  it("refuses while own changes aren't in the repo, says how many, and discards them only on Restore anyway", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    const backup = structuredClone(a.engine.current());
+    await a.backend.addEntry(entry("Bus"));
+    w.fake.failNext({ method: "PUT", network: true });
+    w.fake.failNext({ method: "PUT", network: true });
+    const before = puts(w).length;
+    expect(await a.engine.restore(backup)).toEqual({ kind: "unsynced", pendingCount: 2, leftBehindOwnCount: 0 });
+    expect(await findLedger({ client: a.client, branch: "main" })).toMatchObject({ kind: "ledger", epoch: EPOCH });
+    expect(puts(w).length).toBe(before + 1);
+    const result = await a.engine.restore(backup, { discardUnsynced: true });
+    expect(result.kind).toBe("restored");
+    const a2 = await reload(a);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+  });
+
+  it("refuses a backup that isn't a writable document, writing nothing", async () => {
+    const a = await open();
+    const before = puts(w).length;
+    const bad = { ...structuredClone(a.engine.current()), version: 2 } as unknown as LedgerDocument;
+    expect(await a.engine.restore(bad)).toEqual({ kind: "invalid" });
+    expect(puts(w).length).toBe(before);
+  });
+
+  it("refuses while this device's own changes a restore left behind are unresolved, and drops them only on Restore anyway (D18)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ pendingCount: 0, leftBehindOwnCount: 1 });
+    // Taxi is only in b's own group: the reload after b's restore would lose it.
+    const before = puts(w).length;
+    expect(await b.engine.restore(structuredClone(b.engine.current()))).toEqual({ kind: "unsynced", pendingCount: 0, leftBehindOwnCount: 1 });
+    expect(puts(w).length).toBe(before);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Taxi" } }] }]);
+    expect((await b.engine.restore(structuredClone(b.engine.current()), { discardUnsynced: true })).kind).toBe("restored");
+  });
+
+  it("a restore whose genesis landed is reported as restored when the re-list after it fails, never thrown", async () => {
+    let genesisPut = false;
+    let failed = false;
+    const a = await open({
+      login: "alex",
+      wrapFetch: (inner) => async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? "GET";
+        if (genesisPut && !failed && method === "GET" && /git\/ref/.test(url)) {
+          failed = true;
+          throw new TypeError("Failed to fetch");
+        }
+        const res = await inner(input, init);
+        if (method === "PUT" && url.includes(".genesis.enc") && res.ok) genesisPut = true;
+        return res;
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const result = await a.engine.restore(structuredClone(a.engine.current())).catch((err: unknown) => err);
+    expect(failed).toBe(true);
+    expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000002-/), winnerUnknown: true });
+    expect(await findLedger({ client: a.client, branch: "main" })).toMatchObject({ kind: "ledger", epoch: (result as { epoch: string }).epoch });
+  });
+
+  it("a restore whose genesis PUTs get no answer says unknown, refuses writes until a listing settles it, and the genesis that lands later wins", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    backup.expenses = {};
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    const result = await a.engine.restore(backup);
+    expect(result).toEqual({ kind: "unknown", epoch: expect.stringMatching(/^e000002-[0-9a-f]{8}$/) });
+    const epoch = (result as { epoch: string }).epoch;
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    w.fake.landPending();
+    await quiesce(w, a, b);
+    for (const d of [a, b]) expect(d.engine.epochKey).toBe(epoch);
+    expect(remarks(b)).toEqual([]);
+    // It landed: the device reloads, as after "restored".
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("a restore whose genesis PUTs get no answer and never land: the next sync's listing settles it, and writes go on", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    await cycle(w, a);
+    await a.backend.addEntry(entry("Bus"));
+    await quiesce(w, a);
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Groceries", "Bus"]);
+    expect(a.engine.getState().pendingCount).toBe(0);
+  });
+
+  it("the engine's state says how a restore stands: landed at once, or pending until a listing settles it as landed or as never landed", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    expect(a.engine.getState().restore).toBeNull();
+    // Both genesis PUTs get no answer, and land later.
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    const pending = await a.engine.restore(structuredClone(a.engine.current()));
+    if (pending.kind !== "unknown") throw new Error(pending.kind);
+    expect(a.engine.getState().restore).toEqual({ state: "pending", epoch: pending.epoch });
+    w.fake.landPending();
+    let told = 0;
+    const unsubscribe = a.engine.subscribe(() => void (a.engine.getState().restore?.state === "landed" && told++));
+    await cycle(w, a);
+    unsubscribe();
+    expect(a.engine.getState().restore).toEqual({ state: "landed", epoch: pending.epoch });
+    expect(told).toBeGreaterThan(0);
+
+    // Neither PUT lands: a full listing settles it, and nothing is pending.
+    const b = await open({ login: "sam" });
+    await quiesce(w, b);
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    const lost = await b.engine.restore(structuredClone(b.engine.current()));
+    if (lost.kind !== "unknown") throw new Error(lost.kind);
+    expect(b.engine.getState().restore).toEqual({ state: "pending", epoch: lost.epoch });
+    await cycle(w, b);
+    expect(b.engine.getState().restore).toBeNull();
+
+    // One that lands at once.
+    const c = await reload(b);
+    await quiesce(w, c);
+    const landed = await c.engine.restore(structuredClone(c.engine.current()));
+    if (landed.kind !== "restored") throw new Error(landed.kind);
+    expect(c.engine.getState().restore).toEqual({ state: "landed", epoch: landed.epoch });
+  });
+
+  it("a restore that a full listing shows never landed is no longer remembered for the reload; one that landed is", async () => {
+    const items = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (k: string) => items.get(k) ?? null,
+      setItem: (k: string, v: string) => void items.set(k, v),
+      removeItem: (k: string) => void items.delete(k),
+    });
+    try {
+      const a = await open({ login: "alex" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a);
+      w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+      w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+      expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+      await cycle(w, a);
+      // The reload after it would otherwise say a restore that never
+      // happened replaced the ledger, or was replaced.
+      expect(takeRestoredEpoch()).toBeNull();
+      const landed = await a.engine.restore(structuredClone(a.engine.current()));
+      if (landed.kind !== "restored") throw new Error(landed.kind);
+      expect(takeRestoredEpoch()).toBe(landed.epoch);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a write queued behind a restore is refused, never saved into the state the reload clears (section 9.2 step 7)", async () => {
+    let a!: Device;
+    let late: Promise<unknown> | null = null;
+    const wrap = (inner: typeof fetch): typeof fetch => (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (init?.method === "PUT" && url.includes(".genesis.enc") && late === null) late = a.backend.addEntry(entry("Late")).then(() => "saved", (err: unknown) => err);
+      return inner(input, init);
+    };
+    a = await open({ login: "alex", wrapFetch: wrap });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    expect(await late).toMatchObject({ status: 503 });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    await expect(a.backend.addEntry(entry("Later"))).rejects.toMatchObject({ status: 503 });
+    const a2 = await reload(a);
+    await quiesce(w, a2);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+    expect(a2.engine.getState().pendingCount).toBe(0);
+  });
+
+  it("a restore never writes an epoch based on one older than the listed winner, so nothing the winner holds is lost (AC6)", async () => {
+    for (const resolveFirst of [false, true]) {
+      for (const engine of running.splice(0)) engine.stop();
+      w = await world();
+      const a = await open({ login: "alex" });
+      const c = await open({ login: "sam" });
+      let sOffline = true;
+      const s = await open({ login: "sam", wrapFetch: (inner) => (input, init) => (sOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+      await c.backend.addEntry(entry("Bus"));
+      await quiesce(w, a, c);
+      await c.backend.addEntry(entry("Pens"));
+      expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+      await cycle(w, c);
+      expect(remarks(c)).toEqual(["Bus"]);
+      const [own] = c.engine.leftBehind();
+      if (resolveFirst) await c.engine.reapply(own.id);
+      await cycle(w, c);
+      // s comes back, but its sync before the restore can't switch (a full
+      // device): the listing it numbers from names a winner newer than its epoch.
+      sOffline = false;
+      s.store.failNext = 1;
+      expect(await s.engine.restore(structuredClone(s.engine.current()))).toMatchObject({ kind: "failed" });
+      await cycle(w, c);
+      expect(remarks(c), `resolveFirst ${resolveFirst}`).toContain("Bus");
+      // s switches on its next sync, and a restore from there is based on the winner.
+      await cycle(w, s);
+      expect(remarks(s)).toContain("Bus");
+      const again = await s.engine.restore(structuredClone(s.engine.current()));
+      expect(again.kind).toBe("restored");
+      await cycle(w, c);
+      expect(c.engine.epochKey).toBe((again as { epoch: string }).epoch);
+      expect(remarks(c), `resolveFirst ${resolveFirst}`).toContain("Bus");
+    }
+  });
+
+  it("AC14: a device holding an old tombstone keeps the restored record", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.deleteEntry(2026, 5, await row(b, "Groceries"));
+    await quiesce(w, a, b);
+    expect(remarks(a)).toEqual([]);
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    const a2 = await reload(a);
+    await quiesce(w, a2, b);
+    // The restorer had seen the delete: the record is back, and nothing is offered.
+    expect(remarks(b)).toEqual(["Groceries"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expectConverged(a2, b);
+  });
+
+  it("B1: a delete the restorer hadn't seen is offered to its device, and the record stays until it is re-applied", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.deleteEntry(2026, 5, await row(b, "Groceries"));
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, b);
+    expect(remarks(b)).toEqual(["Groceries"]);
+    const [group] = b.engine.leftBehind();
+    expect(group.items).toMatchObject([{ kind: "delete", record: { remarks: "Groceries" } }]);
+    await b.engine.reapply(group.id);
+    expect(remarks(b)).toEqual([]);
+  });
+});
+
+describe("re-apply and discard (section 9.4)", () => {
+  /** b writes Taxi and pushes it; c joins it; a restores without having
+   * seen it (its sync fails), so Taxi is b's own group and c's "other". */
+  async function leftOnTwo() {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    await cycle(w, b, c);
+    expect(remarks(c).sort()).toEqual(["Groceries", "Taxi"]);
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    const a2 = await reload(a);
+    await cycle(w, b, c);
+    return { a2, b, c };
+  }
+
+  it("another device's leftovers are collapsed (not own); a discard there hides them everywhere but on the device they came from (D18)", async () => {
+    const { a2, b, c } = await leftOnTwo();
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 1, leftBehindOwnCount: 1 });
+    expect(c.engine.getState()).toMatchObject({ leftBehindCount: 1, leftBehindOwnCount: 0 });
+    const [theirs] = c.engine.leftBehind();
+    expect(theirs).toMatchObject({ own: false, who: "sam", items: [{ kind: "add", record: { remarks: "Taxi" } }] });
+    await c.engine.discard(theirs.id);
+    expect(c.engine.leftBehind()).toEqual([]);
+    await quiesce(w, a2, b, c);
+    expect(remarks(c)).toEqual(["Groceries"]);
+    // b still sees its own changes: they are not in effect anywhere.
+    expect(b.engine.leftBehind()).toMatchObject([{ id: theirs.id, own: true, resolvedElsewhere: true }]);
+    await b.engine.reapply(theirs.id);
+    await quiesce(w, a2, b, c);
+    expect(remarks(c).sort()).toEqual(["Groceries", "Taxi"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expectConverged(a2, b, c);
+  });
+
+  it("a re-apply on another device puts the changes in effect, which hides them on their own device too", async () => {
+    const { a2, b, c } = await leftOnTwo();
+    const [theirs] = c.engine.leftBehind();
+    await c.engine.reapply(theirs.id);
+    await quiesce(w, a2, b, c);
+    expect(remarks(b).sort()).toEqual(["Groceries", "Taxi"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0 });
+    expectConverged(a2, b, c);
+  });
+
+  it("an own group carried across a switch is dropped when the new genesis already holds its changes", async () => {
+    let bOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam", wrapFetch: (inner) => (input, init) => (bOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    await cycle(w, b, c);
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    a = await reload(a);
+    await cycle(w, b, c);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Taxi" } }] }]);
+    // While b is offline, c re-applies b's Taxi, and a restores what it now
+    // has, Taxi included: b never sees the re-apply's marker.
+    bOffline = true;
+    await c.engine.reapply(c.engine.leftBehind()[0].id);
+    await quiesce(w, a, c);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    a = await reload(a);
+    bOffline = false;
+    await quiesce(w, a, b, c);
+    expect(remarks(b).sort()).toEqual(["Groceries", "Taxi"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
+    expect((await b.store.load())?.leftBehind).toEqual([]);
+  });
+
+  // Owner decision D28: re-applying a device's own group drops it in the
+  // re-apply op's own transaction, as section 9.4 says. An earlier device
+  // view re-applied later can then set the newer value back with no group
+  // left to show it; stage 7's register-overwrite notice (design section 4.2
+  // rule 1) is what tells b, with "Use mine" (ADR-0008, stage 7).
+  it("D28: an own re-apply drops the group at once, so a concurrent stale re-apply with a greater L wins and leaves b no group (stage 7's register-overwrite notice tells b)", async () => {
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi", 10));
+    await cycle(w, b, c);
+    // b changes Taxi to 20 and never pushes it: c's view of b's group has 10.
+    await b.backend.updateEntry(2026, 5, await row(b, "Taxi"), edits("Taxi", 20));
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    a = await reload(a);
+    await cycle(w, b, c);
+    const [own] = b.engine.leftBehind();
+    const [theirs] = c.engine.leftBehind();
+    expect(own.id).toBe(theirs.id);
+    expect(own.items).toMatchObject([{ kind: "add", record: { amount: "20.00" } }]);
+    // c writes more first, so its re-apply's L is the greater.
+    await c.backend.addEntry(entry("Pens"));
+    await c.backend.addEntry(entry("Rent"));
+    // b re-applies its own group: dropped in the op's own transaction.
+    await b.engine.reapply(own.id);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect((await b.store.load())?.leftBehind).toEqual([]);
+    // c re-applies its older view without having seen b's re-apply.
+    await c.engine.reapply(theirs.id);
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    const taxi = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).find((e) => e.remarks === "Taxi")!;
+    for (const d of [a, b, c]) expect(taxi(d).amount).toBe("10.00");
+    // Accepted under D28: nothing is left behind on b. Stage 7 must raise a
+    // register-overwrite notice here whose "Use mine" puts 20 back.
+    for (const d of [a, b, c]) expect(d.engine.leftBehind()).toEqual([]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
+    expect((await b.store.load())?.leftBehind).toEqual([]);
+  });
+
+  it("two devices re-applying the same group at once is harmless: one record, everywhere", async () => {
+    const { a2, b, c } = await leftOnTwo();
+    const [mine] = b.engine.leftBehind();
+    await Promise.all([b.engine.reapply(mine.id), c.engine.reapply(mine.id)]);
+    await quiesce(w, a2, b, c);
+    expect(remarks(a2).sort()).toEqual(["Groceries", "Taxi"]);
+    expectConverged(a2, b, c);
+    for (const d of [b, c]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+});
+
+describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
+  it("B20: the losing restorer is told: its restore landed, but a greater epoch was listed", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const backup = structuredClone(a.engine.current());
+    // Sam's restore landed just before; a's reads lag one commit behind.
+    await plantRestore("e000002-ffffffff", backup);
+    w.fake.staleReads(1);
+    const result = await a.engine.restore(backup);
+    w.fake.staleReads(0);
+    // Who restored, for "Sam's restore replaced yours" (section 9.2 step 6).
+    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: "e000002-ffffffff", reason: "restore", by: "sam", at: 7 });
+    const a2 = await reload(a);
+    expect(a2.engine.epochKey).toBe("e000002-ffffffff");
+  });
+
+  it("B20: a device that switched to the losing epoch switches again: its writes there, and the old epoch's under the winner's cut, are offered", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "alex" });
+    await c.backend.addEntry(entry("Bus"));
+    await quiesce(w, a, c);
+    const backup = structuredClone(a.engine.current());
+    backup.expenses = {};
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    await cycle(w, c);
+    // On the losing epoch: Bus came through the restore, and nothing is left behind.
+    expect(remarks(c)).toEqual(["Bus"]);
+    expect(c.engine.leftBehind()).toEqual([]);
+    await c.backend.addEntry(entry("Pens"));
+    await cycle(w, c);
+    // Sam's restore, based on the first epoch with nothing seen, wins.
+    await plantRestore("e000002-ffffffff", backup);
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe("e000002-ffffffff");
+    expect(remarks(c)).toEqual([]);
+    const groups = c.engine.leftBehind();
+    expect(groups.map((g) => [g.epoch, g.own, g.items.map((item) => item.kind === "add" && item.record.remarks)])).toEqual([
+      [EPOCH, true, ["Bus"]],
+      [expect.stringMatching(/^e000002-/), true, ["Pens"]],
+    ]);
+    for (const group of groups) await c.engine.reapply(group.id);
+    expect(remarks(c).sort()).toEqual(["Bus", "Pens"]);
+    const a2 = await reload(a);
+    await quiesce(w, a2, c);
+    expectConverged(a2, c);
+  });
+});
+
+describe("racing restores and what a device keeps for them (stage 6 review)", () => {
+  const offered = (d: Device, own?: boolean) =>
+    d.engine
+      .leftBehind()
+      .filter((g) => own === undefined || g.own === own)
+      .flatMap((g) => g.items.map((i) => (i.kind === "add" ? `add:${String(i.record.remarks)}` : i.kind)));
+
+  it("re-projecting the old epoch for a racing restore keeps this device's own group that another device resolved there (D18)", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, c);
+    await b.backend.addEntry(entry("Taxi")); // unpushed: only b holds it
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, c, b);
+    expect(offered(b, true).sort()).toEqual(["add:Bus", "add:Taxi"]);
+    await c.engine.discard(c.engine.leftBehind()[0].id);
+    await cycle(w, c, b);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, resolvedElsewhere: true }]);
+    // Sam's restore, based on the first epoch with nothing seen, wins.
+    await plantRestore("e000002-ffffffff", backup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(offered(b, true)).toContain("add:Taxi");
+  });
+
+  it("the epoch the current one is based on stays in `old` too, so a third same-number restore based on it still offers a pushed change the winner lacks", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, a);
+    const oldB = b.engine.deviceId!;
+    const busL = b.store.meta().ownMaxL as number;
+    // E1 -> E2a: a's restore holds Bus, so nothing is left behind.
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    await cycle(w, b);
+    expect(remarks(b).sort()).toEqual(["Bus", "Groceries"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    // b writes in E2a.
+    await b.backend.addEntry(entry("Pens"));
+    // E2a -> E2b: Sam's restore of the first epoch had seen Bus too. b's
+    // write in E2a is left behind (cut {}), and b discards it, so the only
+    // group left goes: `old` is trimmed to what it must keep (#oldKeeping),
+    // the epoch switched from (E2a) and the one E2b is based on (E1).
+    await plantRestore("e000002-fffffff0", backup, { [oldB]: busL });
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-fffffff0");
+    expect(offered(b)).toEqual(["add:Pens"]);
+    await b.engine.discard(b.engine.leftBehind()[0].id);
+    expect(offered(b)).toEqual([]);
+    // E2b -> E2c: another restore of the first epoch, which never saw Bus.
+    await plantRestore("e000002-ffffffff", backup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(remarks(b)).toEqual(["Groceries"]);
+    expect(offered(b, true)).toContain("add:Bus");
+  });
+
+  it("the epoch switched from stays in `old` once every group is resolved, so a racing restore listed later still offers what it lacks", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const samBackup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, a);
+    await b.backend.addEntry(entry("Taxi")); // unpushed
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    await cycle(w, b);
+    expect(offered(b)).toEqual(["add:Taxi"]);
+    await b.engine.reapply(b.engine.leftBehind()[0].id);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect((await b.store.load())?.old).toBeDefined();
+    // Sam's restore, based on the first epoch with nothing seen, wins. Bus
+    // was in the losing epoch's genesis and re-applied Taxi in effect there,
+    // but neither is in the winner.
+    await plantRestore("e000002-ffffffff", samBackup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(remarks(b)).not.toContain("Bus");
+    expect(offered(b, true)).toContain("add:Bus");
+    expect(offered(b, true)).toContain("add:Taxi");
+  });
+
+  // Stage 6 final review, finding 2: c's pushed Bus is held only by the
+  // losing restore E2a's genesis. Sam's E2b (based on the first epoch,
+  // never saw Bus) wins, then Sam restores E3 based on E2b. A device that
+  // cycles once on E2b re-projects the first epoch under E2b's cut and
+  // offers Bus; one that was away goes from E2a straight to E3, and must
+  // offer it too.
+  for (const seesWinnerFirst of [true, false]) {
+    it(`a pushed change only a losing restore's genesis held is offered when the device ${seesWinnerFirst ? "switches through the race's winner" : "skips the race's winner"} to a later restore (seesWinnerFirst ${seesWinnerFirst})`, async () => {
+      const a = await open({ login: "alex" });
+      const c = await open({ login: "alex" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a, c);
+      const samBackup = structuredClone(a.engine.current());
+      await c.backend.addEntry(entry("Bus"));
+      await cycle(w, c, a);
+      // E2a: a's restore holds Bus, so c switches with nothing left behind.
+      expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+      await cycle(w, c);
+      expect(c.engine.epochKey).toMatch(/^e000002-/);
+      expect(remarks(c).sort()).toEqual(["Bus", "Groceries"]);
+      expect(c.engine.leftBehind()).toEqual([]);
+      const E2B = "e000002-ffffffff";
+      const E3 = "e000003-0000000b";
+      await plantRestore(E2B, samBackup);
+      if (seesWinnerFirst) {
+        await cycle(w, c);
+        expect(c.engine.epochKey).toBe(E2B);
+        expect(offered(c, true)).toContain("add:Bus");
+      }
+      await plantRestore(E3, samBackup, {}, E2B);
+      await cycle(w, c);
+      expect(c.engine.epochKey).toBe(E3);
+      expect(remarks(c)).toEqual(["Groceries"]);
+      expect(offered(c, true)).toContain("add:Bus");
+    });
+  }
+});
+
+describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", () => {
+  it("one that leaves out a greater epoch after the genesis lands: the restore says the winner is unknown", async () => {
+    // Three tree entries: the folder, a's log and the first genesis. Sam's
+    // restore, and a's own, sort after them and are cut.
+    w = await world({ fake: { treeEntryLimit: 3 } });
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await cycle(w, a);
+    await plantRestore("e000002-ffffffff", structuredClone(a.engine.current()));
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000002-/), winnerUnknown: true });
+  });
+
+  it("one that leaves out a restore's genesis that got no answer settles nothing: writes stay refused until a full listing says it didn't land", async () => {
+    // Three tree entries: the folder, a's log and the first genesis. A file
+    // sorting after them makes every listing cut, and a restore's genesis
+    // would sort after them too.
+    w = await world({ fake: { treeEntryLimit: 3 } });
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await cycle(w, a);
+    await w.fake.seedFile(FULL, "ledger/zz-notes.txt", "not a sync file");
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+    await cycle(w, a);
+    // The cut listing can't show the genesis is absent: it may have landed.
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    // A full listing without it settles it: it didn't land, and writes go on.
+    w.fake.removeFile(FULL, "ledger/zz-notes.txt");
+    await cycle(w, a);
+    await a.backend.addEntry(entry("Bus"));
+    expect(remarks(a)).toEqual(["Groceries", "Bus"]);
+  });
+
+  it("one that doesn't show this device's epoch winning: nothing is written, and the restore can be tried again", async () => {
+    // One tree entry: the folder. Every genesis is cut.
+    w = await world({ fake: { treeEntryLimit: 1 } });
+    const a = await open({ login: "alex" });
+    const before = puts(w).length;
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed" });
+    expect(puts(w).length).toBe(before);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+  });
+});
+
+describe("a newer epoch that can't be read (section 9.1)", () => {
+  const cases: [string, () => Promise<void>, string][] = [
+    [
+      "another key",
+      async () => {
+        const other = await testKey();
+        await plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, { fv: 1, kind: "genesis", epoch: "e000002-0000000b", reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, other);
+      },
+      "needsPassphrase",
+    ],
+    ["a newer format", () => plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, { fv: 2, kind: "genesis", epoch: "e000002-0000000b" }).then(() => undefined), "needsUpdate"],
+    [
+      "a malformed genesis",
+      () => plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, { fv: 1, kind: "genesis", epoch: "e000002-0000000b", reason: "restore", by: "sam", at: 2, basedOn: null, doc: {} }).then(() => undefined),
+      "needsAttention",
+    ],
+  ];
+  for (const [name, make, expected] of cases) {
+    it(`${name}: ${expected}, the device stays on its epoch, sends nothing more, and keeps its writes`, async () => {
+      const a = await open();
+      await make();
+      await a.backend.addEntry(entry("Groceries"));
+      const before = puts(w).length;
+      await cycle(w, a);
+      expect(status(a)).toBe(expected);
+      expect(a.engine.epochKey).toBe(EPOCH);
+      expect(puts(w).length).toBe(before);
+      expect(a.engine.getState().pendingCount).toBe(1);
+      await a.backend.addEntry(entry("Bus"));
+      expect(remarks(a)).toEqual(["Groceries", "Bus"]);
+    });
+  }
+});
+
+describe("a newer genesis no device can open stops sync safely until it is deleted (D26)", () => {
+  const BAD = "e000002-0000000b";
+  const BAD_PATH = `ledger/${BAD}.genesis.enc`;
+  /** Genesis files for BAD that no device here can open, what each stops a
+   * device on, and the reason the device names. */
+  const unopenable: [string, () => Promise<{ text?: string; content?: unknown; key?: DeviceKey }>, string, string][] = [
+    ["garbage bytes", async () => ({ text: "not a ledger file" }), "needsAttention", "malformed"],
+    [
+      "a valid genesis altered after it was sealed",
+      async () => {
+        const text = await seal({ fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, w.key);
+        const at = text.indexOf("\n") + 40;
+        return { text: text.slice(0, at) + (text[at] === "A" ? "B" : "A") + text.slice(at + 1) };
+      },
+      "needsPassphrase",
+      "undecryptable",
+    ],
+    ["a genesis under another key", async () => ({ content: { fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, key: await testKey() }), "needsPassphrase", "foreignKey"],
+  ];
+
+  for (const [name, make, stuck, reason] of unopenable) {
+    it(`${name}: every device stops with the file named, keeps its writes, restores nothing past it, and syncs on once it is deleted`, async () => {
+      const a = await open({ login: "alex" });
+      const b = await open({ login: "sam" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a, b);
+      const bad = await make();
+      await plant(w, { kind: "genesis", epoch: BAD }, bad.text ?? bad.content, bad.key);
+      await a.backend.addEntry(entry("Bus"));
+      await b.backend.addEntry(entry("Rent"));
+      await cycle(w, a, b);
+      for (const d of [a, b]) {
+        expect(d.engine.getState()).toMatchObject({ status: stuck, pendingCount: 1, damagedFile: { path: BAD_PATH, epoch: BAD, reason } });
+        expect(d.engine.epochKey).toBe(EPOCH);
+      }
+      // Local writes go on.
+      await a.backend.addEntry(entry("Pens"));
+      expect(remarks(a)).toEqual(["Groceries", "Bus", "Pens"]);
+      // Nothing is restored past it: no epoch is written after a file the
+      // app never writes (D26), and the result names the file.
+      const before = puts(w).length;
+      expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: { path: BAD_PATH, reason } });
+      expect(puts(w).length).toBe(before);
+      expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+      // The person deletes it on GitHub: the next listing no longer counts it.
+      w.fake.removeFile(FULL, BAD_PATH);
+      await quiesce(w, a, b);
+      for (const d of [a, b]) {
+        expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0, damagedFile: null });
+        expect(d.engine.epochKey).toBe(EPOCH);
+        expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Pens", "Rent"]);
+      }
+      expectConverged(a, b);
+      // A fresh device finds and joins the same ledger (#8).
+      const fresh = await reload(await open({ login: "sam" }));
+      await quiesce(w, a, b, fresh);
+      expectConverged(a, b, fresh);
+      expect(w.fake.violations).toEqual([]);
+    });
+  }
+
+  it("once it is deleted, the counted run decides again: the restore of the same number beside it wins, and a device still on the epoch before switches to it", async () => {
+    let cOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex", wrapFetch: (inner) => (input, init) => (cOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    cOffline = true;
+    await c.backend.addEntry(entry("Bus"));
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const epoch = (restored as { epoch: string }).epoch;
+    a = await reload(a);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(epoch);
+    // A damaged genesis of the same number, with a greater key, wins.
+    const damaged = "e000002-ffffffff";
+    await plant(w, { kind: "genesis", epoch: damaged }, "not a ledger file");
+    await b.backend.addEntry(entry("Rent"));
+    cOffline = false;
+    await cycle(w, a, b, c);
+    for (const d of [a, b, c]) expect(d.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: damaged, reason: "malformed" } });
+    expect(c.engine.epochKey).toBe(EPOCH);
+    w.fake.removeFile(FULL, `ledger/${damaged}.genesis.enc`);
+    await quiesce(w, a, b, c);
+    for (const d of [a, b, c]) {
+      expect(d.engine.epochKey).toBe(epoch);
+      expect(d.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+    }
+    expect(remarks(a).sort()).toEqual(["Groceries", "Rent"]);
+    // c's Bus, which the restore never saw, is offered to c (D18).
+    expect(c.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Bus" } }] }]);
+    expectConverged(a, b, c);
+  });
+
+  it("a lagging device is never told to delete a newer genesis other devices already joined: it is named as joined, and once its previous version is restored everyone converges (D26)", async () => {
+    let cOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex", wrapFetch: (inner) => (input, init) => (cOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    // c is away, still on the first epoch, with a change of its own.
+    cOffline = true;
+    await c.backend.addEntry(entry("Bus"));
+    // a and b move to a restore's epoch, and b writes there.
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const epoch = (restored as { epoch: string }).epoch;
+    a = await reload(a);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(epoch);
+    await b.backend.addEntry(entry("Rent"));
+    await cycle(w, b);
+    // That epoch's genesis is overwritten outside the app.
+    const path = `ledger/${epoch}.genesis.enc`;
+    const original = w.fake.file(FULL, path)!.text;
+    await w.fake.seedFile(FULL, path, "not a ledger file");
+    cOffline = false;
+    await cycle(w, c);
+    // Deleting it would strand a and b: c names it as joined, never deletable.
+    const joined = { path, epoch, reason: "joined", cause: "malformed" };
+    expect(c.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: joined });
+    expect(c.engine.epochKey).toBe(EPOCH);
+    const message = damagedFileMessage(c.engine.getState().damagedFile!);
+    expect(message).toContain("previous version");
+    expect(message).toContain("don't delete");
+    // A restore from c names it the same way, and a fresh join (#8) too.
+    expect(await c.engine.restore(structuredClone(c.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: joined });
+    expect(await findLedger({ client: c.client, branch: "main" })).toEqual({ kind: "malformed", epoch, damagedFile: joined });
+    // The person puts the file's previous version back from the repo's history.
+    await w.fake.seedFile(FULL, path, original);
+    await quiesce(w, a, b, c);
+    expect(c.engine.epochKey).toBe(epoch);
+    const [own] = c.engine.leftBehind();
+    expect(own).toMatchObject({ own: true, items: [{ kind: "add", record: { remarks: "Bus" } }] });
+    await c.engine.reapply(own.id);
+    await quiesce(w, a, b, c);
+    for (const d of [a, b, c]) {
+      expect(d.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+      expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Rent"]);
+    }
+    expectConverged(a, b, c);
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  it("a restore whose genesis would fill the gap below a genesis no device can open writes nothing and names that file, which is safe to delete", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    // Epoch 3, past a gap, counts for nothing, so sync goes on around it.
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+    // Epoch 2 would make it count and win: the restore would be "replaced"
+    // by a file no device can open.
+    const before = puts(w).length;
+    const damagedFile = { path: `ledger/${gapped}.genesis.enc`, epoch: gapped, reason: "malformed" };
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed", damagedFile });
+    expect(puts(w).length).toBe(before);
+    expect(a.engine.epochKey).toBe(EPOCH);
+    await a.backend.addEntry(entry("Bus"));
+    // The person deletes it: the restore goes ahead.
+    w.fake.removeFile(FULL, damagedFile.path);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    expect(remarks(await reload(a))).toEqual(["Groceries", "Bus"]);
+  });
+
+  it("a restore whose genesis would fill the gap below a genesis it can't open, on a cut listing, writes nothing and names no file (stage 6 final review)", async () => {
+    let cut = false;
+    const a = await open({
+      login: "alex",
+      // GitHub cuts every tree listing short, leaving nothing out.
+      wrapFetch: (inner) => async (input, init) => {
+        const res = await inner(input, init);
+        const url = String(input instanceof Request ? input.url : input);
+        if (!cut || !url.includes("/git/trees/") || !res.ok) return res;
+        const json = (await res.json()) as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...json, truncated: true }), { status: res.status, headers: res.headers });
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    cut = true;
+    const before = puts(w).length;
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed", detail: expect.stringContaining("cut the file listing short") });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(puts(w).length).toBe(before);
+    // A full listing names it.
+    cut = false;
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed", damagedFile: { path: `ledger/${gapped}.genesis.enc`, reason: "malformed" } });
+  });
+
+  it("a restore replaced by a greater genesis no device can open, which landed while it ran, names the file and no maker: the caller must not reload yet", async () => {
+    const damaged = "e000002-ffffffff";
+    let tamper = true;
+    const a = await open({
+      login: "alex",
+      // Right after the restore's genesis lands, a tampered file of the same
+      // number with a greater key lands too.
+      wrapFetch: (inner) => async (input, init) => {
+        const res = await inner(input, init);
+        const url = String(input instanceof Request ? input.url : input);
+        if (tamper && init?.method === "PUT" && url.endsWith(".genesis.enc") && res.ok) {
+          tamper = false;
+          await plant(w, { kind: "genesis", epoch: damaged }, "not a ledger file");
+        }
+        return res;
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    const damagedFile = { path: `ledger/${damaged}.genesis.enc`, epoch: damaged, reason: "malformed" };
+    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: damaged, damagedFile });
+    // The state names it at once: a caller waiting for damagedFile to be
+    // null again must not find it null before the next cycle and reload.
+    expect(a.engine.getState().damagedFile).toEqual(damagedFile);
+    const epoch = (result as { epoch: string }).epoch;
+    // The person deletes it: the restore it replaced wins, and the reload joins it.
+    w.fake.removeFile(FULL, `ledger/${damaged}.genesis.enc`);
+    const a2 = await reload(a);
+    expect(a2.engine.epochKey).toBe(epoch);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+  });
+
+  it("a newer genesis this build is too old to read refuses a restore and names no file: updating the app is the fix", async () => {
+    const a = await open({ login: "alex" });
+    await plant(w, { kind: "genesis", epoch: BAD }, { fv: 2, kind: "genesis", epoch: BAD });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsUpdate", damagedFile: null });
+    const before = puts(w).length;
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(puts(w).length).toBe(before);
+  });
+});
+
+describe("racing creates with two salts (D26)", () => {
+  // a started on the world's epoch 1; y created another epoch 1 at the same
+  // time, with a greater key, under its own passphrase's salt.
+  const THEIRS = "e000001-0000000b";
+  const THEIRS_PATH = `ledger/${THEIRS}.genesis.enc`;
+
+  async function racing(): Promise<{ a: Device; y: Device }> {
+    const other = await testKey();
+    await plant(w, { kind: "genesis", epoch: THEIRS }, { fv: 1, kind: "genesis", epoch: THEIRS, reason: "create", by: "sam", at: 2, basedOn: null, doc: w.doc }, other);
+    const y = await device({ ...w, key: other }, { login: "sam", init: { epoch: THEIRS, state: genesisState(w.doc) } });
+    running.push(y.engine);
+    const a = await open({ login: "alex" });
+    return { a, y };
+  }
+
+  it("the other creator's genesis is named as another device's ledger, not as one Ledger never writes; deleting it leaves that device's epoch gone, said so, and it restores nothing past this one", async () => {
+    const { a, y } = await racing();
+    await a.backend.addEntry(entry("Groceries"));
+    await y.backend.addEntry(entry("Bus"));
+    // y can't push yet (its first sync came before its write), so no file of
+    // its epoch but the genesis is listed: a may be told to delete it.
+    await cycle(w, a);
+    const damagedFile = { path: THEIRS_PATH, epoch: THEIRS, reason: "foreignKey" };
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile });
+    const message = damagedFileMessage(damagedFile as DamagedFile);
+    expect(message).toContain("another device's ledger created at the same time");
+    expect(message).toContain("deleting it removes that ledger");
+    expect(message).not.toContain("never writes a file like it");
+    // The person deletes it: a syncs on, and y's epoch is gone (two full
+    // listings in a row say so: one may be stale).
+    w.fake.removeFile(FULL, THEIRS_PATH);
+    await cycle(w, a, y, y);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null, epochGone: null });
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: EPOCH }, pendingCount: 1 });
+    expect(EPOCH_GONE).toContain("join the ledger that's there now");
+    // y restores nothing past a's genesis: that would bring the flip-flop back.
+    const before = puts(w).length;
+    expect(await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: EPOCH } });
+    expect(puts(w).length).toBe(before);
+    // Its own change stays on it, for the join #8 offers.
+    expect(remarks(y)).toEqual(["Bus"]);
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  /** a's genesis wins once y's is deleted; y's epoch is gone. Then a's
+   * household restores a valid epoch 2 under the household salt, which y
+   * can't open. `aWrites`: a reloads into it and writes there, so a device
+   * file of epoch 2 is listed. */
+  async function goneThenRestored(aWrites: boolean): Promise<{ y: Device; e2: string }> {
+    const { a, y } = await racing();
+    await a.backend.addEntry(entry("Groceries"));
+    await y.backend.addEntry(entry("Bus"));
+    await cycle(w, a);
+    expect(a.engine.getState().damagedFile).toMatchObject({ reason: "foreignKey" });
+    w.fake.removeFile(FULL, THEIRS_PATH);
+    await cycle(w, a, y, y);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: EPOCH }, damagedFile: null });
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const e2 = (restored as { epoch: string }).epoch;
+    if (aWrites) {
+      const a2 = await reload(a);
+      await a2.backend.addEntry(entry("Rent"));
+      await cycle(w, a2);
+      expect(w.fake.file(FULL, `ledger/${e2}.${a2.engine.deviceId}.log.enc`)).not.toBeNull();
+    }
+    await cycle(w, y, y);
+    return { y, e2 };
+  }
+
+  it("F-A: a device whose epoch is gone is never told to delete the household's newer restore it can't open; it stays epochGone and names no file", async () => {
+    const { y, e2 } = await goneThenRestored(false);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: e2 }, damagedFile: null });
+    expect(y.engine.epochKey).toBe(THEIRS);
+    // Its restore names no file either: it is refused as epochGone.
+    const before = puts(w).length;
+    const result = await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true });
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: e2 } });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(puts(w).length).toBe(before);
+    // The household's restore is still there, and y's change stays on y.
+    expect(w.fake.file(FULL, `ledger/${e2}.genesis.enc`)).not.toBeNull();
+    expect(remarks(y)).toEqual(["Bus"]);
+  });
+
+  it("F-A2: once the household wrote in that restore, the device whose epoch is gone is not told to restore a previous version that doesn't exist", async () => {
+    const { y, e2 } = await goneThenRestored(true);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: e2 }, damagedFile: null });
+    const result = await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true });
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: e2 } });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(remarks(y)).toEqual(["Bus"]);
+  });
+
+  it("once the other creator has written in its epoch, its genesis is named as joined, never as one to delete", async () => {
+    const { a, y } = await racing();
+    await y.backend.addEntry(entry("Bus"));
+    await cycle(w, y);
+    expect(w.fake.file(FULL, `ledger/${THEIRS}.${y.engine.deviceId}.log.enc`)).not.toBeNull();
+    await cycle(w, a);
+    // The cause is kept: another device's ledger under another passphrase,
+    // already in use. There is no previous version to restore: join it.
+    const damagedFile = { path: THEIRS_PATH, epoch: THEIRS, reason: "joined", cause: "foreignKey" };
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile });
+    const message = damagedFileMessage(a.engine.getState().damagedFile!);
+    expect(message).toContain("different passphrase");
+    expect(message).toContain("join it with that passphrase");
+    expect(message).not.toContain("previous version");
+    expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile });
+  });
+});
+
+describe("a device whose epoch is gone (stage 6 final review)", () => {
+  it("one stale listing never sets epochGone; two full listings in a row that don't count the epoch do, and a listing that counts it clears it", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const e2 = (restored as { epoch: string }).epoch;
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(e2);
+    expect(b.engine.getState().epochGone).toBeNull();
+    // A read that lags one commit shows the repo before e2's genesis.
+    w.fake.staleReads(1);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "pending", epochGone: null });
+    w.fake.staleReads(0);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+    // A lag that lasts two listings looks like a gone epoch, and passes.
+    w.fake.staleReads(1);
+    await cycle(w, b, b);
+    expect(b.engine.getState()).toMatchObject({ status: "pending", epochGone: { epoch: e2, winner: EPOCH } });
+    w.fake.staleReads(0);
+    await cycle(w, b);
+    expect(b.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+    expect(b.engine.epochKey).toBe(e2);
+  });
+
+  it("with no genesis left in the repo, the cycle says the epoch is gone with no winner, and a restore says to restore into the empty repo or create a new ledger", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    // The ledger's genesis is deleted on GitHub; a's own log is still listed.
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    await cycle(w, a, a);
+    expect(a.engine.getState()).toMatchObject({ status: "missing", epochGone: { epoch: EPOCH, winner: null }, damagedFile: null });
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: EPOCH, winner: null } });
+    const detail = (result as { detail: string }).detail;
+    expect(detail).toContain("no ledger is in the repo");
+    expect(detail).toContain("create a new ledger");
+    expect(detail).not.toContain("join the ledger that's there now");
+    expect(detail).toBe(EPOCH_GONE_EMPTY);
+    expect(epochGoneMessage(a.engine.getState().epochGone!)).toBe(EPOCH_GONE_EMPTY);
+    expect(epochGoneMessage({ epoch: EPOCH, winner: "e000001-00000001" })).toBe(EPOCH_GONE);
+    expect(remarks(a)).toEqual(["Groceries"]);
+  });
+
+  it("an empty repo is the same: two cycles in a row that find it empty say the epoch is gone with no winner", async () => {
+    const a = await open({ login: "alex" });
+    for (let i = 0; i < 2; i++) {
+      w.fake.failNext({ path: "/git/ref/", status: 409, message: "Git Repository is empty." });
+      await cycle(w, a);
+    }
+    expect(a.engine.getState()).toMatchObject({ status: "missing", epochGone: { epoch: EPOCH, winner: null } });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+  });
+});
+
+describe("Lamport exhaustion (ADR-0008)", () => {
+  /** A valid log from X whose one op is at the last L there is. */
+  async function plantTopOfRange(): Promise<void> {
+    const r = new Replica(X, w.doc, { actor: "sam" });
+    await r.backend.addEntry(entry("Planted"));
+    await plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [{ ...r.ops[0], L: MAX_L - 1 }]));
+  }
+
+  it("the next write restores the current ledger as the next epoch and commits there; every device follows, with nothing left behind", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await plantTopOfRange();
+    await cycle(w, a, b);
+    expect(remarks(a)).toEqual(["Planted"]);
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).toMatch(/^e000002-/);
+    expect(remarks(a)).toEqual(["Planted", "After"]);
+    expect(w.fake.commits.find((c) => c.path.endsWith(".genesis.enc") && c.path.includes("e000002-"))).toMatchObject({ message: "Restore from backup" });
+    await quiesce(w, a, b);
+    expect(b.engine.epochKey).toBe(a.engine.epochKey);
+    expectConverged(a, b);
+    for (const d of [a, b]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+
+  it("a sync cycle in flight across the switch joins nothing of the old epoch into the new one: devices converge", async () => {
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let bLogSha: string | null = null;
+    let held = false;
+    const wrap = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (hold && bLogSha && url.includes(`/git/blobs/${bLogSha}`)) {
+        held = true;
+        await hold;
+      }
+      return inner(input, init);
+    };
+    const a = await open({ login: "alex", wrapFetch: wrap });
+    const b = await open({ login: "sam" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b);
+    bLogSha = w.fake.file(FULL, repoPath({ kind: "log", epoch: EPOCH, device: b.engine.deviceId! }))!.sha;
+    hold = new Promise((resolve) => (release = resolve));
+    w.clock.mono += 10_000;
+    const inFlight = a.engine.sync(); // stalls reading b's log
+    for (let i = 0; i < 200 && !held; i++) await nextTask();
+    expect(held).toBe(true);
+    await a.backend.addEntry(entry("After")); // the next epoch, and the write there
+    expect(a.engine.epochKey).not.toBe(EPOCH);
+    release();
+    await inFlight;
+    await quiesce(w, a, b);
+    expect(b.engine.epochKey).toBe(a.engine.epochKey);
+    expectConverged(a, b);
+    const fresh = await reload(b);
+    await quiesce(w, a, fresh);
+    expectConverged(a, fresh);
+  });
+
+  it("a newer genesis no device can open refuses the write that needs a new epoch, naming the file; once it is deleted the write commits in the next epoch (D26)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    const bad = "e000002-0000000b";
+    await plant(w, { kind: "genesis", epoch: bad }, "not a ledger file");
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: bad } });
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: expect.stringContaining(`ledger/${bad}.genesis.enc`) });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+    w.fake.removeFile(FULL, `ledger/${bad}.genesis.enc`);
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).toMatch(/^e000002-/);
+    expect(a.engine.epochKey).not.toBe(bad);
+    expect(remarks(a)).toEqual(["Planted", "After"]);
+    await quiesce(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+    const fresh = await reload(await open({ login: "sam" }));
+    await quiesce(w, a, fresh);
+    expectConverged(a, fresh);
+  });
+
+  it("a next epoch that would fill the gap below a genesis no device can open is not written: the write is refused, naming the file (D26)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    const gapped = "e000003-0000000b";
+    await plant(w, { kind: "genesis", epoch: gapped }, "not a ledger file");
+    await cycle(w, a);
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: expect.stringContaining(`ledger/${gapped}.genesis.enc`) });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+    w.fake.removeFile(FULL, `ledger/${gapped}.genesis.enc`);
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).toMatch(/^e000002-/);
+    expect(remarks(a)).toEqual(["Planted", "After"]);
+  });
+
+  it("a device whose epoch is gone refuses the write that needs a new epoch with EPOCH_GONE, writing no genesis past the epoch listed now (stage 6 final review)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    expect(remarks(a)).toEqual(["Planted"]);
+    // a's genesis is deleted, and another epoch 1 with a smaller key is there.
+    const other = "e000001-00000001";
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    await plant(w, { kind: "genesis", epoch: other }, { fv: 1, kind: "genesis", epoch: other, reason: "create", by: "sam", at: 2, basedOn: null, doc: w.doc });
+    await cycle(w, a, a);
+    expect(a.engine.getState().epochGone).toEqual({ epoch: EPOCH, winner: other });
+    const before = puts(w).length;
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: EPOCH_GONE });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(puts(w).length).toBe(before);
+  });
+
+  it("every genesis PUT it sends counts against the hourly cap, a second one after no answer included (ADR-0008 stage 4)", async () => {
+    // GitHub's own secondary limit (80 writes a minute) is kept out of the
+    // way by moving its clock a second per write.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const a = await open();
+    for (let i = 0; i < SYNC_TIMING.putsPerHour - 2; i++) {
+      await a.backend.addEntry(entry(`E${i}`));
+      w.clock.mono += SYNC_TIMING.putGapMs;
+      vi.setSystemTime(Date.now() + 1000);
+      await a.engine.sync();
+    }
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour - 2);
+    await plantTopOfRange();
+    await cycle(w, a);
+    // The genesis PUT gets no answer and is sent again: two PUTs, the cap.
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).not.toBe(EPOCH);
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour);
+    w.clock.mono += SYNC_TIMING.putGapMs;
+    await a.engine.sync();
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour);
+    w.clock.mono += 60 * 60 * 1000;
+    await a.engine.sync();
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour + 1);
+  }, 60_000);
+
+  it("without the repo the write is refused, the document unchanged, and the next one tries again", async () => {
+    const a = await open();
+    await plantTopOfRange();
+    await cycle(w, a);
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: NEEDS_NEW_EPOCH });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    await a.backend.addEntry(entry("After"));
+    expect(remarks(a)).toEqual(["Planted", "After"]);
+    expect(a.engine.epochKey).not.toBe(EPOCH);
+  });
+});
+
+describe("export (section 9.5)", () => {
+  it("is the current document in the repo files' format, which opens with the household key only", async () => {
+    const a = await open();
+    await a.backend.addEntry(entry("Groceries"));
+    const text = await a.engine.exportBackup();
+    expect(() => JSON.parse(text)).toThrow();
+    expect(JSON.parse(text.slice(0, text.indexOf("\n")))).toMatchObject({ alg: "AES-GCM-256", salt: w.key.salt, iter: w.key.iter });
+    expect(text).not.toContain("Groceries");
+    const opened = await readBackup(text, w.key.key);
+    expect(opened.ok && docText(opened.doc)).toBe(docText(a.engine.current()));
+    expect(await readBackup(text, (await testKey()).key)).toEqual({ ok: false, problem: "wrongPassphrase" });
+    expect(await readBackup("not a backup", w.key.key)).toEqual({ ok: false, problem: "damaged" });
+  });
+});
+
+
+describe("no resolved write is lost to a restore (AC6, randomised)", () => {
+  const SEEDS = Number(testEnv("LEDGER_SIM_SEEDS") ?? 20);
+
+  // Three devices add expenses (each remark unique), sync at random, and go
+  // offline at random; device a restores a backup of its own document from
+  // an earlier step. Every add then is either what the restore holds, or
+  // one the restorer had seen (replaced on purpose), or listed in its own
+  // device's left-behind group; once every device re-applies its own, every
+  // add the restorer hadn't seen is back, on every device.
+  it("every add is in the restore, seen by the restorer, or offered to its own device", async () => {
+    await forEachSeed(SEEDS, async (seed) => {
+      for (const engine of running.splice(0)) engine.stop();
+      w = await world();
+      const rng = new Rng(seed);
+      // One device at a time may be offline for one cycle.
+      let offline: number | null = null;
+      const wrap = (i: number) => (inner: typeof fetch): typeof fetch => (input, request) => (offline === i ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, request));
+      const devices = [await open({ login: "alex", wrapFetch: wrap(0) }), await open({ login: "sam", wrapFetch: wrap(1) }), await open({ login: "alex", wrapFetch: wrap(2) })];
+      const added = new Map<Device, string[]>(devices.map((d) => [d, []]));
+      let backup: LedgerDocument = structuredClone(devices[0].engine.current());
+      let n = 0;
+      const step = async (pool: Device[] = devices) => {
+        const d = rng.pick(pool);
+        const roll = rng.int(10);
+        if (roll < 5) {
+          const remark = `R${seed}-${n++}`;
+          await d.backend.addEntry(entry(remark));
+          added.get(d)!.push(remark);
+        } else if (roll < 9) {
+          offline = rng.chance(0.2) ? devices.indexOf(d) : null;
+          await cycle(w, d);
+          offline = null;
+        } else {
+          backup = structuredClone(devices[0].engine.current());
+        }
+      };
+      for (let i = 0; i < 12; i++) await step();
+      const [a, ...others] = devices;
+      const restored = backup;
+      const result = await a.engine.restore(restored, { discardUnsynced: true });
+      expect(["restored", "replaced"]).toContain(result.kind);
+      const seenByRestorer = new Set(remarks(a));
+      // The restorer refuses writes until its reload (section 9.2 step 7).
+      for (let i = 0; i < 6; i++) await step(others);
+      const a2 = await reload(a);
+      const live = [a2, ...others];
+      await quiesce(w, ...live);
+      expectConverged(...live);
+      const inBackup = new Set((restored.expenses["2026-05"] ?? []).map((e) => e.remarks));
+      for (const d of others) {
+        const offered = new Set(
+          d.engine
+            .leftBehind()
+            .filter((g) => g.own)
+            .flatMap((g) => g.items.map((item) => (item.kind === "add" ? String(item.record.remarks) : ""))),
+        );
+        const shown = new Set(remarks(d));
+        for (const remark of added.get(d)!) {
+          if (inBackup.has(remark) || seenByRestorer.has(remark) || shown.has(remark)) continue;
+          expect(offered, `seed ${seed}: ${remark}`).toContain(remark);
+        }
+      }
+      for (const d of others) for (const g of d.engine.leftBehind().filter((g) => g.own)) await d.engine.reapply(g.id);
+      await quiesce(w, ...live);
+      expectConverged(...live);
+      const final = new Set(remarks(a2));
+      for (const d of others) for (const remark of added.get(d)!) if (!seenByRestorer.has(remark) || inBackup.has(remark)) expect(final, `seed ${seed}: ${remark}`).toContain(remark);
+      expect(w.fake.violations).toEqual([]);
+    });
+  }, 120_000);
+});
