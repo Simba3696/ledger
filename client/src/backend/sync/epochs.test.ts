@@ -705,6 +705,7 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
     expect(offered(b, true)).toContain("add:Bus");
     expect(offered(b, true)).toContain("add:Taxi");
   });
+
   // Stage 6 final review, finding 2: c's pushed Bus is held only by the
   // losing restore E2a's genesis. Sam's E2b (based on the first epoch,
   // never saw Bus) wins, then Sam restores E3 based on E2b. A device that

@@ -2681,7 +2681,9 @@ export class SyncEngine {
    * leaving out other devices' groups resolved meanwhile. This device's own
    * group there is kept (D18): its marker joined in the losing epoch says
    * only that the group was resolved in an epoch that lost, and what was in
-   * effect there (the losing genesis included) is not in the winner. */
+   * effect there (the losing genesis included) is not in the winner. A
+   * genesis based on an epoch this device skipped (neither `from` nor one
+   * kept) re-projects the epoch `from` was based on with the cut {}. */
   async #adoptEpoch(from: string, genesis: NewEpoch): Promise<boolean> {
     this.#assertWritable();
     const meta = this.#meta!;
@@ -2689,7 +2691,6 @@ export class SyncEngine {
     const pre = this.#state!;
     const into = { epoch: genesis.epoch, by: genesis.by, at: genesis.at, state: genesis.state };
     const basedOn = genesis.basedOn;
-    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : null);
     // Groups shown now are carried, less what the new genesis already holds
     // (the projection's rule): a marker joined here never reaches the new
     // epoch, so nothing else would hide one the genesis took in.
@@ -2699,10 +2700,21 @@ export class SyncEngine {
       if (carried !== null) groups.set(marker, carried);
     }
     const kept = await this.#readOld();
+    // The new genesis is based on an epoch this device never joined, nor
+    // kept (E1 -> E2a, then E3 based on E2b, which beat E2a while this
+    // device was away): what E2a's genesis held (E1's state at E2a's cut)
+    // is projected nowhere else, and E2b's cut of E1 is unknown here. So
+    // the epoch `from` was based on (meta.basedOn, kept in `old`) is
+    // projected again with the cut {}: it may offer more than E2b left
+    // out, but loses nothing (stage 6 final review).
+    const skipped = basedOn === null || (basedOn.epoch !== from && !kept.some((entry) => entry.epoch === basedOn.epoch));
+    const fallback = skipped ? meta.basedOn : undefined;
+    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? {} : null);
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
       if (cut === null || entry.epoch === from) continue;
-      // The winner's cut decides what of this epoch is left behind. Another
+      // The winner's cut (or {}, for the epoch a skipped one was based
+      // on) decides what of this epoch is left behind. Another
       // device's group the losing epoch resolved stays resolved. This
       // device's own group never is on that word alone: only this device
       // holds its unpushed changes, and a group shown now stays unless the
