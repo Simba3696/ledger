@@ -947,7 +947,7 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     cOffline = false;
     await cycle(w, c);
     // Deleting it would strand a and b: c names it as joined, never deletable.
-    const joined = { path, epoch, reason: "joined" };
+    const joined = { path, epoch, reason: "joined", cause: "malformed" };
     expect(c.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: joined });
     expect(c.engine.epochKey).toBe(EPOCH);
     const message = damagedFileMessage(c.engine.getState().damagedFile!);
@@ -1170,8 +1170,15 @@ describe("racing creates with two salts (D26)", () => {
     await cycle(w, y);
     expect(w.fake.file(FULL, `ledger/${THEIRS}.${y.engine.deviceId}.log.enc`)).not.toBeNull();
     await cycle(w, a);
-    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile: { path: THEIRS_PATH, epoch: THEIRS, reason: "joined" } });
-    expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: { reason: "joined" } });
+    // The cause is kept: another device's ledger under another passphrase,
+    // already in use. There is no previous version to restore: join it.
+    const damagedFile = { path: THEIRS_PATH, epoch: THEIRS, reason: "joined", cause: "foreignKey" };
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile });
+    const message = damagedFileMessage(a.engine.getState().damagedFile!);
+    expect(message).toContain("different passphrase");
+    expect(message).toContain("join it with that passphrase");
+    expect(message).not.toContain("previous version");
+    expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile });
   });
 });
 

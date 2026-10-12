@@ -140,26 +140,27 @@ describe("is there a ledger, create and join (section 9.5)", () => {
   it("a winning genesis some device already joined (a log or snap of its epoch is listed) is named as joined, never as one to delete, by findLedger, openGenesis and createLedger (D26)", async () => {
     const epoch = "e000001-0000000b";
     const path = `ledger/${epoch}.genesis.enc`;
-    const joined = { path, epoch, reason: "joined" };
+    const joined = (cause: string) => ({ path, epoch, reason: "joined", cause });
     const content = (doc: unknown) => ({ fv: 1, kind: "genesis", epoch, reason: "create", by: "alex", at: 1, basedOn: null, doc });
     const other = await testKey();
     // The file, the device file listed beside it, and which call first can
     // tell it is damaged (findLedger has no key; openGenesis can't tell
-    // another key from a wrong passphrase; a restore's createLedger can).
-    const cases: [string, string, string, "find" | "open" | "create"][] = [
-      ["garbage bytes", "not a ledger file", "log", "find"],
-      ["a sealed genesis that isn't a ledger", await encryptDocument(content({}), key.key, { salt: key.salt, iter: key.iter }), "snap", "open"],
-      ["a genesis under another key", await encryptDocument(content(emptyDocument()), other.key, { salt: other.salt, iter: other.iter }), "log", "create"],
+    // another key from a wrong passphrase; a restore's createLedger can),
+    // and the cause kept beside "joined".
+    const cases: [string, string, string, "find" | "open" | "create", string][] = [
+      ["garbage bytes", "not a ledger file", "log", "find", "malformed"],
+      ["a sealed genesis that isn't a ledger", await encryptDocument(content({}), key.key, { salt: key.salt, iter: key.iter }), "snap", "open", "malformed"],
+      ["a genesis under another key", await encryptDocument(content(emptyDocument()), other.key, { salt: other.salt, iter: other.iter }), "log", "create", "foreignKey"],
     ];
-    for (const [name, text, kind, by] of cases) {
+    for (const [name, text, kind, by, cause] of cases) {
       fake = createFakeGitHub({ repos: [{ owner: "alex", name: "ledger-data", private: true }], tokens: { github_pat_alex: { login: "alex", repos: [FULL], permission: "write" } } });
       client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_alex", fetch: fake.fetch });
       await fake.seedFiles(FULL, { [path]: text, [`ledger/${epoch}.${deviceId(7)}.${kind}.enc`]: "a device's file" });
       const found = await findLedger(remote());
-      if (by === "find") expect(found, name).toEqual({ kind: "malformed", epoch, damagedFile: joined });
+      if (by === "find") expect(found, name).toEqual({ kind: "malformed", epoch, damagedFile: joined(cause) });
       else if (found.kind !== "ledger") throw new Error(`${name}: ${found.kind}`);
-      else expect(await openGenesis(found, key), name).toEqual(by === "open" ? { ok: false, problem: "malformed", damagedFile: joined } : { ok: false, problem: "wrongPassphrase" });
-      expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" }), name).toEqual({ kind: "exists", damagedFile: joined });
+      else expect(await openGenesis(found, key), name).toEqual(by === "open" ? { ok: false, problem: "malformed", damagedFile: joined(cause) } : { ok: false, problem: "wrongPassphrase" });
+      expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" }), name).toEqual({ kind: "exists", damagedFile: joined(cause) });
       expect(puts(), name).toHaveLength(0);
     }
   });
