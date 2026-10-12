@@ -6,7 +6,7 @@ import { testKey } from "./localTestkit";
 import { unseal } from "./records";
 import { repoPath } from "./repoFiles";
 import type { Op } from "./state";
-import { ALREADY_RESOLVED, NEEDS_NEW_EPOCH, type SyncEngine } from "./SyncEngine";
+import { ALREADY_RESOLVED, NEEDS_NEW_EPOCH, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
 
@@ -610,6 +610,33 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
   });
+
+  it("every genesis PUT it sends counts against the hourly cap, a second one after no answer included (ADR-0008 stage 4)", async () => {
+    // GitHub's own secondary limit (80 writes a minute) is kept out of the
+    // way by moving its clock a second per write.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const a = await open();
+    for (let i = 0; i < SYNC_TIMING.putsPerHour - 2; i++) {
+      await a.backend.addEntry(entry(`E${i}`));
+      w.clock.mono += SYNC_TIMING.putGapMs;
+      vi.setSystemTime(Date.now() + 1000);
+      await a.engine.sync();
+    }
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour - 2);
+    await plantTopOfRange();
+    await cycle(w, a);
+    // The genesis PUT gets no answer and is sent again: two PUTs, the cap.
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).not.toBe(EPOCH);
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour);
+    w.clock.mono += SYNC_TIMING.putGapMs;
+    await a.engine.sync();
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour);
+    w.clock.mono += 60 * 60 * 1000;
+    await a.engine.sync();
+    expect(puts(w)).toHaveLength(SYNC_TIMING.putsPerHour + 1);
+  }, 60_000);
 
   it("without the repo the write is refused, the document unchanged, and the next one tries again", async () => {
     const a = await open();
