@@ -136,6 +136,10 @@ export interface FakeGitHub {
   seedFile(repo: string, path: string, text: string): Promise<string>;
   /** Stores several files as one commit. Returns each path's blob sha. */
   seedFiles(repo: string, files: Record<string, string>): Promise<Record<string, string>>;
+  /** Deletes a file as one commit on `main`, without a request: a person
+   * deleting it in GitHub's web UI, which the app never does (ADR-0008
+   * D26). */
+  removeFile(repo: string, path: string): void;
   /** The file as stored at the head now, or null. */
   file(repo: string, path: string): { text: string; sha: string } | null;
   /** The commit `main` points at now, or null while the repo is empty. */
@@ -582,10 +586,14 @@ export function createFakeGitHub({
     return { root: write(root, ""), dirs };
   }
 
-  /** Commits `changes` on top of `parent` and moves `main` to it. */
-  function commit(state: RepoState, parent: string | null, changes: Map<string, string>, message: string): CommitObject {
+  /** Commits `changes` on top of `parent` and moves `main` to it: each path
+   * to its new blob sha, or null to delete it. */
+  function commit(state: RepoState, parent: string | null, changes: Map<string, string | null>, message: string): CommitObject {
     const files = new Map(filesAt(state, parent));
-    for (const [path, sha] of changes) files.set(path, sha);
+    for (const [path, sha] of changes) {
+      if (sha === null) files.delete(path);
+      else files.set(path, sha);
+    }
     const { root, dirs } = writeTrees(state, files);
     const parents = parent === null ? [] : [parent];
     commitCounter++;
@@ -1176,6 +1184,12 @@ export function createFakeGitHub({
     },
     async seedFiles(repo, files) {
       return seed(repo, files);
+    },
+    removeFile(repo, path) {
+      const state = repoState(repo);
+      const head = headOf(state);
+      if (!filesAt(state, head).has(path)) throw new Error(`No file ${path} to remove`);
+      commit(state, head, new Map([[path, null]]), "Delete");
     },
     file(repo, path) {
       const state = repoState(repo);

@@ -685,25 +685,28 @@ describe("a newer epoch that can't be read (section 9.1)", () => {
   }
 });
 
-describe("a newer genesis no device can read never stops sync for good (ADR-0008)", () => {
+describe("a newer genesis no device can open stops sync safely until it is deleted (D26)", () => {
   const BAD = "e000002-0000000b";
-  /** Genesis files for BAD that no device here can read, and what each
-   * stops a device on. */
-  const unreadable: [string, () => Promise<{ text?: string; content?: unknown; key?: DeviceKey }>, string][] = [
-    ["garbage bytes (no passphrase needed)", async () => ({ text: "not a ledger file" }), "needsAttention"],
+  const BAD_PATH = `ledger/${BAD}.genesis.enc`;
+  /** Genesis files for BAD that no device here can open, what each stops a
+   * device on, and the reason the device names. */
+  const unopenable: [string, () => Promise<{ text?: string; content?: unknown; key?: DeviceKey }>, string, string][] = [
+    ["garbage bytes", async () => ({ text: "not a ledger file" }), "needsAttention", "malformed"],
     [
-      "a valid genesis cut in two (no passphrase needed)",
+      "a valid genesis altered after it was sealed",
       async () => {
         const text = await seal({ fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, w.key);
-        return { text: text.slice(0, Math.floor(text.length / 2)) };
+        const at = text.indexOf("\n") + 40;
+        return { text: text.slice(0, at) + (text[at] === "A" ? "B" : "A") + text.slice(at + 1) };
       },
-      "needsAttention",
+      "needsPassphrase",
+      "undecryptable",
     ],
-    ["a genesis under another key", async () => ({ content: { fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, key: await testKey() }), "needsPassphrase"],
+    ["a genesis under another key", async () => ({ content: { fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, key: await testKey() }), "needsPassphrase", "foreignKey"],
   ];
 
-  for (const [name, make, stuck] of unreadable) {
-    it(`${name}: a restore is numbered after it, every device switches to the restore, and a fresh device joins it`, async () => {
+  for (const [name, make, stuck, reason] of unopenable) {
+    it(`${name}: every device stops with the file named, keeps its writes, restores nothing past it, and syncs on once it is deleted`, async () => {
       const a = await open({ login: "alex" });
       const b = await open({ login: "sam" });
       await a.backend.addEntry(entry("Groceries"));
@@ -714,40 +717,79 @@ describe("a newer genesis no device can read never stops sync for good (ADR-0008
       await b.backend.addEntry(entry("Rent"));
       await cycle(w, a, b);
       for (const d of [a, b]) {
-        expect(status(d)).toBe(stuck);
+        expect(d.engine.getState()).toMatchObject({ status: stuck, pendingCount: 1, damagedFile: { path: BAD_PATH, epoch: BAD, reason } });
         expect(d.engine.epochKey).toBe(EPOCH);
       }
-      // a restores what it has (Bus included); its unpushed Bus is in the backup.
-      const result = await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true });
-      expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000003-[0-9a-f]{8}$/) });
-      const epoch = (result as { epoch: string }).epoch;
-      // b, stuck behind the same genesis, switches to the restore; its own
-      // unpushed Rent is offered (D18).
-      await cycle(w, b);
-      expect(b.engine.epochKey).toBe(epoch);
-      expect(status(b)).not.toBe(stuck);
-      expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Rent" } }] }]);
-      await b.engine.reapply(b.engine.leftBehind()[0].id);
-      // A fresh device finds and joins it (#8).
-      const a2 = await reload(a);
-      const fresh = await reload(await open({ login: "sam" }));
-      await quiesce(w, a2, b, fresh);
-      for (const d of [a2, b, fresh]) {
-        expect(d.engine.epochKey).toBe(epoch);
-        expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Rent"]);
+      // Local writes go on.
+      await a.backend.addEntry(entry("Pens"));
+      expect(remarks(a)).toEqual(["Groceries", "Bus", "Pens"]);
+      // Nothing is restored past it: no epoch is written after a file the
+      // app never writes (D26), and the result names the file.
+      const before = puts(w).length;
+      expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: { path: BAD_PATH, reason } });
+      expect(puts(w).length).toBe(before);
+      expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+      // The person deletes it on GitHub: the next listing no longer counts it.
+      w.fake.removeFile(FULL, BAD_PATH);
+      await quiesce(w, a, b);
+      for (const d of [a, b]) {
+        expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0, damagedFile: null });
+        expect(d.engine.epochKey).toBe(EPOCH);
+        expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Pens", "Rent"]);
       }
-      expectConverged(a2, b, fresh);
+      expectConverged(a, b);
+      // A fresh device finds and joins the same ledger (#8).
+      const fresh = await reload(await open({ login: "sam" }));
+      await quiesce(w, a, b, fresh);
+      expectConverged(a, b, fresh);
       expect(w.fake.violations).toEqual([]);
     });
   }
 
-  it("a newer genesis this build is too old to read still refuses a restore: updating the app is the fix", async () => {
+  it("once it is deleted, the counted run decides again: the restore of the same number beside it wins, and a device still on the epoch before switches to it", async () => {
+    let cOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex", wrapFetch: (inner) => (input, init) => (cOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    cOffline = true;
+    await c.backend.addEntry(entry("Bus"));
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const epoch = (restored as { epoch: string }).epoch;
+    a = await reload(a);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(epoch);
+    // A damaged genesis of the same number, with a greater key, wins.
+    const damaged = "e000002-ffffffff";
+    await plant(w, { kind: "genesis", epoch: damaged }, "not a ledger file");
+    await b.backend.addEntry(entry("Rent"));
+    cOffline = false;
+    await cycle(w, a, b, c);
+    for (const d of [a, b, c]) expect(d.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: damaged, reason: "malformed" } });
+    expect(c.engine.epochKey).toBe(EPOCH);
+    w.fake.removeFile(FULL, `ledger/${damaged}.genesis.enc`);
+    await quiesce(w, a, b, c);
+    for (const d of [a, b, c]) {
+      expect(d.engine.epochKey).toBe(epoch);
+      expect(d.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+    }
+    expect(remarks(a).sort()).toEqual(["Groceries", "Rent"]);
+    // c's Bus, which the restore never saw, is offered to c (D18).
+    expect(c.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Bus" } }] }]);
+    expectConverged(a, b, c);
+  });
+
+  it("a newer genesis this build is too old to read refuses a restore and names no file: updating the app is the fix", async () => {
     const a = await open({ login: "alex" });
     await plant(w, { kind: "genesis", epoch: BAD }, { fv: 2, kind: "genesis", epoch: BAD });
     await cycle(w, a);
-    expect(status(a)).toBe("needsUpdate");
+    expect(a.engine.getState()).toMatchObject({ status: "needsUpdate", damagedFile: null });
     const before = puts(w).length;
-    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed" });
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(result).not.toHaveProperty("damagedFile");
     expect(puts(w).length).toBe(before);
   });
 });
@@ -813,18 +855,25 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     expectConverged(a, fresh);
   });
 
-  it("a newer genesis no device can read doesn't refuse every write: the next epoch is numbered after it", async () => {
+  it("a newer genesis no device can open refuses the write that needs a new epoch, naming the file; once it is deleted the write commits in the next epoch (D26)", async () => {
     const a = await open({ login: "alex" });
     await plantTopOfRange();
     await cycle(w, a);
-    await plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, "not a ledger file");
+    const bad = "e000002-0000000b";
+    await plant(w, { kind: "genesis", epoch: bad }, "not a ledger file");
     await cycle(w, a);
-    expect(status(a)).toBe("needsAttention");
+    expect(a.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: bad } });
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: expect.stringContaining(`ledger/${bad}.genesis.enc`) });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+    w.fake.removeFile(FULL, `ledger/${bad}.genesis.enc`);
     await a.backend.addEntry(entry("After"));
-    expect(a.engine.epochKey).toMatch(/^e000003-/);
+    expect(a.engine.epochKey).toMatch(/^e000002-/);
+    expect(a.engine.epochKey).not.toBe(bad);
     expect(remarks(a)).toEqual(["Planted", "After"]);
     await quiesce(w, a);
-    expect(status(a)).toBe("idle");
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
     const fresh = await reload(await open({ login: "sam" }));
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
