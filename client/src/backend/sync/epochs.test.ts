@@ -208,6 +208,52 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expect((await b.engine.restore(structuredClone(b.engine.current()), { discardUnsynced: true })).kind).toBe("restored");
   });
 
+  it("a restore whose genesis landed is reported as restored when the re-list after it fails, never thrown", async () => {
+    let genesisPut = false;
+    let failed = false;
+    const a = await open({
+      login: "alex",
+      wrapFetch: (inner) => async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? "GET";
+        if (genesisPut && !failed && method === "GET" && /git\/ref/.test(url)) {
+          failed = true;
+          throw new TypeError("Failed to fetch");
+        }
+        const res = await inner(input, init);
+        if (method === "PUT" && url.includes(".genesis.enc") && res.ok) genesisPut = true;
+        return res;
+      },
+    });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    const result = await a.engine.restore(structuredClone(a.engine.current())).catch((err: unknown) => err);
+    expect(failed).toBe(true);
+    expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000002-/), winnerUnknown: true });
+    expect(await findLedger({ client: a.client, branch: "main" })).toMatchObject({ kind: "ledger", epoch: (result as { epoch: string }).epoch });
+  });
+
+  it("a write queued behind a restore is refused, never saved into the state the reload clears (section 9.2 step 7)", async () => {
+    let a!: Device;
+    let late: Promise<unknown> | null = null;
+    const wrap = (inner: typeof fetch): typeof fetch => (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (init?.method === "PUT" && url.includes(".genesis.enc") && late === null) late = a.backend.addEntry(entry("Late")).then(() => "saved", (err: unknown) => err);
+      return inner(input, init);
+    };
+    a = await open({ login: "alex", wrapFetch: wrap });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    expect(await late).toMatchObject({ status: 503 });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    await expect(a.backend.addEntry(entry("Later"))).rejects.toMatchObject({ status: 503 });
+    const a2 = await reload(a);
+    await quiesce(w, a2);
+    expect(remarks(a2)).toEqual(["Groceries"]);
+    expect(a2.engine.getState().pendingCount).toBe(0);
+  });
+
   it("AC14: a device holding an old tombstone keeps the restored record", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
@@ -461,8 +507,8 @@ describe("no resolved write is lost to a restore (AC6, randomised)", () => {
       const added = new Map<Device, string[]>(devices.map((d) => [d, []]));
       let backup: LedgerDocument = structuredClone(devices[0].engine.current());
       let n = 0;
-      const step = async () => {
-        const d = rng.pick(devices);
+      const step = async (pool: Device[] = devices) => {
+        const d = rng.pick(pool);
         const roll = rng.int(10);
         if (roll < 5) {
           const remark = `R${seed}-${n++}`;
@@ -482,7 +528,8 @@ describe("no resolved write is lost to a restore (AC6, randomised)", () => {
       const result = await a.engine.restore(restored, { discardUnsynced: true });
       expect(["restored", "replaced"]).toContain(result.kind);
       const seenByRestorer = new Set(remarks(a));
-      for (let i = 0; i < 6; i++) await step();
+      // The restorer refuses writes until its reload (section 9.2 step 7).
+      for (let i = 0; i < 6; i++) await step(others);
       const a2 = await reload(a);
       const live = [a2, ...others];
       await quiesce(w, ...live);

@@ -127,7 +127,8 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type V
 // long (section 8.4), in one transaction.
 //
 // Epochs (section 9): restore() writes a backup as a new epoch's genesis,
-// based on what this device has seen; reapply() and discard() resolve a
+// based on what this device has seen, and refuses own writes from then on
+// until the reload that follows it; reapply() and discard() resolve a
 // group of changes a restore left behind, with an op carrying its re-apply
 // marker; exportBackup() seals the current document. When no Lamport value
 // is left (a crafted file's L near 2^50), the device restores its current
@@ -199,8 +200,11 @@ export interface LeftBehindView {
 /** What a restore did (section 9.2). */
 export type RestoreResult =
   /** The backup is the new epoch's genesis. Clear this device's sync
-   * state and reload (#9): the device starts in it as a new device. */
-  | { kind: "restored"; epoch: string }
+   * state and reload (#9): the device starts in it as a new device.
+   * `winnerUnknown`: it landed, but the repo couldn't be listed after it,
+   * so a racing restore may have won; after the reload, takeRestoredEpoch()
+   * against epochKey still tells. */
+  | { kind: "restored"; epoch: string; winnerUnknown?: true }
   /** It landed, but a greater epoch was already listed: "Sam's restore
    * replaced yours. [Restore again]". Clear and reload as for "restored". */
   | { kind: "replaced"; epoch: string; winner: string }
@@ -338,6 +342,11 @@ export const REHOMED = "This device's sync identity was in use elsewhere; it now
 /** Why a write is refused when no Lamport value is left in the epoch and
  * the next epoch can't be written now (ADR-0008: Lamport exhaustion). */
 export const NEEDS_NEW_EPOCH = "Ledger needs to reach GitHub to save more changes. Try again when you're online.";
+/** Why a write is refused while a restore writes its genesis, and for good
+ * once it landed: the caller clears this device's sync state and reloads
+ * (section 9.2 step 7), so a write saved now would be lost with it. */
+const RESTORING = "A backup is being restored. Try again once it finishes.";
+const RESTORED = "Ledger was restored from a backup. Reload to continue.";
 /** Why reapply() or discard() is refused: the group is gone. */
 export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
 /** Why a write diffed in one epoch (or under one device id) is refused
@@ -560,6 +569,9 @@ export class SyncEngine {
   #tidying = false;
   /** The next epoch being written because no Lamport value is left. */
   #renumbering: Promise<void> | null = null;
+  /** restore() is writing its genesis ("writing"), or wrote it ("written",
+   * for good): own writes are refused (RESTORING, RESTORED). */
+  #restore: "writing" | "written" | null = null;
   #snapshot: EngineState;
   readonly #listeners = new Set<() => void>();
 
@@ -835,6 +847,7 @@ export class SyncEngine {
    * `resolves`: a left-behind group's marker, carried as the op's `ra`. */
   #commit(next: LedgerDocument, asOf: number, resolves?: string): Promise<void> {
     this.#assertWritable();
+    this.#assertNotRestoring();
     // The epoch's genesis is a format this build can't read (section 12):
     // nothing is written until the app is updated.
     if (this.#genesisBlocked) throw new ApiError(503, LEDGER_UPDATED);
@@ -869,6 +882,10 @@ export class SyncEngine {
 
   async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, resolves?: string): Promise<void> {
     this.#assertWritable();
+    // Diffed before a restore took its turn (a direct commit()), but saved
+    // after: the restore's cut may not hold it, and the reload after it
+    // would lose it.
+    this.#assertNotRestoring();
     const meta = this.#meta!;
     // Diffed in another epoch, or under the id a rehome retired: its L and
     // its diff mean nothing here.
@@ -2145,7 +2162,10 @@ export class SyncEngine {
    * "restored" or "replaced" the caller clears this device's sync state
    * (clearSyncState) and reloads, and the device starts in the winning
    * epoch as a new device; the epoch written is remembered for the reload
-   * (rememberRestore). Throws for a token, repo or rate-limit answer. */
+   * (rememberRestore). From the turn on, own writes are refused, and once
+   * the genesis has landed they stay refused, so nothing is saved into the
+   * state the reload clears. Throws for a token, repo or rate-limit answer
+   * before the genesis lands; once it has, it never throws. */
   async restore(doc: LedgerDocument, { discardUnsynced = false }: { discardUnsynced?: boolean } = {}): Promise<RestoreResult> {
     if (!isWritableDocument(doc)) return { kind: "invalid" };
     const remote = this.#remote;
@@ -2156,17 +2176,28 @@ export class SyncEngine {
     try {
       await turn.ready;
       this.#assertWritable();
+      this.#assertNotRestoring();
+      this.#restore = "writing";
       const pendingCount = this.#pendingCount();
       const leftBehindOwnCount = this.#leftBehindOwnCount;
       if ((pendingCount > 0 || leftBehindOwnCount > 0) && !discardUnsynced) return { kind: "unsynced", pendingCount, leftBehindOwnCount };
       const written = await this.#writeRestore(structuredClone(doc));
       if (written.kind !== "written") return written;
+      this.#restore = "written";
       const epoch = written.genesis.epoch;
       rememberRestore(epoch);
-      // Step 6: a restore that raced this one may have won.
-      const winner = await winningEpochNow(remote);
+      // Step 6: a restore that raced this one may have won. The genesis has
+      // landed whatever this read says, so a failed read is no failure.
+      let winner: string | null;
+      try {
+        winner = await winningEpochNow(remote);
+      } catch (err) {
+        this.#log("the repo couldn't be listed after the restore landed; the reload finds the winner", err);
+        return { kind: "restored", epoch, winnerUnknown: true };
+      }
       return winner !== null && compareEpochKeys(winner, epoch) > 0 ? { kind: "replaced", epoch, winner } : { kind: "restored", epoch };
     } finally {
+      if (this.#restore === "writing") this.#restore = null;
       turn.end();
     }
   }
@@ -2499,6 +2530,10 @@ export class SyncEngine {
     if (this.#superseded || (this.#started && !this.#lockHeld)) throw new ApiError(503, OTHER_TAB);
     if (this.#stopped) throw new ApiError(503, "Ledger was closed in this tab. Reload to continue.");
     if (this.#loading || this.#doc === null || this.#meta === null || this.#state === null) throw new ApiError(503, NOT_LOADED);
+  }
+
+  #assertNotRestoring(): void {
+    if (this.#restore !== null) throw new ApiError(503, this.#restore === "written" ? RESTORED : RESTORING);
   }
 
   #enqueue<T>(task: () => Promise<T>): Promise<T> {
