@@ -1043,6 +1043,56 @@ describe("racing creates with two salts (D26)", () => {
     expect(w.fake.violations).toEqual([]);
   });
 
+  /** a's genesis wins once y's is deleted; y's epoch is gone. Then a's
+   * household restores a valid epoch 2 under the household salt, which y
+   * can't open. `aWrites`: a reloads into it and writes there, so a device
+   * file of epoch 2 is listed. */
+  async function goneThenRestored(aWrites: boolean): Promise<{ y: Device; e2: string }> {
+    const { a, y } = await racing();
+    await a.backend.addEntry(entry("Groceries"));
+    await y.backend.addEntry(entry("Bus"));
+    await cycle(w, a);
+    expect(a.engine.getState().damagedFile).toMatchObject({ reason: "foreignKey" });
+    w.fake.removeFile(FULL, THEIRS_PATH);
+    await cycle(w, a, y, y);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: EPOCH }, damagedFile: null });
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const e2 = (restored as { epoch: string }).epoch;
+    if (aWrites) {
+      const a2 = await reload(a);
+      await a2.backend.addEntry(entry("Rent"));
+      await cycle(w, a2);
+      expect(w.fake.file(FULL, `ledger/${e2}.${a2.engine.deviceId}.log.enc`)).not.toBeNull();
+    }
+    await cycle(w, y, y);
+    return { y, e2 };
+  }
+
+  it("F-A: a device whose epoch is gone is never told to delete the household's newer restore it can't open; it stays epochGone and names no file", async () => {
+    const { y, e2 } = await goneThenRestored(false);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: e2 }, damagedFile: null });
+    expect(y.engine.epochKey).toBe(THEIRS);
+    // Its restore names no file either: it is refused as epochGone.
+    const before = puts(w).length;
+    const result = await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true });
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: e2 } });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(puts(w).length).toBe(before);
+    // The household's restore is still there, and y's change stays on y.
+    expect(w.fake.file(FULL, `ledger/${e2}.genesis.enc`)).not.toBeNull();
+    expect(remarks(y)).toEqual(["Bus"]);
+  });
+
+  it("F-A2: once the household wrote in that restore, the device whose epoch is gone is not told to restore a previous version that doesn't exist", async () => {
+    const { y, e2 } = await goneThenRestored(true);
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: e2 }, damagedFile: null });
+    const result = await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true });
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: e2 } });
+    expect(result).not.toHaveProperty("damagedFile");
+    expect(remarks(y)).toEqual(["Bus"]);
+  });
+
   it("once the other creator has written in its epoch, its genesis is named as joined, never as one to delete", async () => {
     const { a, y } = await racing();
     await y.backend.addEntry(entry("Bus"));
