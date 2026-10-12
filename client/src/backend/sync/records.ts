@@ -45,11 +45,33 @@ export interface SyncMeta {
    * send landed, whatever became of its response. */
   lastSentLogSha: string | null;
   lastSentLogThrough: number;
+  /** The `snapThrough` of the confirmed own log version and of the last
+   * own log text sent. A confirmed log naming a K below meta.K still holds
+   * ops the device's snapshot covers: the trim (section 8.1 step 4) is due. */
+  ownLogK: number;
+  lastSentLogK: number;
+  /** The own snap's blob sha as last confirmed in the repo (its `through`
+   * is K), the blob sha of the last own snap text sent, persisted before the
+   * PUT, and the `through` that text holds (section 8.1 step 3). */
   ownSnapSha: string | null;
   lastSentSnapSha: string | null;
-  /** Repo file name to the blob sha this state already includes. */
+  lastSentSnapThrough: number;
+  /** Repo file name to the blob sha this state already includes: only
+   * versions this device read and joined itself, never ones another file
+   * says it holds (owner decision D24). */
   joined: Record<string, string>;
   seen: VersionVector;
+  /** Per other device, what this device read from that device's own files
+   * (owner decision D24): the last L of the version of its log joined, and
+   * the `through` of the version of its snapshot last joined (the one
+   * `joined` names). A log's ops at or below `logReach` are not joined again
+   * (that log gave them), and a log whose snapThrough is past both waits
+   * for its snapshot (section 8.2); `snapReach` counts only while that
+   * snapshot version is still the listed one. Neither is ever `seen`, which
+   * another device's snapshot raises on its word alone, and a snapshot's
+   * `through` never leaves a log's ops out. */
+  logReach: VersionVector;
+  snapReach: VersionVector;
   lastSeenCommit: string | null;
   refEtag: string | null;
   /** The tab that may write (section 10.2): every mutation checks it. */
@@ -61,7 +83,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const isLamportOrZero = (value: unknown) => value === 0 || isLamport(value);
-const isShaOrNull = (value: unknown) => value === null || (typeof value === "string" && /^[0-9a-f]{40}$/.test(value));
+/** `logReach` or `snapReach`: a 0 entry holds nothing, as an absent one.
+ * The engine never stores one, but a meta that holds one (an earlier stage 5
+ * build stored a snapshot's through 0) still loads, so no repo file can
+ * leave a device unreadable through its reach. */
+const isReach = (value: unknown) => isPlainObject(value) && Object.entries(value).every(([device, L]) => isDeviceId(device) && isLamportOrZero(L));
+const isShaOrNull =(value: unknown) => value === null || (typeof value === "string" && /^[0-9a-f]{40}$/.test(value));
 const isTextOrNull = (value: unknown) => value === null || typeof value === "string";
 
 const META_KEYS = [
@@ -75,10 +102,15 @@ const META_KEYS = [
   "ownLogThrough",
   "lastSentLogSha",
   "lastSentLogThrough",
+  "ownLogK",
+  "lastSentLogK",
   "ownSnapSha",
   "lastSentSnapSha",
+  "lastSentSnapThrough",
   "joined",
   "seen",
+  "logReach",
+  "snapReach",
   "lastSeenCommit",
   "refEtag",
   "writerToken",
@@ -98,11 +130,12 @@ export function checkMeta(value: unknown): MetaCheck {
   const keys = Object.keys(value);
   if (keys.length !== META_KEYS.length || !META_KEYS.every((key) => Object.hasOwn(value, key))) return bad("meta has the wrong keys");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
-  if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
+  if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough, value.ownLogK, value.lastSentLogK, value.lastSentSnapThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
   if (!isTextOrNull(value.refEtag) || typeof value.writerToken !== "string") return bad("meta tokens are malformed");
   if (!isPlainObject(value.joined) || !Object.values(value.joined).every((sha) => isShaOrNull(sha) && sha !== null)) return bad("meta joined is malformed");
   if (!isVersionVector(value.seen)) return bad("meta seen is malformed");
+  if (!isReach(value.logReach) || !isReach(value.snapReach)) return bad("meta reach is malformed");
   return { ok: true, meta: value as unknown as SyncMeta };
 }
 

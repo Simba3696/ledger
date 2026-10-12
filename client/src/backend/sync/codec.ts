@@ -428,6 +428,12 @@ export function checkRepoFile(name: RepoFile, value: unknown, genesis?: SyncStat
   }
   if (!isLamportOrZero(value.through) || !isChain(value.chain)) return malformed("snap header is malformed");
   if (!isVersionVector(value.seen) || !isLamportOrZero(value.maxL)) return malformed("snap seen or maxL is malformed");
+  // A device snapshots at its own greatest L (section 8.1: through = K =
+  // ownMaxL), which its seen holds for itself. The gap check (section 8.2)
+  // reads a joined snap's through from that seen entry, so a snap whose
+  // through says otherwise could never close the gap it was fetched for.
+  const ownSeen = Object.hasOwn(value.seen, name.device) ? (value.seen as VersionVector)[name.device] : 0;
+  if (value.through !== ownSeen) return malformed("snap through is not its seen for its own device");
   if (!isPlainObject(value.joined) || !Object.entries(value.joined).every(([file, sha]) => parseRepoFileName(file) !== null && isBlobSha(sha))) {
     return malformed("snap joined is malformed");
   }

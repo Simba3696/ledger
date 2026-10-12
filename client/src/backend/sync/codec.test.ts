@@ -330,6 +330,7 @@ describe("order keys", () => {
     snap.state.rec.debt.push({ id: ID, c: [L, D], v: { _c: { o }, _s: { at: 1, by: "alex" }, name: "Sam", amount: "1.00" } });
     snap.maxL = Math.max(snap.maxL, L);
     snap.seen[D] = Math.max(snap.seen[D], L);
+    snap.through = snap.seen[D];
     return snap;
   };
 
@@ -481,6 +482,8 @@ describe("files", () => {
     ["a joined name with a path", (f) => (f.joined = { [`../${GENESIS}`]: SHA })],
     ["a joined name with an uppercase device id", (f) => (f.joined = { [`${EPOCH}.${D.toUpperCase()}.log.enc`]: SHA })],
     ["a state with missing parts", (_f, s) => delete s.ra],
+    ["a through below its own device's seen", (f) => (f.through = (f.through as number) - 1)],
+    ["a through above its own device's seen", (f) => (f.through = (f.through as number) + 1)],
   ];
   for (const [name, spoil] of badSnaps) {
     it(`refuse a snap with ${name}`, async () => {
@@ -533,7 +536,10 @@ describe("files", () => {
         f.maxL = seenD + 1;
       }],
       ["a deletion by a device it has not seen", (_f, s) => ((s.del as unknown[][])[0][1] = OTHER)],
-      ["a seen entry lowered below its device's tags", (f) => (f.seen = { [D]: 1 })],
+      ["a seen entry lowered below its device's tags", (f) => {
+        f.seen = { [D]: 1 };
+        f.through = 1;
+      }],
     ];
     for (const [name, spoil] of spoils) {
       const copy = JSON.parse(JSON.stringify(file));
@@ -554,7 +560,7 @@ describe("files", () => {
   it("answers, never throws, on a snap whose seen vector is very large", async () => {
     const { file } = await snapFile();
     const seen = Object.fromEntries(Array.from({ length: 300_000 }, (_, i) => [deviceId(i + 1), 1]));
-    const huge = { ...file, through: 0, seen, maxL: 1, state: encodeState(genesisState(emptyDocument())) };
+    const huge = { ...file, through: seen[D] ?? 0, seen, maxL: 1, state: encodeState(genesisState(emptyDocument())) };
     expect(check(SNAP, huge).ok).toBe(true);
     // Robustness, not speed: building and checking 300,000 entries takes ~6 s
     // on a loaded Windows machine, past vitest's 5 s default.
