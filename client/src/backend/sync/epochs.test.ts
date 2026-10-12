@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { EPOCH, FULL, cycle, device, entry, expectConverged, logFile, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
+import { EPOCH, FULL, cycle, device, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { findLedger, openGenesis, readBackup } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { unseal } from "./records";
@@ -548,6 +548,43 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     expect(b.engine.epochKey).toBe(a.engine.epochKey);
     expectConverged(a, b);
     for (const d of [a, b]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+
+  it("a sync cycle in flight across the switch joins nothing of the old epoch into the new one: devices converge", async () => {
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let bLogSha: string | null = null;
+    let held = false;
+    const wrap = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (hold && bLogSha && url.includes(`/git/blobs/${bLogSha}`)) {
+        held = true;
+        await hold;
+      }
+      return inner(input, init);
+    };
+    const a = await open({ login: "alex", wrapFetch: wrap });
+    const b = await open({ login: "sam" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b);
+    bLogSha = w.fake.file(FULL, repoPath({ kind: "log", epoch: EPOCH, device: b.engine.deviceId! }))!.sha;
+    hold = new Promise((resolve) => (release = resolve));
+    w.clock.mono += 10_000;
+    const inFlight = a.engine.sync(); // stalls reading b's log
+    for (let i = 0; i < 200 && !held; i++) await nextTask();
+    expect(held).toBe(true);
+    await a.backend.addEntry(entry("After")); // the next epoch, and the write there
+    expect(a.engine.epochKey).not.toBe(EPOCH);
+    release();
+    await inFlight;
+    await quiesce(w, a, b);
+    expect(b.engine.epochKey).toBe(a.engine.epochKey);
+    expectConverged(a, b);
+    const fresh = await reload(b);
+    await quiesce(w, a, fresh);
+    expectConverged(a, fresh);
   });
 
   it("without the repo the write is refused, the document unchanged, and the next one tries again", async () => {

@@ -121,7 +121,10 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type V
 // handled only when every file in it was joined, so a halted stream, a gap
 // or a failed read is retried by the next cycle, and an idle device makes
 // one uncounted request a poll. Nothing the cycle meets is fatal: any throw
-// ends it with `pending`, and the next trigger tries again.
+// ends it with `pending`, and the next trigger tries again. A cycle reads
+// and records for the epoch and device id it started with: when they change
+// outside it (a new epoch at Lamport exhaustion), nothing it read is joined
+// or recorded, and it runs again.
 //
 // Separately, the device folds its saved `tail` into `base` once it grows
 // long (section 8.4), in one transaction.
@@ -521,6 +524,11 @@ class Undecryptable extends Error {}
 /** The own log is larger than every reader allows: it is never sent. */
 class OwnLogTooLarge extends Error {}
 
+/** The epoch switched (or the device rehomed) outside the running cycle,
+ * as a new epoch at Lamport exhaustion does: what the cycle read and would
+ * record belongs to the epoch and device id it started with. */
+class IdentityChanged extends Error {}
+
 export class SyncEngine {
   readonly #key: DeviceKey;
   readonly #actor: string;
@@ -601,6 +609,11 @@ export class SyncEngine {
   /** The running cycle loop, and whether a trigger asked for another. */
   #loop: Promise<void> | null = null;
   #again = false;
+  /** The epoch and device id the running cycle reads and records for, or
+   * null when none runs. A switch or a rehome the cycle makes moves it on;
+   * one made outside it (a new epoch at Lamport exhaustion) doesn't, and
+   * the cycle's joins and bookkeeping are then refused (IdentityChanged). */
+  #cycleFor: { epoch: string; device: string } | null = null;
   /** Set by a cycle that stops on something only a change outside it fixes. */
   #blocker: Blocker | null = null;
   /** The last cycle failed for a reason the next trigger may not meet
@@ -943,6 +956,7 @@ export class SyncEngine {
   join(delta: { ops?: [device: string, op: Op][]; state?: SyncState }, bookkeeping: MetaPatch = {}): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
+      this.#assertCycleCurrent();
       const source = emptyState();
       if (delta.state) joinInto(source, delta.state);
       for (const [device, op] of delta.ops ?? []) joinInto(source, opState(device, op));
@@ -951,6 +965,7 @@ export class SyncEngine {
       const seen = new Map(this.#state!.seen);
       for (const [device, L] of source.seen) if (L > (seen.get(device) ?? 0)) seen.set(device, L);
       this.#assertWritable();
+      this.#assertCycleCurrent();
       await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text] });
 
       const changes = this.#fence.join(this.#state!, source);
@@ -1106,12 +1121,29 @@ export class SyncEngine {
       return;
     }
     try {
+      this.#cycleFor = this.#identity();
       if (await this.#run()) this.#trouble = false;
       else if (this.#blocker === null) this.#trouble = true;
     } catch (err) {
       this.#cycleFailed(err);
     } finally {
+      this.#cycleFor = null;
       this.#emit();
+    }
+  }
+
+  #identity(): { epoch: string; device: string } {
+    const meta = this.#meta!;
+    return { epoch: meta.epochKey, device: meta.deviceId };
+  }
+
+  /** Throws IdentityChanged when the running cycle's epoch or device id is
+   * no longer this device's: nothing it read may be joined or recorded. */
+  #assertCycleCurrent(): void {
+    const at = this.#cycleFor;
+    const meta = this.#meta;
+    if (at !== null && meta !== null && (at.epoch !== meta.epochKey || at.device !== meta.deviceId)) {
+      throw new IdentityChanged(`the device moved from ${at.epoch}/${at.device} while a sync cycle ran`);
     }
   }
 
@@ -1344,6 +1376,8 @@ export class SyncEngine {
         return listed ? [listed] : [];
       },
     });
+    // What was read belongs to the epoch the cycle started in.
+    this.#assertCycleCurrent();
     for (const name of streams.healthy) this.#halted.delete(name);
     for (const [name, halt] of streams.halted) this.#halted.set(name, halt);
     // A halted file that is no longer listed in this epoch halts nothing.
@@ -1829,6 +1863,7 @@ export class SyncEngine {
   #confirmSnap(sha: string, through: number, patch: MetaPatch = {}): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
+      this.#assertCycleCurrent();
       const meta = this.#meta!;
       // An older snapshot than the one confirmed is never taken for it.
       if (through < meta.K) return;
@@ -1850,6 +1885,7 @@ export class SyncEngine {
   async #ownSnapText(genesis: SyncState): Promise<SnapText | null> {
     const view = await this.#enqueue(async () => {
       this.#assertWritable();
+      this.#assertCycleCurrent();
       const meta = this.#meta!;
       // An own op committed since the trigger check (while the log text or
       // the genesis was read, or queued ahead of this view) is in no
@@ -1930,6 +1966,7 @@ export class SyncEngine {
   #record(patch: MetaPatch): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
+      this.#assertCycleCurrent();
       const meta = this.#meta!;
       if ((Object.keys(patch) as (keyof MetaPatch)[]).every((key) => canonicalJson(patch[key]) === canonicalJson(meta[key]))) return;
       await this.#mutate({ ...meta, ...patch }, {});
@@ -1940,7 +1977,10 @@ export class SyncEngine {
   /** What a failed cycle means (section 12). Nothing is lost either way:
    * every own op stays in ownLog until the repo is known to hold it. */
   #cycleFailed(err: unknown): void {
-    if (err instanceof GitHubAuthError || err instanceof GitHubForbiddenError) {
+    if (err instanceof IdentityChanged) {
+      // Nothing of it was joined or recorded: run again, as the device is now.
+      this.#again = true;
+    } else if (err instanceof GitHubAuthError || err instanceof GitHubForbiddenError) {
       this.#blocker = "needsToken";
     } else if (err instanceof RepoNotFoundError) {
       this.#blocker = "missing";
@@ -2081,6 +2121,8 @@ export class SyncEngine {
         for (const [name, problem] of rebuilt.halted) this.#halted.set(name, problem);
         this.#gapWait = rebuilt.gap;
         this.#noticeCount++;
+        // The cycle that found the fork syncs on under the new id.
+        if (this.#cycleFor !== null) this.#cycleFor = this.#identity();
         this.#refreshLeftBehind();
         this.#emit();
       });
@@ -2339,7 +2381,10 @@ export class SyncEngine {
     try {
       await turn.ready;
       this.#assertWritable();
-      return await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at });
+      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at });
+      // The cycle reads and records for the epoch it switched to.
+      if (switched && this.#cycleFor !== null) this.#cycleFor = this.#identity();
+      return switched;
     } finally {
       turn.end();
     }
