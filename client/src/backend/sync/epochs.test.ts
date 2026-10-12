@@ -275,6 +275,44 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expect(a.engine.getState().pendingCount).toBe(0);
   });
 
+  it("the engine's state says how a restore stands: landed at once, or pending until a listing settles it as landed or as never landed", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    expect(a.engine.getState().restore).toBeNull();
+    // Both genesis PUTs get no answer, and land later.
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    w.fake.landLater(50, { method: "PUT", path: /genesis/ });
+    const pending = await a.engine.restore(structuredClone(a.engine.current()));
+    if (pending.kind !== "unknown") throw new Error(pending.kind);
+    expect(a.engine.getState().restore).toEqual({ state: "pending", epoch: pending.epoch });
+    w.fake.landPending();
+    let told = 0;
+    const unsubscribe = a.engine.subscribe(() => void (a.engine.getState().restore?.state === "landed" && told++));
+    await cycle(w, a);
+    unsubscribe();
+    expect(a.engine.getState().restore).toEqual({ state: "landed", epoch: pending.epoch });
+    expect(told).toBeGreaterThan(0);
+
+    // Neither PUT lands: a full listing settles it, and nothing is pending.
+    const b = await open({ login: "sam" });
+    await quiesce(w, b);
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    const lost = await b.engine.restore(structuredClone(b.engine.current()));
+    if (lost.kind !== "unknown") throw new Error(lost.kind);
+    expect(b.engine.getState().restore).toEqual({ state: "pending", epoch: lost.epoch });
+    await cycle(w, b);
+    expect(b.engine.getState().restore).toBeNull();
+
+    // One that lands at once.
+    const c = await reload(b);
+    await quiesce(w, c);
+    const landed = await c.engine.restore(structuredClone(c.engine.current()));
+    if (landed.kind !== "restored") throw new Error(landed.kind);
+    expect(c.engine.getState().restore).toEqual({ state: "landed", epoch: landed.epoch });
+  });
+
   it("a write queued behind a restore is refused, never saved into the state the reload clears (section 9.2 step 7)", async () => {
     let a!: Device;
     let late: Promise<unknown> | null = null;
