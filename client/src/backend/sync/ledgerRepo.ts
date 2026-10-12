@@ -3,6 +3,7 @@ import type { LedgerDocument } from "../document/types";
 import { isWritableDocument } from "../document/validate";
 import {
   GitHubAuthError,
+  GitHubError,
   GitHubForbiddenError,
   GitHubRateLimitError,
   RepoNotFoundError,
@@ -34,8 +35,9 @@ import type { VersionVector } from "./tags";
 //     (SyncEngine.restore), which needs what the device has seen.
 //   - A genesis is written under a fresh random name, never over a file. A
 //     lost answer is settled by listing the path: the sha of the bytes sent
-//     there means it landed; otherwise it is sent once more, then reported
-//     as failed (writeGenesis).
+//     there means it landed; otherwise it is sent once more. An answer that
+//     says it wasn't applied is a failure; a PUT that got no answer may
+//     still land, so it is reported as unknown (writeGenesis).
 //   - Export is the current document sealed in the repo files' format; a
 //     backup opens with the same key (readBackup).
 //   - Forget this device clears the sync state and the device's key and
@@ -156,8 +158,12 @@ export type GenesisWrite =
   | { kind: "written"; sha: string }
   /** Past the bounds a device writes within: every reader would refuse it. */
   | { kind: "tooLarge"; detail: string }
-  /** It didn't land (a 409 or 422, or no answer twice). */
-  | { kind: "failed"; detail: string };
+  /** It didn't land: every PUT sent was answered, and each answer says it
+   * wasn't applied (a 409 or 422). */
+  | { kind: "failed"; detail: string }
+  /** A PUT got no answer (offline, a timeout, a 5xx), and no listing since
+   * showed the genesis: it may still land. */
+  | { kind: "unknown"; detail: string };
 
 /** Half the read bounds, as for every file a device writes (ADR-0008). */
 const WRITE_BOUNDS: FileBounds = { bytes: Math.floor(READ_BOUNDS.bytes / 2), plainBytes: Math.floor(READ_BOUNDS.plainBytes / 2) };
@@ -172,9 +178,11 @@ function isFinal(err: unknown): boolean {
  * fresh name, with no sha, in the household key's salt and iterations.
  * Checked first with the validator every reader runs and against the write
  * bounds. A lost answer is settled by listing the path; a branch race or no
- * answer is sent once more; a stale-sha answer (the name is taken) is a
- * failure. Throws for a token, repo or rate-limit answer. `onPut` is called
- * before each PUT is sent (the engine counts each against its hourly cap,
+ * answer is sent once more; a stale-sha answer (the name is taken) ends it.
+ * Whatever ends it, a PUT that got no answer may still land, so the result
+ * is then "unknown", never "failed". Throws for a token, repo or rate-limit
+ * answer when no earlier PUT went unanswered. `onPut` is called before
+ * each PUT is sent (the engine counts each against its hourly cap,
  * ADR-0008 stage 4). */
 export async function writeGenesis(
   remote: Remote,
@@ -194,13 +202,22 @@ export async function writeGenesis(
   const sha = await gitBlobSha(text);
   const path = repoPath(file);
   const message = content.reason === "create" ? "Create ledger" : "Restore from backup";
+  /** A PUT sent so far got no answer, so it may still land. */
+  let unanswered = false;
   for (let attempt = 1; ; attempt++) {
     try {
       onPut();
       const res = await remote.client.putFile({ path, text, sha: null, message });
       return { kind: "written", sha: res.sha };
     } catch (err) {
-      if (isFinal(err)) throw err;
+      const detail = err instanceof Error ? err.message : String(err);
+      if (isFinal(err)) {
+        if (unanswered) return { kind: "unknown", detail };
+        throw err;
+      }
+      // A 4xx answer says this PUT wasn't applied; anything else (no
+      // response, a timeout, a 5xx) doesn't.
+      if (!(err instanceof GitHubError && err.status >= 400 && err.status < 500)) unanswered = true;
       // Did it land? Only these bytes can be there under this name.
       let listed: string | undefined;
       try {
@@ -209,8 +226,7 @@ export async function writeGenesis(
         listed = undefined;
       }
       if (listed === sha) return { kind: "written", sha };
-      const detail = err instanceof Error ? err.message : String(err);
-      if (attempt >= 2 || (err instanceof ShaConflictError && err.reason === "stale-sha")) return { kind: "failed", detail };
+      if (attempt >= 2 || (err instanceof ShaConflictError && err.reason === "stale-sha")) return { kind: unanswered ? "unknown" : "failed", detail };
     }
   }
 }
@@ -224,9 +240,9 @@ export type CreateResult =
    * epoch 1 is listed after this one landed): join the winner instead
    * (findLedger). Nothing was started on this device. */
   | { kind: "replaced"; epoch: string; winner: string }
-  /** A cut listing, or this create landed but the repo couldn't be listed
-   * in full after it: try again later, and the next try joins what it
-   * finds. */
+  /** A cut listing, this create landed but the repo couldn't be listed in
+   * full after it, or its PUT got no answer and may still land: try again
+   * later, and the next try joins what it finds. */
   | { kind: "unknown" }
   | Exclude<GenesisWrite, { kind: "written" }>;
 
@@ -266,6 +282,8 @@ export async function createLedger(
   }
   const epoch = nextEpochKey(after);
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
+  // It may still land: the next try finds it, or not, and goes on from there.
+  if (written.kind === "unknown") return { kind: "unknown" };
   if (written.kind !== "written") return written;
   let now: EpochNow;
   try {

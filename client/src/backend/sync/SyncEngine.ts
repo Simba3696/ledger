@@ -222,8 +222,18 @@ export type RestoreResult =
   | { kind: "invalid" }
   /** Larger than every reader allows. Nothing was written. */
   | { kind: "tooLarge"; detail: string }
-  /** The genesis didn't land. Nothing was replaced. */
-  | { kind: "failed"; detail: string };
+  /** Nothing was written, or every PUT of the genesis was answered with a
+   * refusal: it didn't land, and nothing was replaced. Try again. */
+  | { kind: "failed"; detail: string }
+  /** A PUT of `epoch`'s genesis got no answer, and the listing since didn't
+   * show it: it may still land, and then it replaces the ledger like any
+   * restore. Sync (or reload) before trying again. Own writes stay refused
+   * until a listing settles it: one that shows the genesis makes this a
+   * landed restore (reload to continue); a full one without it lets writes
+   * go on, and a genesis that lands later still is switched to like any
+   * other restore, own changes since offered (D18). The epoch is
+   * remembered for the reload (rememberRestore). */
+  | { kind: "unknown"; epoch: string };
 
 /** The sync bookkeeping a remote join may record with its delta. */
 export type MetaPatch = Partial<
@@ -350,6 +360,9 @@ export const NEEDS_NEW_EPOCH = "Ledger needs to reach GitHub to save more change
  * (section 9.2 step 7), so a write saved now would be lost with it. */
 const RESTORING = "A backup is being restored. Try again once it finishes.";
 const RESTORED = "Ledger was restored from a backup. Reload to continue.";
+/** Why a write is refused after a restore whose genesis PUT got no answer,
+ * until a listing settles whether it landed. */
+const RESTORE_UNKNOWN = "A backup restore may still be on its way to GitHub. Try again once Ledger has synced.";
 /** Why reapply() or discard() is refused: the group is gone. */
 export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
 /** Why a write diffed in one epoch (or under one device id) is refused
@@ -499,7 +512,7 @@ interface Loaded {
 }
 
 /** A restore genesis written (section 9.2), or why not. */
-type RestoreWrite = { kind: "written"; genesis: NewEpoch } | { kind: "tooLarge" | "failed"; detail: string };
+type RestoreWrite = { kind: "written"; genesis: NewEpoch } | { kind: "tooLarge" | "failed"; detail: string } | { kind: "unknown"; epoch: string; detail: string };
 
 /** A new epoch's genesis, read or written, to switch to (section 9.3). */
 interface NewEpoch {
@@ -580,6 +593,10 @@ export class SyncEngine {
   /** restore() is writing its genesis ("writing"), or wrote it ("written",
    * for good): own writes are refused (RESTORING, RESTORED). */
   #restore: "writing" | "written" | null = null;
+  /** The epoch of a restore genesis whose PUT got no answer (restore()'s
+   * "unknown"): own writes are refused until a listing settles whether it
+   * landed (#settleRestore). */
+  #restoreUnknown: string | null = null;
   #snapshot: EngineState;
   readonly #listeners = new Set<() => void>();
 
@@ -1149,7 +1166,10 @@ export class SyncEngine {
 
   /** One cycle. True if it ended with nothing left to retry. */
   async #run(): Promise<boolean> {
-    const ref = await this.#head(true);
+    // A restore whose genesis may still land is settled by a listing, so
+    // the head is read and listed even when nothing seems to have changed.
+    const settling = this.#restoreUnknown !== null;
+    const ref = await this.#head(!settling);
     // The repo answered with this token: whatever stopped the last cycle at
     // the ref is gone. Anything later is found again below.
     this.#blocker = null;
@@ -1160,7 +1180,7 @@ export class SyncEngine {
     let listedOwn: string | undefined;
     if (ref.kind === "head") {
       const meta = this.#meta!;
-      if (ref.commitSha !== meta.lastSeenCommit) {
+      if (ref.commitSha !== meta.lastSeenCommit || settling) {
         const pulled = await this.#pull(await this.#list(ref.commitSha, ref.etag));
         if (pulled === null) return false;
         listedOwn = pulled.listedOwn;
@@ -1205,6 +1225,7 @@ export class SyncEngine {
    * transaction that joins what was read and records it. Null when the
    * cycle stops here. */
   async #pull(listing: Listing): Promise<{ listedOwn: string | undefined } | null> {
+    this.#settleRestore(listing);
     const meta = this.#meta!;
     const epoch = meta.epochKey;
     const winner = winningEpoch([...listing.files.keys()]);
@@ -1279,6 +1300,23 @@ export class SyncEngine {
     if (others.ops.length > 0 || state) await this.join({ ops: others.ops, ...(state ? { state } : {}) }, patch);
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
+  }
+
+  /** Whether a restore genesis whose PUT got no answer landed, as far as
+   * `listing` tells: listed, it is a landed restore (writes stay refused
+   * until the reload, as for "restored"); missing from a full listing, it
+   * didn't land, and writes go on. A cut listing settles nothing. */
+  #settleRestore(listing: Listing): void {
+    const epoch = this.#restoreUnknown;
+    if (epoch === null) return;
+    if (listing.files.has(repoFileName({ kind: "genesis", epoch }))) {
+      this.#log(`the restore's genesis ${epoch} landed after all`);
+      this.#restoreUnknown = null;
+      this.#restore = "written";
+    } else if (!listing.truncated) {
+      this.#log(`the restore's genesis ${epoch} isn't in the repo; writes go on`);
+      this.#restoreUnknown = null;
+    }
   }
 
   /** The epoch's genesis, read once (it never changes): its state when it
@@ -2206,8 +2244,10 @@ export class SyncEngine {
    * epoch as a new device; the epoch written is remembered for the reload
    * (rememberRestore). From the turn on, own writes are refused, and once
    * the genesis has landed they stay refused, so nothing is saved into the
-   * state the reload clears. Throws for a token, repo or rate-limit answer
-   * before the genesis lands; once it has, it never throws. */
+   * state the reload clears. On "unknown" (a genesis PUT got no answer) they
+   * stay refused until a listing settles whether it landed. Throws for a
+   * token, repo or rate-limit answer before any genesis PUT may have
+   * landed; once one may have, it never throws. */
   async restore(doc: LedgerDocument, { discardUnsynced = false }: { discardUnsynced?: boolean } = {}): Promise<RestoreResult> {
     if (!isWritableDocument(doc)) return { kind: "invalid" };
     const remote = this.#remote;
@@ -2224,6 +2264,12 @@ export class SyncEngine {
       const leftBehindOwnCount = this.#leftBehindOwnCount;
       if ((pendingCount > 0 || leftBehindOwnCount > 0) && !discardUnsynced) return { kind: "unsynced", pendingCount, leftBehindOwnCount };
       const written = await this.#writeRestore(structuredClone(doc));
+      if (written.kind === "unknown") {
+        this.#log(`the restore's genesis got no answer (${written.detail}); it may still land`);
+        this.#restoreUnknown = written.epoch;
+        rememberRestore(written.epoch);
+        return { kind: "unknown", epoch: written.epoch };
+      }
       if (written.kind !== "written") return written;
       this.#restore = "written";
       const epoch = written.genesis.epoch;
@@ -2351,6 +2397,7 @@ export class SyncEngine {
     // Every PUT sent counts against the hourly cap, a second one after no
     // answer included (ADR-0008 stage 4).
     const written = await writeGenesis(remote, content, this.#key, this.#bounds.write, () => this.#putTimes.push(this.#monotonic()));
+    if (written.kind === "unknown") return { kind: "unknown", epoch, detail: written.detail };
     if (written.kind !== "written") return written;
     return { kind: "written", genesis: { epoch, sha: written.sha, state: genesisState(doc), basedOn, by: content.by, at: content.at } };
   }
@@ -2383,6 +2430,8 @@ export class SyncEngine {
           this.#log("writing the next epoch failed", err);
           throw new ApiError(503, NEEDS_NEW_EPOCH);
         }
+        // Not written, or no answer: if that genesis lands after all, the
+        // next try finds it listed and the device switches to it first.
         if (written.kind !== "written") {
           this.#log(`writing the next epoch failed: ${written.detail}`);
           throw new ApiError(503, NEEDS_NEW_EPOCH);
@@ -2656,6 +2705,7 @@ export class SyncEngine {
 
   #assertNotRestoring(): void {
     if (this.#restore !== null) throw new ApiError(503, this.#restore === "written" ? RESTORED : RESTORING);
+    if (this.#restoreUnknown !== null) throw new ApiError(503, RESTORE_UNKNOWN);
   }
 
   #enqueue<T>(task: () => Promise<T>): Promise<T> {
