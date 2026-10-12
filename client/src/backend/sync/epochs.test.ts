@@ -1015,7 +1015,11 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     await a.backend.addEntry(entry("Groceries"));
     await quiesce(w, a);
     const result = await a.engine.restore(structuredClone(a.engine.current()));
-    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: damaged, damagedFile: { path: `ledger/${damaged}.genesis.enc`, epoch: damaged, reason: "malformed" } });
+    const damagedFile = { path: `ledger/${damaged}.genesis.enc`, epoch: damaged, reason: "malformed" };
+    expect(result).toEqual({ kind: "replaced", epoch: expect.stringMatching(/^e000002-/), winner: damaged, damagedFile });
+    // The state names it at once: a caller waiting for damagedFile to be
+    // null again must not find it null before the next cycle and reload.
+    expect(a.engine.getState().damagedFile).toEqual(damagedFile);
     const epoch = (result as { epoch: string }).epoch;
     // The person deletes it: the restore it replaced wins, and the reload joins it.
     w.fake.removeFile(FULL, `ledger/${damaged}.genesis.enc`);
