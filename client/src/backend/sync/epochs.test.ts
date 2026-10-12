@@ -3,7 +3,7 @@ import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { findLedger, openGenesis, readBackup } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
-import { unseal } from "./records";
+import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
 import type { Op } from "./state";
 import { ALREADY_RESOLVED, NEEDS_NEW_EPOCH, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
@@ -554,6 +554,73 @@ describe("a newer epoch that can't be read (section 9.1)", () => {
   }
 });
 
+describe("a newer genesis no device can read never stops sync for good (ADR-0008)", () => {
+  const BAD = "e000002-0000000b";
+  /** Genesis files for BAD that no device here can read, and what each
+   * stops a device on. */
+  const unreadable: [string, () => Promise<{ text?: string; content?: unknown; key?: DeviceKey }>, string][] = [
+    ["garbage bytes (no passphrase needed)", async () => ({ text: "not a ledger file" }), "needsAttention"],
+    [
+      "a valid genesis cut in two (no passphrase needed)",
+      async () => {
+        const text = await seal({ fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, w.key);
+        return { text: text.slice(0, Math.floor(text.length / 2)) };
+      },
+      "needsAttention",
+    ],
+    ["a genesis under another key", async () => ({ content: { fv: 1, kind: "genesis", epoch: BAD, reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc }, key: await testKey() }), "needsPassphrase"],
+  ];
+
+  for (const [name, make, stuck] of unreadable) {
+    it(`${name}: a restore is numbered after it, every device switches to the restore, and a fresh device joins it`, async () => {
+      const a = await open({ login: "alex" });
+      const b = await open({ login: "sam" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a, b);
+      const bad = await make();
+      await plant(w, { kind: "genesis", epoch: BAD }, bad.text ?? bad.content, bad.key);
+      await a.backend.addEntry(entry("Bus"));
+      await b.backend.addEntry(entry("Rent"));
+      await cycle(w, a, b);
+      for (const d of [a, b]) {
+        expect(status(d)).toBe(stuck);
+        expect(d.engine.epochKey).toBe(EPOCH);
+      }
+      // a restores what it has (Bus included); its unpushed Bus is in the backup.
+      const result = await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true });
+      expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000003-[0-9a-f]{8}$/) });
+      const epoch = (result as { epoch: string }).epoch;
+      // b, stuck behind the same genesis, switches to the restore; its own
+      // unpushed Rent is offered (D18).
+      await cycle(w, b);
+      expect(b.engine.epochKey).toBe(epoch);
+      expect(status(b)).not.toBe(stuck);
+      expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Rent" } }] }]);
+      await b.engine.reapply(b.engine.leftBehind()[0].id);
+      // A fresh device finds and joins it (#8).
+      const a2 = await reload(a);
+      const fresh = await reload(await open({ login: "sam" }));
+      await quiesce(w, a2, b, fresh);
+      for (const d of [a2, b, fresh]) {
+        expect(d.engine.epochKey).toBe(epoch);
+        expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Rent"]);
+      }
+      expectConverged(a2, b, fresh);
+      expect(w.fake.violations).toEqual([]);
+    });
+  }
+
+  it("a newer genesis this build is too old to read still refuses a restore: updating the app is the fix", async () => {
+    const a = await open({ login: "alex" });
+    await plant(w, { kind: "genesis", epoch: BAD }, { fv: 2, kind: "genesis", epoch: BAD });
+    await cycle(w, a);
+    expect(status(a)).toBe("needsUpdate");
+    const before = puts(w).length;
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed" });
+    expect(puts(w).length).toBe(before);
+  });
+});
+
 describe("Lamport exhaustion (ADR-0008)", () => {
   /** A valid log from X whose one op is at the last L there is. */
   async function plantTopOfRange(): Promise<void> {
@@ -611,6 +678,23 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     expect(b.engine.epochKey).toBe(a.engine.epochKey);
     expectConverged(a, b);
     const fresh = await reload(b);
+    await quiesce(w, a, fresh);
+    expectConverged(a, fresh);
+  });
+
+  it("a newer genesis no device can read doesn't refuse every write: the next epoch is numbered after it", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    await plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, "not a ledger file");
+    await cycle(w, a);
+    expect(status(a)).toBe("needsAttention");
+    await a.backend.addEntry(entry("After"));
+    expect(a.engine.epochKey).toMatch(/^e000003-/);
+    expect(remarks(a)).toEqual(["Planted", "After"]);
+    await quiesce(w, a);
+    expect(status(a)).toBe("idle");
+    const fresh = await reload(await open({ login: "sam" }));
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
   });

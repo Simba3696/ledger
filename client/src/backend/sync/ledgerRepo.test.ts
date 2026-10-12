@@ -85,6 +85,37 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     expect(d.engine.getState().status).toBe("idle");
   });
 
+  it("restoring a backup over a ledger whose winning genesis is damaged numbers the restore after it, so a household with no working device can recover (ADR-0008)", async () => {
+    const backup = emptyDocument();
+    backup.debts.push({ id: "00000000-0000-4000-8000-000000000d01", updatedAt: 1, updatedBy: "alex", name: "Sam", amount: "5.00" });
+    const sealed = await encryptDocument({ fv: 1, kind: "genesis", epoch: "e000001-0000000b", reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() }, key.key, { salt: key.salt, iter: key.iter });
+    const damaged: [string, string][] = [
+      ["garbage bytes", "not a ledger file"],
+      ["a valid genesis cut in two", sealed.slice(0, Math.floor(sealed.length / 2))],
+    ];
+    for (const [name, text] of damaged) {
+      fake = createFakeGitHub({ repos: [{ owner: "alex", name: "ledger-data", private: true }], tokens: { github_pat_alex: { login: "alex", repos: [FULL], permission: "write" } } });
+      client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_alex", fetch: fake.fetch });
+      await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", text);
+      // A create is still refused: there is a ledger, if a damaged one.
+      expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 }), name).toEqual({ kind: "exists" });
+      const created = await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" });
+      expect(created, name).toMatchObject({ kind: "created", epoch: expect.stringMatching(/^e000002-[0-9a-f]{8}$/) });
+      if (created.kind !== "created") throw new Error(created.kind);
+      const found = await findLedger(remote());
+      expect(found, name).toMatchObject({ kind: "ledger", epoch: created.epoch });
+      if (found.kind !== "ledger") throw new Error(found.kind);
+      const opened = await openGenesis(found, key);
+      expect(opened.ok && opened.doc.debts.map((x) => x.name), name).toEqual(["Sam"]);
+    }
+  });
+
+  it("restoring a backup over a ledger whose genesis this key can't open is refused: the key may be the wrong one, and the ledger fine", async () => {
+    await plantCreate("e000001-0000000b", await testKey());
+    expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "exists" });
+    expect(puts()).toHaveLength(0);
+  });
+
   /** An epoch 1 genesis another device created, planted as it would land. */
   async function plantCreate(epoch: string, with_: DeviceKey): Promise<void> {
     const content = { fv: 1, kind: "genesis", epoch, reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() };
