@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
-import { findLedger, openGenesis, readBackup, takeRestoredEpoch } from "./ledgerRepo";
+import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
@@ -882,6 +882,57 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     // c's Bus, which the restore never saw, is offered to c (D18).
     expect(c.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Bus" } }] }]);
     expectConverged(a, b, c);
+  });
+
+  it("a lagging device is never told to delete a newer genesis other devices already joined: it is named as joined, and once its previous version is restored everyone converges (D26)", async () => {
+    let cOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex", wrapFetch: (inner) => (input, init) => (cOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    // c is away, still on the first epoch, with a change of its own.
+    cOffline = true;
+    await c.backend.addEntry(entry("Bus"));
+    // a and b move to a restore's epoch, and b writes there.
+    const restored = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(restored.kind).toBe("restored");
+    const epoch = (restored as { epoch: string }).epoch;
+    a = await reload(a);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe(epoch);
+    await b.backend.addEntry(entry("Rent"));
+    await cycle(w, b);
+    // That epoch's genesis is overwritten outside the app.
+    const path = `ledger/${epoch}.genesis.enc`;
+    const original = w.fake.file(FULL, path)!.text;
+    await w.fake.seedFile(FULL, path, "not a ledger file");
+    cOffline = false;
+    await cycle(w, c);
+    // Deleting it would strand a and b: c names it as joined, never deletable.
+    const joined = { path, epoch, reason: "joined" };
+    expect(c.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: joined });
+    expect(c.engine.epochKey).toBe(EPOCH);
+    const message = damagedFileMessage(c.engine.getState().damagedFile!);
+    expect(message).toContain("previous version");
+    expect(message).toContain("don't delete");
+    // A restore from c names it the same way, and a fresh join (#8) too.
+    expect(await c.engine.restore(structuredClone(c.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: joined });
+    expect(await findLedger({ client: c.client, branch: "main" })).toEqual({ kind: "malformed", epoch, damagedFile: joined });
+    // The person puts the file's previous version back from the repo's history.
+    await w.fake.seedFile(FULL, path, original);
+    await quiesce(w, a, b, c);
+    expect(c.engine.epochKey).toBe(epoch);
+    const [own] = c.engine.leftBehind();
+    expect(own).toMatchObject({ own: true, items: [{ kind: "add", record: { remarks: "Bus" } }] });
+    await c.engine.reapply(own.id);
+    await quiesce(w, a, b, c);
+    for (const d of [a, b, c]) {
+      expect(d.engine.getState()).toMatchObject({ status: "idle", damagedFile: null });
+      expect(remarks(d).sort()).toEqual(["Bus", "Groceries", "Rent"]);
+    }
+    expectConverged(a, b, c);
+    expect(w.fake.violations).toEqual([]);
   });
 
   it("a newer genesis this build is too old to read refuses a restore and names no file: updating the app is the fix", async () => {
