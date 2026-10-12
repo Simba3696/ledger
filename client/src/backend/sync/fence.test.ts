@@ -336,6 +336,24 @@ describe("Fence (pure)", () => {
     expect(fence.apply(relock, state, atOne.asOf).body).toEqual(relock);
   });
 
+  it("across an epoch switch: a write submitted before it has seen nothing of the new epoch, and is fenced against what the restore changed", () => {
+    const old = genesisState(emptyDocument());
+    const fence = new Fence();
+    fence.attach(0, {});
+    fence.join(old, opState(X, { L: 2, at: 0, by: "sam", vv: {}, del: [], set: [["lk/2026-05", true]] }));
+    fence.rendered(1);
+    const before = fence.pin();
+    expect(fence.renderedSeen(old.seen, before.asOf)).toEqual({ [X]: 2 });
+    // The restored ledger has the month unlocked.
+    const restored = genesisState(emptyDocument());
+    fence.switchEpoch(old, restored, true);
+    expect(fence.revision).toBe(2);
+    expect(fence.renderedSeen(restored.seen, before.asOf)).toEqual({});
+    // A form still showing it locked, untouched, leaves the restore's value.
+    expect(fence.apply({ set: [["lk/2026-05", true]], del: [] }, restored, before.asOf).body).toBeNull();
+    before.release();
+  });
+
   it("forgets everything on detach", () => {
     const state = genesisState(emptyDocument());
     const fence = new Fence();

@@ -2,6 +2,7 @@ import { ApiError } from "../ApiError";
 import { InvalidFileError, WrongPassphraseError } from "../crypto";
 import type { HostWrite } from "../document/DocumentBackend";
 import type { LedgerDocument } from "../document/types";
+import { isWritableDocument } from "../document/validate";
 import {
   GitHubAuthError,
   GitHubError,
@@ -19,11 +20,28 @@ import {
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
-import { epochMove, isEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { rememberRestore, winningEpochNow, writeGenesis, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
-import { LOCAL_FORMAT_VERSION, checkMeta, decodeDelta, decodeStoredState, isChainValue, seal, storedState, unseal, type Delta, type DeviceKey, type SyncMeta } from "./records";
+import {
+  LOCAL_FORMAT_VERSION,
+  checkMeta,
+  decodeDelta,
+  decodeOld,
+  decodeStoredState,
+  isChainValue,
+  seal,
+  storedOld,
+  storedState,
+  unseal,
+  type Delta,
+  type DeviceKey,
+  type OldEpoch,
+  type SyncMeta,
+} from "./records";
 import { rehomeReissue } from "./rehome";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds, type FileRead } from "./repoFiles";
 import { applyOp, cloneState, emptyState, genesisState, holdsOp, joinInto, opState, type Op, type SyncState } from "./state";
@@ -72,8 +90,11 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type V
 //   2. If the head is a commit this device hasn't fully handled, list
 //      ledger/ at it (one git tree).
 //   3. Pick the winning epoch. A listing older than what this device has
-//      joined ends the cycle. A newer epoch (a restore) halts the cycle
-//      until switching to it lands (restore, design step 6).
+//      joined ends the cycle. A newer epoch (a restore) wins outright: the
+//      device projects its old-epoch state above the restore's cut into
+//      groups of changes left behind, and in one transaction moves that
+//      state aside and starts the new epoch from its genesis under a new
+//      device id; then it reads the new epoch's files (section 9.3).
 //   4. Read every other device's log whose listed sha this device hasn't
 //      joined, by blob sha (never stale), and join each valid file whole;
 //      a malformed one halts only its own stream (section 12), and its sha
@@ -104,6 +125,13 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type V
 //
 // Separately, the device folds its saved `tail` into `base` once it grows
 // long (section 8.4), in one transaction.
+//
+// Epochs (section 9): restore() writes a backup as a new epoch's genesis,
+// based on what this device has seen; reapply() and discard() resolve a
+// group of changes a restore left behind, with an op carrying its re-apply
+// marker; exportBackup() seals the current document. When no Lamport value
+// is left (a crafted file's L near 2^50), the device restores its current
+// document as the next epoch and commits the write there.
 
 /** The engine's status (section 11). Only some are set by this half. */
 export type SyncStatus =
@@ -141,8 +169,51 @@ export interface EngineState {
   /** Records go only to this tab's memory (the browser refuses IndexedDB). */
   volatile: boolean;
   noticeCount: number;
+  /** Groups of changes a restore left behind still to review (section 9.3):
+   * every one shown, and of those this device's own (owner decision D18:
+   * own prominently, other devices' in a collapsed list). */
   leftBehindCount: number;
+  leftBehindOwnCount: number;
 }
+
+/** A group of changes a restore left behind, as the list shows it. */
+export interface LeftBehindView {
+  /** Its re-apply marker, "<oldEpoch>/<device>": what reapply() and
+   * discard() take. */
+  id: string;
+  epoch: string;
+  device: string;
+  /** This device's own changes (shown prominently, D18). */
+  own: boolean;
+  /** A login on the device's changes, or null. */
+  who: string | null;
+  /** The restore that left them behind. */
+  into: { epoch: string; by: string; at: number };
+  /** Another device already resolved this group (re-applied or discarded
+   * it), but this device's own changes are not all in effect: shown until
+   * this device resolves it too. */
+  resolvedElsewhere: boolean;
+  items: LeftBehindItem[];
+}
+
+/** What a restore did (section 9.2). */
+export type RestoreResult =
+  /** The backup is the new epoch's genesis. Clear this device's sync
+   * state and reload (#9): the device starts in it as a new device. */
+  | { kind: "restored"; epoch: string }
+  /** It landed, but a greater epoch was already listed: "Sam's restore
+   * replaced yours. [Restore again]". Clear and reload as for "restored". */
+  | { kind: "replaced"; epoch: string; winner: string }
+  /** Own changes are not in the repo yet and would be lost: "N changes on
+   * this device haven't synced. [Try again] [Restore anyway]". Nothing
+   * was written. */
+  | { kind: "unsynced"; pendingCount: number }
+  /** Not a document this build writes (isWritableDocument). */
+  | { kind: "invalid" }
+  /** Larger than every reader allows. Nothing was written. */
+  | { kind: "tooLarge"; detail: string }
+  /** The genesis didn't land. Nothing was replaced. */
+  | { kind: "failed"; detail: string };
 
 /** The sync bookkeeping a remote join may record with its delta. */
 export type MetaPatch = Partial<
@@ -261,6 +332,14 @@ export const OTHER_TAB = "Ledger is open in another tab. Close it there to use i
 export const LEDGER_UPDATED = "Ledger was updated on another device. Reload to get the new version.";
 /** The notice after a rehome (section 10.3). */
 export const REHOMED = "This device's sync identity was in use elsewhere; it now syncs as a new device. Nothing was lost.";
+/** Why a write is refused when no Lamport value is left in the epoch and
+ * the next epoch can't be written now (ADR-0008: Lamport exhaustion). */
+export const NEEDS_NEW_EPOCH = "Ledger needs to reach GitHub to save more changes. Try again when you're online.";
+/** Why reapply() or discard() is refused: the group is gone. */
+export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
+/** Why a write diffed in one epoch (or under one device id) is refused
+ * when the epoch switched (or the device rehomed) before it was saved. */
+const CHANGED_WHILE_SAVING = "Ledger changed while this was saving. Try again.";
 const NOT_LOADED = "Your ledger hasn't loaded yet.";
 const LOCK_NAME = "ledger:sync";
 /** Loads before giving up when every claim finds the records changed. */
@@ -400,6 +479,22 @@ interface Loaded {
   chainHead: string;
   /** Entries in `tail`. */
   tailCount: number;
+  leftBehind: Map<string, LeftBehindGroup>;
+  old: string | null;
+}
+
+/** A restore genesis written (section 9.2), or why not. */
+type RestoreWrite = { kind: "written"; genesis: NewEpoch } | { kind: "tooLarge" | "failed"; detail: string };
+
+/** A new epoch's genesis, read or written, to switch to (section 9.3). */
+interface NewEpoch {
+  epoch: string;
+  /** Its blob sha in the repo. */
+  sha: string;
+  state: SyncState;
+  basedOn: GenesisContent["basedOn"];
+  by: string;
+  at: number;
 }
 
 /** A notice's key: (winner op, loser op), so each pair is stored once. */
@@ -451,6 +546,17 @@ export class SyncEngine {
   #deviceSaveFailed = false;
   #noticeCount = 0;
   #leftBehindCount = 0;
+  #leftBehindOwnCount = 0;
+  /** Groups of changes restores left behind (section 9.3), by marker, as
+   * stored: shown or not by #isHidden. */
+  #leftBehind = new Map<string, LeftBehindGroup>();
+  /** The `old` record's text as last loaded or written: the previous
+   * epochs' states (records.ts OldEpoch), or null once none is kept. */
+  #oldText: string | null = null;
+  /** A tidy of hidden groups is queued. */
+  #tidying = false;
+  /** The next epoch being written because no Lamport value is left. */
+  #renumbering: Promise<void> | null = null;
   #snapshot: EngineState;
   readonly #listeners = new Set<() => void>();
 
@@ -635,7 +741,7 @@ export class SyncEngine {
       };
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
-      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0 }, true);
+      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), old: null }, true);
     }).then(() => this.#begin());
   }
 
@@ -670,6 +776,13 @@ export class SyncEngine {
    * write still saving, a whole-unit register would carry the unit as it
    * was before that write, and win with the later L. */
   beginWrite(): HostWrite & { ready: Promise<void> } {
+    const turn = this.#turn();
+    return { ready: turn.ready, commit: (next) => turn.commit(next), end: turn.end };
+  }
+
+  /** A write's turn (beginWrite), whose commit may also resolve a group a
+   * restore left behind (reapply, discard). */
+  #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, resolves?: string) => Promise<void>; end: () => void } {
     const pin = this.#fence.pin();
     const ready = this.#writesSettled;
     let ended!: () => void;
@@ -677,9 +790,9 @@ export class SyncEngine {
     this.#writesSettled = ready.then(() => end);
     return {
       ready,
-      commit: (next) => {
+      commit: (next, resolves) => {
         try {
-          return this.#commit(next, pin.asOf);
+          return this.#commit(next, pin.asOf, resolves);
         } catch (err) {
           return Promise.reject(err);
         }
@@ -696,20 +809,28 @@ export class SyncEngine {
    * turn among DocumentBackend's writes. At its turn, it clones current(),
    * runs `run` on the clone and commits it. `run` makes its own checks
    * (operations.ts). */
-  async amend(run: (doc: LedgerDocument) => void): Promise<void> {
-    const write = this.beginWrite();
+  amend(run: (doc: LedgerDocument) => void): Promise<void> {
+    return this.#amend(run);
+  }
+
+  /** amend(), and with `resolves` (a left-behind group's marker) the op
+   * carries it as `ra` even when `run` changes nothing, and the group is
+   * dropped from this device in the op's own transaction (section 9.4). */
+  async #amend(run: (doc: LedgerDocument) => void, resolves?: string): Promise<void> {
+    const write = this.#turn();
     try {
       await write.ready;
       const next = structuredClone(this.current());
       run(next);
-      await write.commit(next);
+      await write.commit(next, resolves);
     } finally {
       write.end();
     }
   }
 
-  /** `asOf`: the revision on screen when the write was submitted. */
-  #commit(next: LedgerDocument, asOf: number): Promise<void> {
+  /** `asOf`: the revision on screen when the write was submitted.
+   * `resolves`: a left-behind group's marker, carried as the op's `ra`. */
+  #commit(next: LedgerDocument, asOf: number, resolves?: string): Promise<void> {
     this.#assertWritable();
     // The epoch's genesis is a format this build can't read (section 12):
     // nothing is written until the app is updated.
@@ -720,29 +841,35 @@ export class SyncEngine {
     try {
       L = nextLamport(state.maxL, this.#lastAllocated);
     } catch (err) {
-      // A new epoch would make room (ADR-0008); that comes with restore.
-      if (err instanceof LamportExhausted) throw new ApiError(503, "Ledger can't number any more changes in this epoch.");
+      // No L is left in this epoch: the next epoch makes room, and the
+      // write commits there (ADR-0008). `next` was built from current(),
+      // which reads the same in the new epoch.
+      if (err instanceof LamportExhausted) return this.#renumber().then(() => this.#commit(next, asOf, resolves));
       throw err;
     }
     const body = diffDocuments(state, this.#doc!, next, { L, device: meta.deviceId });
-    if (!body) return Promise.resolve();
-    const fenced = this.#fence.apply(body, state, asOf);
-    if (!fenced.body && fenced.notices.length === 0) return Promise.resolve();
+    if (!body && resolves === undefined) return Promise.resolve();
+    const fenced = body ? this.#fence.apply(body, state, asOf) : { body: null, notices: [] };
+    if (!fenced.body && fenced.notices.length === 0 && resolves === undefined) return Promise.resolve();
     this.#lastAllocated = L;
     let op: Op | null = null;
-    if (fenced.body) {
+    if (fenced.body || resolves !== undefined) {
       const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
       if (meta.ownMaxL > 0) vv[meta.deviceId] = Math.max(vv[meta.deviceId] ?? 0, meta.ownMaxL);
-      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body.set, del: fenced.body.del };
+      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body?.set ?? [], del: fenced.body?.del ?? [], ...(resolves !== undefined ? { ra: [resolves] } : {}) };
       const problem = opProblem(op);
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
-    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L));
+    const writer = { epoch: meta.epochKey, device: meta.deviceId };
+    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, resolves));
   }
 
-  async #commitOp(op: Op | null, notices: FenceNotice[], L: number): Promise<void> {
+  async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, resolves?: string): Promise<void> {
     this.#assertWritable();
     const meta = this.#meta!;
+    // Diffed in another epoch, or under the id a rehome retired: its L and
+    // its diff mean nothing here.
+    if (meta.epochKey !== writer.epoch || meta.deviceId !== writer.device) throw new ApiError(503, CHANGED_WHILE_SAVING);
     const me = meta.deviceId;
     const writes: Omit<Mutation, "expect" | "meta"> = {};
     let nextMeta = meta;
@@ -759,6 +886,11 @@ export class SyncEngine {
       const mine: Tag = [L, me];
       writes.notices = { put: await Promise.all(notices.map(async (n): Promise<[string, string]> => [noticeKey(n, mine), await seal({ ...n, mine }, this.#key)])) };
     }
+    if (resolves !== undefined) {
+      writes.leftBehind = { delete: [resolves] };
+      // The last group resolved: the old states are no longer needed.
+      if ([...this.#leftBehind.keys()].every((marker) => marker === resolves) && this.#oldText !== null) writes.old = null;
+    }
     // A reload (stop) or a takeover while this was being sealed writes nothing.
     this.#assertWritable();
     await this.#mutate(nextMeta, writes);
@@ -770,7 +902,12 @@ export class SyncEngine {
       this.#chainHead = chain;
       this.#fence.wrote(this.#state!, me, op);
     }
+    if (resolves !== undefined) {
+      this.#leftBehind.delete(resolves);
+      if (writes.old === null) this.#oldText = null;
+    }
     this.#noticeCount += notices.length;
+    this.#refreshLeftBehind();
     this.#emit();
     if (op && !this.#stopped) {
       this.#onCommitted();
@@ -798,6 +935,8 @@ export class SyncEngine {
 
       const changes = this.#fence.join(this.#state!, source);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
+      // A re-apply marker joined may resolve a group left behind here.
+      this.#refreshLeftBehind();
       this.#emit();
     });
   }
@@ -1037,11 +1176,11 @@ export class SyncEngine {
       return null;
     }
     if (move === "switch") {
-      // A restore won (section 9.3). Switching to its epoch comes with
-      // restore; until then nothing more is read or written here.
-      this.#blocker = "needsAttention";
-      this.#log(`a newer epoch (${winner}) is in the repo; this build can't switch to it yet`);
-      return null;
+      // A restore won (section 9.3): switch to its epoch, then read that
+      // epoch's files from this same listing. Nothing more is read from or
+      // written to the old epoch.
+      if (!(await this.#switchToListed(listing, winner))) return null;
+      return this.#pull(listing);
     }
 
     const genesis = await this.#readGenesis(listing);
@@ -1528,7 +1667,10 @@ export class SyncEngine {
     const key = `${meta.epochKey}.${meta.deviceId}.${K}.${through}.${chain}`;
     if (this.#logText?.key === key) return this.#logText.value;
     const file: RepoFile = { kind: "log", epoch: meta.epochKey, device: meta.deviceId };
-    const content = { fv: FORMAT_VERSION, kind: "log", epoch: meta.epochKey, device: meta.deviceId, snapThrough: K, chain, ops: [...ops] };
+    // A device that switched to this epoch names the id it had before
+    // (section 9.3 step 3).
+    const prev = meta.prev ? { prev: meta.prev } : {};
+    const content = { fv: FORMAT_VERSION, kind: "log", epoch: meta.epochKey, device: meta.deviceId, ...prev, snapThrough: K, chain, ops: [...ops] };
     // Never publish what every other device would refuse.
     const check = checkRepoFile(file, content);
     if (!check.ok) return Promise.reject(new Error(`This device's own log would be refused: ${check.detail}`));
@@ -1835,10 +1977,14 @@ export class SyncEngine {
    * transaction replaces the state; the next push publishes the new log. It
    * takes a write turn, so no write is diffed across the change of id. */
   async #rehome(listing: Listing): Promise<void> {
+    const { epochKey, deviceId } = this.#meta!;
     const turn = this.beginWrite();
     try {
       await turn.ready;
       this.#assertWritable();
+      // The device switched epochs (or rehomed) while this waited: the fork
+      // was found in a history it no longer writes.
+      if (this.#meta!.epochKey !== epochKey || this.#meta!.deviceId !== deviceId) return;
       const rebuilt = await this.#coldJoin(listing);
       await this.#enqueue(async () => {
         this.#assertWritable();
@@ -1915,6 +2061,7 @@ export class SyncEngine {
         for (const [name, problem] of rebuilt.halted) this.#halted.set(name, problem);
         this.#gapWait = rebuilt.gap;
         this.#noticeCount++;
+        this.#refreshLeftBehind();
         this.#emit();
       });
     } finally {
@@ -1975,6 +2122,357 @@ export class SyncEngine {
       halted: streams.halted,
       gap: streams.gap,
     };
+  }
+
+  // --- Epochs (section 9) ------------------------------------------------------
+
+  /** The epoch this device syncs in, or null before a first start. After a
+   * restore's reload, compare it with takeRestoredEpoch() (ledgerRepo.ts):
+   * a greater one means another restore replaced this device's. */
+  get epochKey(): string | null {
+    return this.#meta?.epochKey ?? null;
+  }
+
+  /** Restore (#9, section 9.2): writes `doc`, a backup, as the genesis of
+   * the epoch after the winning one, based on what this device has seen.
+   * It runs one sync cycle first; if own changes are still not in the
+   * repo, it writes nothing and says how many, unless `discardUnsynced`.
+   * It takes a write turn, so no write is saved while it runs. On
+   * "restored" or "replaced" the caller clears this device's sync state
+   * (clearSyncState) and reloads, and the device starts in the winning
+   * epoch as a new device; the epoch written is remembered for the reload
+   * (rememberRestore). Throws for a token, repo or rate-limit answer. */
+  async restore(doc: LedgerDocument, { discardUnsynced = false }: { discardUnsynced?: boolean } = {}): Promise<RestoreResult> {
+    if (!isWritableDocument(doc)) return { kind: "invalid" };
+    const remote = this.#remote;
+    if (remote === null) throw new Error("This device has no repo to restore into");
+    this.#assertWritable();
+    await this.sync();
+    const turn = this.#turn();
+    try {
+      await turn.ready;
+      this.#assertWritable();
+      const pendingCount = this.#pendingCount();
+      if (pendingCount > 0 && !discardUnsynced) return { kind: "unsynced", pendingCount };
+      const written = await this.#writeRestore(structuredClone(doc));
+      if (written.kind !== "written") return written;
+      const epoch = written.genesis.epoch;
+      rememberRestore(epoch);
+      // Step 6: a restore that raced this one may have won.
+      const winner = await winningEpochNow(remote);
+      return winner !== null && compareEpochKeys(winner, epoch) > 0 ? { kind: "replaced", epoch, winner } : { kind: "restored", epoch };
+    } finally {
+      turn.end();
+    }
+  }
+
+  /** Export (#9, section 9.5): the current document, sealed with the
+   * household key in the repo files' format, the same as a genesis's
+   * `doc`, so an export restores as it is (readBackup, restore). */
+  exportBackup(): Promise<string> {
+    try {
+      return seal(structuredClone(this.current()), this.#key);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  /** The groups of changes restores left behind that are still to review
+   * (section 9.3): this device's own first, shown prominently, then other
+   * devices', for a collapsed list (owner decision D18). */
+  leftBehind(): LeftBehindView[] {
+    const state = this.#state;
+    if (state === null) return [];
+    return [...this.#leftBehind.values()]
+      .filter((group) => !this.#isHidden(group, state))
+      .sort((a, b) => Number(b.own) - Number(a.own) || compareEpochKeys(a.epoch, b.epoch) || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0))
+      .map((group) => ({
+        id: group.marker,
+        epoch: group.epoch,
+        device: group.device,
+        own: group.own,
+        who: group.who,
+        into: group.into,
+        resolvedElsewhere: state.ra.has(group.marker),
+        items: leftBehindItems(group),
+      }));
+  }
+
+  /** What reapply(id) would apply and skip now, without writing anything. */
+  previewReapply(id: string): ReapplyResult {
+    const group = this.#leftBehind.get(id);
+    if (!group) throw new ApiError(404, ALREADY_RESOLVED);
+    return reapplyTo(structuredClone(this.current()), this.#state!, group, { at: this.#now(), by: this.#actor });
+  }
+
+  /** Re-apply (section 9.4): one write, at its turn, that puts the group's
+   * changes back on the current document and carries its marker, which
+   * resolves the group on every device. What can't be applied is skipped
+   * and listed. */
+  async reapply(id: string): Promise<ReapplyResult> {
+    let result = undefined as ReapplyResult | undefined;
+    await this.#amend((doc) => {
+      const group = this.#leftBehind.get(id);
+      if (!group) throw new ApiError(404, ALREADY_RESOLVED);
+      result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
+    }, id);
+    return result!;
+  }
+
+  /** Discard (section 9.4): an op with only the group's marker. */
+  discard(id: string): Promise<void> {
+    return this.#amend(() => {
+      if (!this.#leftBehind.has(id)) throw new ApiError(404, ALREADY_RESOLVED);
+    }, id);
+  }
+
+  /** Section 9.2 steps 3 to 5: the genesis of the epoch after the winner of
+   * a fresh listing (and after this device's own), holding `doc`, based on
+   * what this device has seen with every own op, written once. */
+  async #writeRestore(doc: LedgerDocument): Promise<RestoreWrite> {
+    const remote = this.#remote!;
+    const meta = this.#meta!;
+    const seen: VersionVector = { ...vectorOf(this.#state!.seen), [meta.deviceId]: meta.ownMaxL };
+    const basedOn = { epoch: meta.epochKey, seen };
+    const listed = await winningEpochNow(remote);
+    const epoch = nextEpochKey(listed !== null && compareEpochKeys(listed, meta.epochKey) > 0 ? listed : meta.epochKey);
+    const content: GenesisContent = { epoch, reason: "restore", by: this.#actor, at: this.#now(), basedOn, doc };
+    this.#putTimes.push(this.#monotonic());
+    const written = await writeGenesis(remote, content, this.#key, this.#bounds.write);
+    if (written.kind !== "written") return written;
+    return { kind: "written", genesis: { epoch, sha: written.sha, state: genesisState(doc), basedOn, by: content.by, at: content.at } };
+  }
+
+  /** No Lamport value is left in this epoch (a file's L near 2^50): the
+   * device restores its current document as the next epoch, based on
+   * everything it has seen, and switches to it in place, as every other
+   * device then does (ADR-0008). Its own groups left behind are empty: the
+   * cut holds all it has. Needs the repo; without it the write is refused
+   * with NEEDS_NEW_EPOCH, and the next one tries again. */
+  #renumber(): Promise<void> {
+    this.#renumbering ??= (async () => {
+      try {
+        if (this.#remote === null) throw new ApiError(503, NEEDS_NEW_EPOCH);
+        const from = this.#meta!.epochKey;
+        this.#log("no Lamport value is left in this epoch; the ledger is restored as the next one");
+        let written: RestoreWrite;
+        try {
+          written = await this.#writeRestore(structuredClone(this.#doc!));
+        } catch (err) {
+          this.#log("writing the next epoch failed", err);
+          throw new ApiError(503, NEEDS_NEW_EPOCH);
+        }
+        if (written.kind !== "written") {
+          this.#log(`writing the next epoch failed: ${written.detail}`);
+          throw new ApiError(503, NEEDS_NEW_EPOCH);
+        }
+        if (!(await this.#switchEpoch(from, written.genesis))) throw new ApiError(503, CHANGED_WHILE_SAVING);
+      } finally {
+        this.#renumbering = null;
+      }
+    })();
+    return this.#renumbering;
+  }
+
+  /** Section 9.3 step 1: reads the winning epoch's genesis from `listing`
+   * and, at a write turn of its own, switches to it. A genesis that can't
+   * be read keeps the device where it is, writing nothing more there:
+   * needsUpdate for a newer format, needsPassphrase for a key that doesn't
+   * fit, needsAttention for anything else (section 9.1). */
+  async #switchToListed(listing: Listing, winner: string): Promise<boolean> {
+    const name = repoFileName({ kind: "genesis", epoch: winner });
+    const listed = listing.files.get(name)!;
+    const read = await this.#read(name, listed);
+    if (!read.ok || read.read.file.kind !== "genesis") {
+      const problem = read.ok ? "malformed" : read.problem;
+      this.#blocker = problem === "needsUpdate" ? "needsUpdate" : problem === "malformed" ? "needsAttention" : "needsPassphrase";
+      this.#log(`a restore's epoch ${winner} can't be read (${problem}); this device stays where it is and sends nothing more`);
+      return false;
+    }
+    const file = read.read.file;
+    const from = this.#meta!.epochKey;
+    const turn = this.#turn();
+    try {
+      await turn.ready;
+      this.#assertWritable();
+      return await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at });
+    } finally {
+      turn.end();
+    }
+  }
+
+  /** Switches from epoch `from` to `genesis`'s, in the mutation queue;
+   * false when the device is no longer on `from` (another switch got there
+   * first). The caller holds a write turn, so no write is diffed across it. */
+  #switchEpoch(from: string, genesis: NewEpoch): Promise<boolean> {
+    return this.#enqueue(() => this.#adoptEpoch(from, genesis));
+  }
+
+  /** Section 9.3 steps 2 and 3. The old-epoch state, which holds every own
+   * op, pushed or not, is projected above the restore's cut (its basedOn
+   * when based on this epoch, else nothing) into groups left behind. In one
+   * transaction the old state moves into `old`, the groups into
+   * `leftBehind`, and the new epoch starts from its genesis under a new
+   * device id, its first log naming the old one as `prev`. Two racing
+   * restores: a device that switched to the losing one switches again, its
+   * writes there all left behind (cut {}); the epoch both were based on is
+   * projected again with the winner's cut, from the state kept in `old`,
+   * leaving out groups resolved meanwhile. */
+  async #adoptEpoch(from: string, genesis: NewEpoch): Promise<boolean> {
+    this.#assertWritable();
+    const meta = this.#meta!;
+    if (meta.epochKey !== from) return false;
+    const pre = this.#state!;
+    const into = { epoch: genesis.epoch, by: genesis.by, at: genesis.at, state: genesis.state };
+    const basedOn = genesis.basedOn;
+    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : null);
+    const groups = new Map([...this.#leftBehind].filter(([, group]) => !this.#isHidden(group, pre)));
+    const kept = await this.#readOld();
+    for (const entry of kept) {
+      const cut = cutFor(entry.epoch);
+      if (cut === null || entry.epoch === from) continue;
+      for (const marker of [...groups.keys()]) if (marker.startsWith(`${entry.epoch}/`)) groups.delete(marker);
+      for (const group of leftBehind(entry.state, cut, into, { epoch: entry.epoch, me: entry.device })) if (!pre.ra.has(group.marker)) groups.set(group.marker, group);
+    }
+    for (const group of leftBehind(pre, cutFor(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
+    // The epoch switched from is kept even with no group: a restore that
+    // raced this one, based on it with another cut, may leave something of
+    // it behind. An earlier one is kept only while a group from it is.
+    const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
+    const olds: OldEpoch[] = [...kept.filter((entry) => entry.epoch !== from && hasGroups(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
+
+    const device = newDeviceId();
+    const next = cloneState(genesis.state);
+    const genesisName = repoFileName({ kind: "genesis", epoch: genesis.epoch });
+    const nextMeta: SyncMeta = {
+      formatVersion: LOCAL_FORMAT_VERSION,
+      deviceId: device,
+      epochKey: genesis.epoch,
+      maxL: next.maxL,
+      ownMaxL: 0,
+      K: 0,
+      ownLogSha: null,
+      ownLogThrough: 0,
+      lastSentLogSha: null,
+      lastSentLogThrough: 0,
+      ownLogK: 0,
+      lastSentLogK: 0,
+      ownSnapSha: null,
+      lastSentSnapSha: null,
+      lastSentSnapThrough: 0,
+      joined: { [genesisName]: genesis.sha },
+      seen: vectorOf(next.seen),
+      logReach: {},
+      snapReach: {},
+      lastSeenCommit: null,
+      refEtag: null,
+      writerToken: meta.writerToken,
+      prev: { epoch: from, device: meta.deviceId },
+    };
+    const base = await seal(storedState(next), this.#key);
+    const oldText = olds.length > 0 ? await seal(storedOld(olds), this.#key) : null;
+    const put = await Promise.all([...groups.values()].map(async (group): Promise<[string, string]> => [group.marker, await seal(group, this.#key)]));
+    const remove = [...this.#leftBehind.keys()].filter((marker) => !groups.has(marker));
+    this.#assertWritable();
+    await this.#mutate(nextMeta, {
+      base,
+      clearTail: true,
+      ownLog: { dropThrough: Number.MAX_SAFE_INTEGER },
+      clearChain: true,
+      old: oldText,
+      leftBehind: { put, delete: remove },
+    });
+
+    const before = this.#doc!;
+    const doc = materialize(next);
+    this.#fence.switchEpoch(pre, next, canonicalJson({ ...before, tombstones: [] }) !== canonicalJson({ ...doc, tombstones: [] }));
+    this.#state = next;
+    this.#doc = doc;
+    this.#ownLog = [];
+    this.#chainHead = CHAIN_START;
+    this.#lastAllocated = 0;
+    this.#genesis = { name: genesisName, sha: genesis.sha, state: genesis.state };
+    this.#halted.clear();
+    this.#unlistedSeen.clear();
+    this.#waitingLogs.clear();
+    this.#gapWait = false;
+    this.#genesisBlocked = false;
+    this.#logText = null;
+    this.#logReady = null;
+    this.#snapText = null;
+    this.#leftBehind = groups;
+    this.#oldText = oldText;
+    this.#refreshLeftBehind();
+    this.#log(`a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind`);
+    this.#emit();
+    return true;
+  }
+
+  /** The previous epochs' states kept in `old`. One that can't be read is
+   * logged and left out: its groups stay as they were. */
+  async #readOld(): Promise<OldEpoch[]> {
+    if (this.#oldText === null) return [];
+    try {
+      const old = decodeOld(await this.#open(this.#oldText));
+      if (typeof old === "string") throw new Error(old);
+      return old;
+    } catch (err) {
+      this.#log("the previous epochs' saved states can't be read; their groups stay as they are", err);
+      return [];
+    }
+  }
+
+  /** Whether a group is no longer shown: its marker joined (another device
+   * resolved it) and, for this device's own changes, every one of them is
+   * in effect. Owner decision D18: a device sees its own changes until they
+   * are in effect or it resolves them, since only it holds the ones it
+   * never pushed. */
+  #isHidden(group: LeftBehindGroup, state: SyncState): boolean {
+    if (!state.ra.has(group.marker)) return false;
+    return !group.own || inEffect(group, state);
+  }
+
+  /** Counts the groups shown, and (unless `tidy` is false) drops the
+   * hidden ones from the device. */
+  #refreshLeftBehind(tidy = true): void {
+    const state = this.#state;
+    let shown = 0;
+    let own = 0;
+    let hidden = false;
+    if (state !== null) {
+      for (const group of this.#leftBehind.values()) {
+        if (this.#isHidden(group, state)) hidden = true;
+        else {
+          shown++;
+          if (group.own) own++;
+        }
+      }
+    }
+    this.#leftBehindCount = shown;
+    this.#leftBehindOwnCount = own;
+    if (hidden && tidy) this.#tidyLeftBehind();
+  }
+
+  /** Drops the groups no longer shown, and the old states once no group is
+   * left, in one transaction. Housekeeping: a failure is only logged, and
+   * the next refresh tries again. */
+  #tidyLeftBehind(): void {
+    if (this.#tidying) return;
+    this.#tidying = true;
+    this.#enqueue(async () => {
+      try {
+        this.#assertWritable();
+        const state = this.#state!;
+        const hidden = [...this.#leftBehind.values()].filter((group) => this.#isHidden(group, state)).map((group) => group.marker);
+        if (hidden.length === 0) return;
+        const none = hidden.length === this.#leftBehind.size && this.#oldText !== null;
+        await this.#mutate(this.#meta!, { leftBehind: { delete: hidden }, ...(none ? { old: null } : {}) }, true);
+        for (const marker of hidden) this.#leftBehind.delete(marker);
+        if (none) this.#oldText = null;
+      } finally {
+        this.#tidying = false;
+      }
+    }).catch((err: unknown) => this.#log("tidying the changes restores left behind failed; it will be tried again", err));
   }
 
   // --- Status ---------------------------------------------------------------
@@ -2127,7 +2625,6 @@ export class SyncEngine {
         return;
       }
       this.#noticeCount = records.noticeCount;
-      this.#leftBehindCount = records.leftBehindCount;
       this.#adopt(claim === "failed" ? loaded : { ...loaded, meta: claim }, claim !== "failed");
       return;
     }
@@ -2163,6 +2660,11 @@ export class SyncEngine {
     this.#chainHead = loaded.chainHead;
     this.#tailCount = loaded.tailCount;
     this.#lastAllocated = 0;
+    this.#leftBehind = loaded.leftBehind;
+    this.#oldText = loaded.old;
+    // Counted only: hidden groups are dropped by the next refresh, once the
+    // load has finished.
+    this.#refreshLeftBehind(false);
     this.#needsInit = false;
     this.#unreadable = null;
     this.#setStatus("idle");
@@ -2170,6 +2672,9 @@ export class SyncEngine {
 
   #fail(reason: UnreadableReason): void {
     this.#meta = this.#state = this.#doc = null;
+    this.#leftBehind = new Map();
+    this.#oldText = null;
+    this.#refreshLeftBehind(false);
     this.#needsInit = false;
     this.#unreadable = reason;
     this.#setStatus("unreadable");
@@ -2225,7 +2730,13 @@ export class SyncEngine {
         if (!isChainValue(value)) return malformed("the chain is malformed");
         chainHead = value;
       }
-      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length };
+      const leftBehind = new Map<string, LeftBehindGroup>();
+      for (const [key, text] of records.leftBehind) {
+        const group = checkGroup(await this.#open(text));
+        if (group === null || group.marker !== key) return malformed("a group of changes left behind is malformed");
+        leftBehind.set(key, group);
+      }
+      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, old: records.old ?? null };
     } catch (err) {
       if (err instanceof Undecryptable) {
         this.#log("the saved sync state doesn't decrypt with this device's key", err);
@@ -2319,6 +2830,7 @@ export class SyncEngine {
       volatile: this.#store.volatile(),
       noticeCount: this.#noticeCount,
       leftBehindCount: this.#leftBehindCount,
+      leftBehindOwnCount: this.#leftBehindOwnCount,
     };
   }
 

@@ -76,6 +76,10 @@ export interface SyncMeta {
   refEtag: string | null;
   /** The tab that may write (section 10.2): every mutation checks it. */
   writerToken: string;
+  /** The epoch and device id this device synced as before it switched to
+   * this epoch (section 9.3 step 3): written into its log here as `prev`.
+   * Absent on a device that started in this epoch. */
+  prev?: { epoch: string; device: string };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -127,8 +131,10 @@ export function checkMeta(value: unknown): MetaCheck {
   }
   const bad = (detail: string): MetaCheck => ({ ok: false, problem: "malformed", detail });
   if (fv !== LOCAL_FORMAT_VERSION) return bad("meta format version is malformed");
-  const keys = Object.keys(value);
+  const keys = Object.keys(value).filter((key) => key !== "prev");
   if (keys.length !== META_KEYS.length || !META_KEYS.every((key) => Object.hasOwn(value, key))) return bad("meta has the wrong keys");
+  const prev = value.prev;
+  if (prev !== undefined && !(isPlainObject(prev) && Object.keys(prev).length === 2 && isEpochKey(prev.epoch) && isDeviceId(prev.device))) return bad("meta prev is malformed");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
   if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough, value.ownLogK, value.lastSentLogK, value.lastSentSnapThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
@@ -195,6 +201,37 @@ function genesisPart(value: unknown): SyncState {
 export function decodeStoredState(value: unknown): SyncState | string {
   if (!isPlainObject(value) || Object.keys(value).length !== 3 || !Object.hasOwn(value, "state")) return "base has the wrong keys";
   return decodeState(value.state, value.seen as VersionVector, value.maxL as number, genesisPart(value.state));
+}
+
+// --- old: the previous epochs' states ----------------------------------------
+
+/** One previous epoch this device synced in, and its state there when a
+ * restore replaced it (section 9.3): the epoch last switched from, and any
+ * earlier one while a left-behind group from it is unresolved, so a later
+ * restore based on that epoch (two racing restores) can project it again
+ * with its own cut. */
+export interface OldEpoch {
+  epoch: string;
+  device: string;
+  state: SyncState;
+}
+
+/** The `old` record's value. */
+export function storedOld(entries: readonly OldEpoch[]): unknown {
+  return { entries: entries.map(({ epoch, device, state }) => ({ epoch, device, state: storedState(state) })) };
+}
+
+/** An `old` record's value back, or why it is malformed. */
+export function decodeOld(value: unknown): OldEpoch[] | string {
+  if (!isPlainObject(value) || !Array.isArray(value.entries)) return "old is malformed";
+  const entries: OldEpoch[] = [];
+  for (const entry of value.entries as unknown[]) {
+    if (!isPlainObject(entry) || !isEpochKey(entry.epoch) || !isDeviceId(entry.device)) return "old entry is malformed";
+    const state = decodeStoredState(entry.state);
+    if (typeof state === "string") return state;
+    entries.push({ epoch: entry.epoch, device: entry.device, state });
+  }
+  return entries;
 }
 
 // --- tail and ownLog: deltas ----------------------------------------------

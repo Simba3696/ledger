@@ -11,7 +11,7 @@ import { testKey } from "./localTestkit";
 import { WriterTokenMismatch, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
-import { genesisState, type Op } from "./state";
+import { genesisState, type Op, type SyncState } from "./state";
 import { SyncEngine, type PageEvents, type SyncEngineOptions } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { docText, emptyDocument } from "./testkit";
@@ -68,8 +68,8 @@ export class MemoryStore implements SyncStore {
       ownLog: ascending(r.ownLog),
       chainHead: ascending(r.chain).at(-1) ?? null,
       noticeCount: r.notices.size,
-      leftBehindCount: r.leftBehind.size,
-      hasOld: r.old !== undefined,
+      leftBehind: [...r.leftBehind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      old: r.old,
     };
   }
 
@@ -207,17 +207,20 @@ export type DeviceOptions = Partial<SyncEngineOptions> & {
   wrapFetch?: (inner: typeof fetch) => typeof fetch;
   /** Don't settle the first cycle. */
   noSettle?: boolean;
+  /** The epoch and state a first start begins from (default: the world's
+   * genesis), as #8 join finds them (findLedger, openGenesis). */
+  init?: { epoch: string; state: SyncState };
 };
 
 /** An engine as the app runs one, over the world's repo: started (and on a
  * first start initialised from the genesis), with a DocumentBackend over
  * SyncedHost, its requests tagged with its current device id so the fake
  * asserts it writes only its own files. Its first cycle has run. */
-export async function device(w: World, { store = new MemoryStore(), login = "alex", wrapFetch, noSettle, ...options }: DeviceOptions = {}): Promise<Device> {
+export async function device(w: World, { store = new MemoryStore(), login = "alex", wrapFetch, noSettle, init, ...options }: DeviceOptions = {}): Promise<Device> {
   const delays: number[] = [];
   const logs: string[] = [];
   let engine: SyncEngine | null = null;
-  const tagged: typeof fetch = (input, init) => w.fake.fetchAs(engine?.deviceId ?? "dnone")(input, init);
+  const tagged: typeof fetch = (input, request) => w.fake.fetchAs(engine?.deviceId ?? "dnone")(input, request);
   const client = createGitHubClient({ owner: OWNER, repo: REPO, token: `github_pat_${login}`, fetch: wrapFetch ? wrapFetch(tagged) : tagged });
   engine = new SyncEngine({
     key: w.key,
@@ -236,7 +239,7 @@ export async function device(w: World, { store = new MemoryStore(), login = "ale
     ...options,
   });
   await engine.start();
-  if (engine.getState().needsInit) await engine.initialize(EPOCH, genesisState(w.doc));
+  if (engine.getState().needsInit) await engine.initialize(init?.epoch ?? EPOCH, init?.state ?? genesisState(w.doc));
   if (!noSettle) await engine.sync();
   const host = new SyncedHost(engine);
   const backend = new DocumentBackend({ host, now: options.now ?? (() => w.clock.wall), actor: login, newId: () => crypto.randomUUID() });

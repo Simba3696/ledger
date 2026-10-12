@@ -60,8 +60,10 @@ export interface StoredRecords {
   /** The chain entry with the greatest L, or null when there is none. */
   chainHead: [L: number, text: string] | null;
   noticeCount: number;
-  leftBehindCount: number;
-  hasOld: boolean;
+  /** Restore leftovers (section 9.3), by key. */
+  leftBehind: [key: string, text: string][];
+  /** The previous epochs' states after a restore, if kept. */
+  old: string | undefined;
 }
 
 /** One transaction's writes. `meta` is always rewritten, so every mutation
@@ -264,7 +266,7 @@ async function readAll(db: IDBDatabase): Promise<StoredRecords | null> {
   const tx = db.transaction([...STORES], "readonly");
   const store = (name: StoreName) => tx.objectStore(name);
   const done = finished(tx, () => null);
-  const [meta, base, tail, ownKeys, ownValues, chainCursor, noticeCount, leftBehindCount, old, counts] = await Promise.all([
+  const [meta, base, tail, ownKeys, ownValues, chainCursor, noticeCount, leftKeys, leftValues, old, counts] = await Promise.all([
     settle(store("meta").get(META_KEY)),
     settle(store("base").get(BASE_KEY)),
     settle(store("tail").getAll()),
@@ -272,7 +274,8 @@ async function readAll(db: IDBDatabase): Promise<StoredRecords | null> {
     settle(store("ownLog").getAll()),
     settle(store("chain").openCursor(null, "prev")),
     settle(store("notices").count()),
-    settle(store("leftBehind").count()),
+    settle(store("leftBehind").getAllKeys()),
+    settle(store("leftBehind").getAll()),
     settle(store("old").get(OLD_KEY)),
     Promise.all(STORES.map((name) => settle(store(name).count()))),
     done,
@@ -290,8 +293,8 @@ async function readAll(db: IDBDatabase): Promise<StoredRecords | null> {
     ownLog: (ownKeys as number[]).map((L, i) => [L, ownValues[i] as string]),
     chainHead: chainCursor ? [chainCursor.key as number, chainCursor.value as string] : null,
     noticeCount,
-    leftBehindCount,
-    hasOld: old !== undefined,
+    leftBehind: (leftKeys as string[]).map((key, i) => [key, leftValues[i] as string]),
+    old: old as string | undefined,
   };
 }
 
@@ -381,8 +384,8 @@ function readMemory(): StoredRecords | null {
     ownLog: ascending(memory.ownLog),
     chainHead: chain.at(-1) ?? null,
     noticeCount: memory.notices.size,
-    leftBehindCount: memory.leftBehind.size,
-    hasOld: memory.old !== undefined,
+    leftBehind: [...memory.leftBehind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    old: memory.old,
   };
 }
 

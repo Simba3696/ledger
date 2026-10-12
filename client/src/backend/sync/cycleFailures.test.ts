@@ -522,14 +522,15 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     expect(remarks(a).sort()).toEqual(["Bus", "Groceries"]);
   });
 
-  it("a newer epoch in the repo stops the cycle until switching epochs lands (restore): nothing more is written here", async () => {
+  it("a newer epoch in the repo wins: the device switches to it and writes nothing more to the old one (section 9.3, epochs.test.ts)", async () => {
     const a = await open();
     await plant(w, { kind: "genesis", epoch: "e000002-0000000b" }, { fv: 1, kind: "genesis", epoch: "e000002-0000000b", reason: "restore", by: "sam", at: 2, basedOn: null, doc: w.doc });
     await a.backend.addEntry(ENTRY);
     await cycle(w, a);
-    expect(status(a)).toBe("needsAttention");
+    expect(a.engine.epochKey).toBe("e000002-0000000b");
+    expect(status(a)).toBe("idle");
     expect(puts(w)).toHaveLength(0);
-    expect(a.engine.getState().pendingCount).toBe(1);
+    expect(a.engine.getState()).toMatchObject({ pendingCount: 0, leftBehindCount: 1, leftBehindOwnCount: 1 });
   });
 
   it("idle devices make no PUT over 50 polls under ±30 days of clock skew, and each idle poll is one request (AC9, B3)", async () => {
