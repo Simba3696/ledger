@@ -446,6 +446,41 @@ describe("re-apply and discard (section 9.4)", () => {
     expect((await b.store.load())?.leftBehind).toEqual([]);
   });
 
+  it("a device's newer unpushed edit survives another device re-applying its group from an older view: its own group shows again (D18)", async () => {
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi", 10));
+    await cycle(w, b, c);
+    // b changes Taxi to 20 and never pushes it: c's view of b's group has 10.
+    await b.backend.updateEntry(2026, 5, await row(b, "Taxi"), { amount: 20, remarks: "Taxi", category: "food", isCard: false });
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    a = await reload(a);
+    await cycle(w, b, c);
+    const [own] = b.engine.leftBehind();
+    const [theirs] = c.engine.leftBehind();
+    expect(own.id).toBe(theirs.id);
+    // c writes more first, so its re-apply's L is the greater: its 10 wins.
+    await c.backend.addEntry(entry("Pens"));
+    await c.backend.addEntry(entry("Rent"));
+    await Promise.all([b.engine.reapply(own.id), c.engine.reapply(theirs.id)]);
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    const taxi = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).find((e) => e.remarks === "Taxi")!;
+    expect(taxi(a).amount).toBe("10.00");
+    expect(b.engine.leftBehind()).toMatchObject([{ id: own.id, own: true, resolvedElsewhere: true, items: [{ kind: "add", record: { amount: "20.00" } }] }]);
+    expect(b.engine.getState().leftBehindOwnCount).toBe(1);
+    await b.engine.reapply(own.id);
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    expect(taxi(a).amount).toBe("20.00");
+    for (const d of [b, c]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+
   it("two devices re-applying the same group at once is harmless: one record, everywhere", async () => {
     const { a2, b, c } = await leftOnTwo();
     const [mine] = b.engine.leftBehind();
