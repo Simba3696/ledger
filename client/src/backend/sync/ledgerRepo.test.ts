@@ -137,6 +137,22 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     }
   });
 
+  it("a damaged winner on a cut listing is never named: a greater epoch may be left out, and deleting a genesis under it would leave it uncounted (D26)", async () => {
+    const cut: Pick<GitHubClient, "getRef" | "listDir" | "readBlob" | "putFile"> = {
+      getRef: (...args) => client.getRef(...args),
+      readBlob: (...args) => client.readBlob(...args),
+      putFile: (...args) => client.putFile(...args),
+      listDir: async (...args) => ({ ...(await client.listDir(...args)), truncated: true }),
+    };
+    await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", "not a ledger file");
+    expect(await findLedger({ client: cut, branch: "main" })).toEqual({ kind: "unknown" });
+    expect(await createLedger({ client: cut, branch: "main" }, key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "unknown" });
+    const other = await testKey();
+    await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", await encryptDocument({ fv: 1, kind: "genesis" }, other.key, { salt: other.salt, iter: other.iter }));
+    expect(await createLedger({ client: cut, branch: "main" }, key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "unknown" });
+    expect(puts()).toHaveLength(0);
+  });
+
   /** An epoch 1 genesis another device created, planted as it would land. */
   async function plantCreate(epoch: string, with_: DeviceKey): Promise<void> {
     const content = { fv: 1, kind: "genesis", epoch, reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() };
