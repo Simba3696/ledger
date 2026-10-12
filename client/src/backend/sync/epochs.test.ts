@@ -751,6 +751,29 @@ describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", 
     expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000002-/), winnerUnknown: true });
   });
 
+  it("one that leaves out a restore's genesis that got no answer settles nothing: writes stay refused until a full listing says it didn't land", async () => {
+    // Three tree entries: the folder, a's log and the first genesis. A file
+    // sorting after them makes every listing cut, and a restore's genesis
+    // would sort after them too.
+    w = await world({ fake: { treeEntryLimit: 3 } });
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await cycle(w, a);
+    await w.fake.seedFile(FULL, "ledger/zz-notes.txt", "not a sync file");
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+    await cycle(w, a);
+    // The cut listing can't show the genesis is absent: it may have landed.
+    await expect(a.backend.addEntry(entry("Bus"))).rejects.toMatchObject({ status: 503 });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    // A full listing without it settles it: it didn't land, and writes go on.
+    w.fake.removeFile(FULL, "ledger/zz-notes.txt");
+    await cycle(w, a);
+    await a.backend.addEntry(entry("Bus"));
+    expect(remarks(a)).toEqual(["Groceries", "Bus"]);
+  });
+
   it("one that doesn't show this device's epoch winning: nothing is written, and the restore can be tried again", async () => {
     // One tree entry: the folder. Every genesis is cut.
     w = await world({ fake: { treeEntryLimit: 1 } });
