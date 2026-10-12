@@ -2669,7 +2669,10 @@ export class SyncEngine {
    * everything it has seen, and switches to it in place, as every other
    * device then does (ADR-0008). Its own groups left behind are empty: the
    * cut holds all it has. Needs the repo; without it the write is refused
-   * with NEEDS_NEW_EPOCH, and the next one tries again. */
+   * with NEEDS_NEW_EPOCH, and the next one tries again. While a newer
+   * genesis this device can't open is listed, no epoch is written past it
+   * (owner decision D26): the write is refused with a message naming the
+   * file, and goes through once it is deleted. */
   #renumber(): Promise<void> {
     this.#renumbering ??= (async () => {
       try {
