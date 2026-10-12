@@ -691,10 +691,17 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
     await cycle(w, b);
     expect(remarks(b).sort()).toEqual(["Bus", "Groceries"]);
     expect(b.engine.leftBehind()).toEqual([]);
-    // E2a -> E2b: Sam's restore of the first epoch had seen Bus too.
+    // b writes in E2a.
+    await b.backend.addEntry(entry("Pens"));
+    // E2a -> E2b: Sam's restore of the first epoch had seen Bus too. b's
+    // write in E2a is left behind (cut {}), and b discards it, so the only
+    // group left goes: `old` is trimmed to what it must keep (#oldKeeping),
+    // the epoch switched from (E2a) and the one E2b is based on (E1).
     await plantRestore("e000002-fffffff0", backup, { [oldB]: busL });
     await cycle(w, b);
     expect(b.engine.epochKey).toBe("e000002-fffffff0");
+    expect(offered(b)).toEqual(["add:Pens"]);
+    await b.engine.discard(b.engine.leftBehind()[0].id);
     expect(offered(b)).toEqual([]);
     // E2b -> E2c: another restore of the first epoch, which never saw Bus.
     await plantRestore("e000002-ffffffff", backup);
