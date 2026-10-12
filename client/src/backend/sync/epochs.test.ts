@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
-import { findLedger, openGenesis, readBackup } from "./ledgerRepo";
+import { findLedger, openGenesis, readBackup, takeRestoredEpoch } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
@@ -311,6 +311,32 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     const landed = await c.engine.restore(structuredClone(c.engine.current()));
     if (landed.kind !== "restored") throw new Error(landed.kind);
     expect(c.engine.getState().restore).toEqual({ state: "landed", epoch: landed.epoch });
+  });
+
+  it("a restore that a full listing shows never landed is no longer remembered for the reload; one that landed is", async () => {
+    const items = new Map<string, string>();
+    vi.stubGlobal("sessionStorage", {
+      getItem: (k: string) => items.get(k) ?? null,
+      setItem: (k: string, v: string) => void items.set(k, v),
+      removeItem: (k: string) => void items.delete(k),
+    });
+    try {
+      const a = await open({ login: "alex" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a);
+      w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+      w.fake.failNext({ method: "PUT", path: /genesis/, network: true });
+      expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "unknown" });
+      await cycle(w, a);
+      // The reload after it would otherwise say a restore that never
+      // happened replaced the ledger, or was replaced.
+      expect(takeRestoredEpoch()).toBeNull();
+      const landed = await a.engine.restore(structuredClone(a.engine.current()));
+      if (landed.kind !== "restored") throw new Error(landed.kind);
+      expect(takeRestoredEpoch()).toBe(landed.epoch);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("a write queued behind a restore is refused, never saved into the state the reload clears (section 9.2 step 7)", async () => {
