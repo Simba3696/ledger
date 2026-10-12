@@ -16,7 +16,8 @@
     "prestart": "node scripts/kill-ports.js",
     "start": "npm run build && npm run start -w server",
     "lint": "npm run lint -w client && npm run lint -w server",
-    "knip": "knip"
+    "knip": "knip",
+    "export:emi": "tsx scripts/export-emi.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

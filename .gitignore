@@ -16,3 +16,5 @@ docs/architecture/
 docs/adr/
 Ledger.bat
 Ledger.ico
+# EMI exports (npm run export:emi): real financial data, generated locally, never committed.
+exports/

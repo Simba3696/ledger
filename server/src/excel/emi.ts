@@ -108,7 +108,7 @@ export interface EmiEntryComputed extends EmiEntry {
  * (no rate on record): the formula's mathematical limit as `r → 0` is `A ×
  * n`, i.e. `remaining` itself, but that limit isn't safe to evaluate
  * directly (literal division by `r = 0`), so it's special-cased. */
-function computeOutstandingPrincipal(remaining: number, emiAmount: number, interestRate: number | null): number {
+export function computeOutstandingPrincipal(remaining: number, emiAmount: number, interestRate: number | null): number {
   if (remaining <= 0 || emiAmount <= 0) return 0;
   const monthlyRate = (interestRate ?? 0) / 12 / 100;
   if (monthlyRate === 0) return remaining;
@@ -358,6 +358,56 @@ export interface EmiMonthlyProjection {
   totalAmount: number;
 }
 
+export interface ProjectedInstallment {
+  date: string; // YYYY-MM-DD
+  month: string; // YYYY-MM
+  amount: number;
+  /** `remaining` (scheduled payments still to make) after this installment. */
+  remainingAfter: number;
+}
+
+/** One EMI's future installments, from its next due date through
+ * `lastMonth` (YYYY-MM, inclusive) or until it's paid off, whichever comes
+ * first. Each installment is the full `emiAmount` except possibly a smaller
+ * final one (whatever balance is actually left) — the same amortization
+ * `withComputed` already does for a single "final payoff" date, simulated
+ * across every future cycle. The single source of truth for the Dashboard's
+ * upcoming-EMIs chart (`emiMonthlyProjection`) and the EMI export, so the
+ * two can never disagree. */
+export function projectInstallments(
+  emi: EmiEntryComputed,
+  lastMonth: string,
+  today: Date = new Date(),
+): ProjectedInstallment[] {
+  const installments: ProjectedInstallment[] = [];
+  if (emi.isPaidOff) return installments;
+  const day = startOfDay(today);
+  let balance = emi.remaining;
+  const asOf = parseDate(emi.asOfDate);
+  // Anchored to whichever is later: the EMI's own stored asOfDate — so an
+  // early payment (which can advance that anchor *past* today, to the
+  // due date it settled) still correctly skips the cycle just paid, same
+  // reasoning as overview.ts's Upcoming list — or "today", so a *stale*
+  // asOfDate (no payment recorded in a while) can't walk this projection
+  // backward into an already-decayed past month. `remaining` is already
+  // decayed through today (see `withComputed`), so re-projecting a due
+  // date before today would double-count that installment; it can also
+  // fall outside the chart's window entirely, which crashed the chart
+  // before this rule (real bug: a loan whose asOfDate hadn't been touched in
+  // a while threw "Cannot read properties of undefined (reading 'count')").
+  const anchor = asOf > day ? asOf : day;
+  let due = nextDueDateAfter(anchor, emi.dueDay);
+  while (balance > 0) {
+    const monthKey = toMonthOnly(due);
+    if (monthKey > lastMonth) break;
+    const payment = Math.min(emi.emiAmount, balance);
+    balance = round2(balance - payment);
+    installments.push({ date: formatDate(due), month: monthKey, amount: payment, remainingAfter: balance });
+    due = nextDueDateAfter(due, emi.dueDay);
+  }
+  return installments;
+}
+
 /** Projects every active EMI's future installments forward, bucketed by
  * calendar month, for the Dashboard's upcoming-EMIs chart. Each loan
  * contributes its full `emiAmount` every cycle until paid off, except
@@ -390,33 +440,12 @@ export async function emiMonthlyProjection(
 
   const emis = await listEmis(today);
   for (const emi of emis) {
-    if (emi.isPaidOff) continue;
-    let balance = emi.remaining;
-    const asOf = parseDate(emi.asOfDate);
-    // Anchored to whichever is later: the EMI's own stored asOfDate — so an
-    // early payment (which can advance that anchor *past* today, to the
-    // due date it settled) still correctly skips the cycle just paid, same
-    // reasoning as overview.ts's Upcoming list — or "today", so a *stale*
-    // asOfDate (no payment recorded in a while) can't walk this projection
-    // backward into an already-decayed past month. `remaining` is already
-    // decayed through today (see `withComputed`), so re-projecting a due
-    // date before today would double-count that installment; it can also
-    // fall outside this window's map entirely, which crashed here before
-    // this fix (real bug: a loan whose asOfDate hadn't been touched in a
-    // while threw "Cannot read properties of undefined (reading 'count')").
-    const anchor = asOf > day ? asOf : day;
-    let due = nextDueDateAfter(anchor, emi.dueDay);
-    while (balance > 0) {
-      const monthKey = toMonthOnly(due);
-      if (monthKey > lastWindowMonth) break;
-      const payment = Math.min(emi.emiAmount, balance);
-      const bucket = buckets.get(monthKey);
+    for (const installment of projectInstallments(emi, lastWindowMonth, today)) {
+      const bucket = buckets.get(installment.month);
       if (bucket) {
         bucket.count += 1;
-        bucket.totalAmount = round2(bucket.totalAmount + payment);
+        bucket.totalAmount = round2(bucket.totalAmount + installment.amount);
       }
-      balance = round2(balance - payment);
-      due = nextDueDateAfter(due, emi.dueDay);
     }
   }
 
