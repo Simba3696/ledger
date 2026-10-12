@@ -1340,6 +1340,24 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     expect(remarks(a)).toEqual(["Planted", "After"]);
   });
 
+  it("a device whose epoch is gone refuses the write that needs a new epoch with EPOCH_GONE, writing no genesis past the epoch listed now (stage 6 final review)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    expect(remarks(a)).toEqual(["Planted"]);
+    // a's genesis is deleted, and another epoch 1 with a smaller key is there.
+    const other = "e000001-00000001";
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    await plant(w, { kind: "genesis", epoch: other }, { fv: 1, kind: "genesis", epoch: other, reason: "create", by: "sam", at: 2, basedOn: null, doc: w.doc });
+    await cycle(w, a, a);
+    expect(a.engine.getState().epochGone).toEqual({ epoch: EPOCH, winner: other });
+    const before = puts(w).length;
+    await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: EPOCH_GONE });
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(puts(w).length).toBe(before);
+  });
+
   it("every genesis PUT it sends counts against the hourly cap, a second one after no answer included (ADR-0008 stage 4)", async () => {
     // GitHub's own secondary limit (80 writes a minute) is kept out of the
     // way by moving its clock a second per write.
