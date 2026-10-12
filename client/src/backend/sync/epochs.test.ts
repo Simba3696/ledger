@@ -254,6 +254,41 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expect(a2.engine.getState().pendingCount).toBe(0);
   });
 
+  it("a restore never writes an epoch based on one older than the listed winner, so nothing the winner holds is lost (AC6)", async () => {
+    for (const resolveFirst of [false, true]) {
+      for (const engine of running.splice(0)) engine.stop();
+      w = await world();
+      const a = await open({ login: "alex" });
+      const c = await open({ login: "sam" });
+      let sOffline = true;
+      const s = await open({ login: "sam", wrapFetch: (inner) => (input, init) => (sOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+      await c.backend.addEntry(entry("Bus"));
+      await quiesce(w, a, c);
+      await c.backend.addEntry(entry("Pens"));
+      expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+      await cycle(w, c);
+      expect(remarks(c)).toEqual(["Bus"]);
+      const [own] = c.engine.leftBehind();
+      if (resolveFirst) await c.engine.reapply(own.id);
+      await cycle(w, c);
+      // s comes back, but its sync before the restore can't switch (a full
+      // device): the listing it numbers from names a winner newer than its epoch.
+      sOffline = false;
+      s.store.failNext = 1;
+      expect(await s.engine.restore(structuredClone(s.engine.current()))).toMatchObject({ kind: "failed" });
+      await cycle(w, c);
+      expect(remarks(c), `resolveFirst ${resolveFirst}`).toContain("Bus");
+      // s switches on its next sync, and a restore from there is based on the winner.
+      await cycle(w, s);
+      expect(remarks(s)).toContain("Bus");
+      const again = await s.engine.restore(structuredClone(s.engine.current()));
+      expect(again.kind).toBe("restored");
+      await cycle(w, c);
+      expect(c.engine.epochKey).toBe((again as { epoch: string }).epoch);
+      expect(remarks(c), `resolveFirst ${resolveFirst}`).toContain("Bus");
+    }
+  });
+
   it("AC14: a device holding an old tombstone keeps the restored record", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });

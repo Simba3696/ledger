@@ -2262,16 +2262,24 @@ export class SyncEngine {
     }, id);
   }
 
-  /** Section 9.2 steps 3 to 5: the genesis of the epoch after the winner of
-   * a fresh listing (and after this device's own), holding `doc`, based on
-   * what this device has seen with every own op, written once. */
+  /** Section 9.2 steps 3 to 5: the genesis of the epoch after this device's
+   * own, holding `doc`, based on what this device has seen with every own
+   * op, written once. Nothing is written when a fresh listing's winner is
+   * newer than this device's epoch: a restore based on an epoch another
+   * restore already replaced would leave out, on every device, what the
+   * winner holds and this device never joined (a device that resolved its
+   * groups no longer offers it), so the device switches first, on its next
+   * cycle, and the restore is tried again from there. */
   async #writeRestore(doc: LedgerDocument): Promise<RestoreWrite> {
     const remote = this.#remote!;
     const meta = this.#meta!;
     const seen: VersionVector = { ...vectorOf(this.#state!.seen), [meta.deviceId]: meta.ownMaxL };
     const basedOn = { epoch: meta.epochKey, seen };
     const listed = await winningEpochNow(remote);
-    const epoch = nextEpochKey(listed !== null && compareEpochKeys(listed, meta.epochKey) > 0 ? listed : meta.epochKey);
+    if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
+      return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
+    }
+    const epoch = nextEpochKey(meta.epochKey);
     const content: GenesisContent = { epoch, reason: "restore", by: this.#actor, at: this.#now(), basedOn, doc };
     this.#putTimes.push(this.#monotonic());
     const written = await writeGenesis(remote, content, this.#key, this.#bounds.write);
