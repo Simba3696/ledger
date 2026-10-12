@@ -83,7 +83,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const isLamportOrZero = (value: unknown) => value === 0 || isLamport(value);
-const isShaOrNull = (value: unknown) => value === null || (typeof value === "string" && /^[0-9a-f]{40}$/.test(value));
+/** `logReach` or `snapReach`: a 0 entry holds nothing, as an absent one.
+ * The engine never stores one, but a meta that holds one (an earlier stage 5
+ * build stored a snapshot's through 0) still loads, so no repo file can
+ * leave a device unreadable through its reach. */
+const isReach = (value: unknown) => isPlainObject(value) && Object.entries(value).every(([device, L]) => isDeviceId(device) && isLamportOrZero(L));
+const isShaOrNull =(value: unknown) => value === null || (typeof value === "string" && /^[0-9a-f]{40}$/.test(value));
 const isTextOrNull = (value: unknown) => value === null || typeof value === "string";
 
 const META_KEYS = [
@@ -130,7 +135,7 @@ export function checkMeta(value: unknown): MetaCheck {
   if (!isTextOrNull(value.refEtag) || typeof value.writerToken !== "string") return bad("meta tokens are malformed");
   if (!isPlainObject(value.joined) || !Object.values(value.joined).every((sha) => isShaOrNull(sha) && sha !== null)) return bad("meta joined is malformed");
   if (!isVersionVector(value.seen)) return bad("meta seen is malformed");
-  if (!isVersionVector(value.logReach) || !isVersionVector(value.snapReach)) return bad("meta reach is malformed");
+  if (!isReach(value.logReach) || !isReach(value.snapReach)) return bad("meta reach is malformed");
   return { ok: true, meta: value as unknown as SyncMeta };
 }
 

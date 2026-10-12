@@ -1293,9 +1293,13 @@ export class SyncEngine {
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
       // Every version joined in this read is in the state, so the greatest
-      // of them counts; an earlier read's doesn't.
+      // of them counts; an earlier read's doesn't. A reach of 0 holds
+      // nothing, so it is never stored: a snapshot at through 0 (valid,
+      // though no honest device writes one) clears the entry instead.
       const before = snapJoinedNow.has(file.device) ? (src.snapReach.get(file.device) ?? 0) : 0;
-      src.snapReach.set(file.device, Math.max(before, file.through));
+      const reach = Math.max(before, file.through);
+      if (reach > 0) src.snapReach.set(file.device, reach);
+      else src.snapReach.delete(file.device);
       snapJoinedNow.add(file.device);
       out.joined[name] = listed.sha;
       return read;

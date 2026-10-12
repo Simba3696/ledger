@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bytesToBase64 } from "../base64";
-import { checkRepoFile } from "./codec";
+import { CHAIN_START, FORMAT_VERSION, checkRepoFile, encodeState } from "./codec";
 import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, since, world, type Device, type World } from "./cycleTestkit";
 import type { RepoFile } from "./epoch";
 import { unseal } from "./records";
@@ -1083,6 +1083,90 @@ describe("a snapshot's coverage claims are never trusted (owner decision D24)", 
     expect(remarks(r).sort()).toEqual(["One", "Three", "Two"]);
     expectConverged(r, c);
     for (const d of [r, c]) expect(status(d)).toBe("idle");
+  });
+
+  // Open for the owner (ADR-0008, Design questions): guarantee 3 does not
+  // yet hold here. This pins today's behaviour so whoever closes the gap
+  // sees this test fail and turns it into a convergence test.
+  it("open for the owner: content only in an overwritten version of a log reaches a device that read it, never a cold start", async () => {
+    const scratch = await world();
+    const src = await device(scratch, { login: "alex" });
+    running.push(src.engine);
+    await write(src, "One", "Two", "Three");
+    await cycle(scratch, src);
+    const ops = ((await unseal(scratch.fake.file(FULL, repoPath(file(src, "log")))!.text, scratch.key)) as LogContent).ops;
+    src.engine.stop();
+    const z = `d${"ab".repeat(8)}`;
+    const zLog: RepoFile = { kind: "log", epoch: EPOCH, device: z };
+    await plant(w, zLog, logFile(z, ops));
+    const r = await open({ login: "sam" });
+    expect(remarks(r).sort()).toEqual(["One", "Three", "Two"]);
+    // A key holder replaces the log with one that drops the op at L 3.
+    await plant(w, zLog, logFile(z, [ops[0], ops[2]]));
+    const c = await open({ login: "sam" });
+    await quiesce(w, r, c);
+    for (const d of [r, c]) expect(status(d)).toBe("idle");
+    expect(remarks(r).sort()).toEqual(["One", "Three", "Two"]);
+    expect(remarks(c).sort()).toEqual(["One", "Three"]);
+  });
+
+  /** Plants a snapshot under `device`, which has no other file, at `through`
+   * 0 with the genesis state: valid to every check a reader runs. */
+  async function plantZeroSnap(device: string): Promise<void> {
+    const snapFile: RepoFile = { kind: "snap", epoch: EPOCH, device };
+    const g = genesisState(w.doc);
+    const snap = { fv: FORMAT_VERSION, kind: "snap", epoch: EPOCH, device, through: 0, chain: CHAIN_START, seen: {}, maxL: 1, joined: {}, state: encodeState(g) };
+    expect(checkRepoFile(snapFile, snap, g)).toMatchObject({ ok: true });
+    await plant(w, snapFile, snap);
+  }
+
+  it("a snapshot at through 0 never leaves a 0 reach in meta: the device that joined it still loads after a reload", async () => {
+    const X = deviceId(0xc);
+    await plantZeroSnap(X);
+    const r = await open({ login: "sam" });
+    await r.backend.addEntry(entry("Mine"));
+    await cycle(w, r);
+    expect(r.store.meta().joined).toHaveProperty(`${EPOCH}.${X}.snap.enc`);
+    expect(r.store.meta().snapReach).not.toHaveProperty(X);
+    r.engine.stop();
+    const again = await open({ login: "sam", store: r.store });
+    expect(again.engine.getState()).toMatchObject({ status: "idle", unreadable: null });
+    expect(remarks(again)).toEqual(["Mine"]);
+  });
+
+  it("a rehome's cold join that joins a snapshot at through 0 leaves no 0 reach in meta: the rehomed device still loads after a reload", async () => {
+    const X = deviceId(0xc);
+    await plantZeroSnap(X);
+    const a = await open({ login: "alex" });
+    await write(a, "Before");
+    await cycle(w, a);
+    const twin = await open({ login: "alex", store: a.store.clone() });
+    await write(twin, "Copy");
+    await cycle(w, twin);
+    const old = a.engine.deviceId;
+    await write(a, "Original");
+    await cycle(w, a);
+    expect(a.engine.deviceId).not.toBe(old);
+    expect(a.store.meta().joined).toHaveProperty(`${EPOCH}.${X}.snap.enc`);
+    expect(a.store.meta().snapReach).not.toHaveProperty(X);
+    a.engine.stop();
+    const again = await open({ login: "alex", store: a.store });
+    expect(again.engine.getState()).toMatchObject({ unreadable: null });
+    expect(remarks(again).sort()).toEqual(["Before", "Copy", "Original"]);
+  });
+
+  it("a meta holding a 0 reach, as a stage 5 build before this fix saved it, still loads", async () => {
+    const r = await open({ login: "sam" });
+    await r.backend.addEntry(entry("Mine"));
+    await cycle(w, r);
+    r.engine.stop();
+    r.store.tamperMeta((meta) => {
+      meta.logReach = { [deviceId(0xb)]: 0 };
+      meta.snapReach = { [deviceId(0xc)]: 0 };
+    });
+    const again = await open({ login: "sam", store: r.store });
+    expect(again.engine.getState()).toMatchObject({ status: "idle", unreadable: null });
+    expect(remarks(again)).toEqual(["Mine"]);
   });
 
   it("a cold start reads every listed log and snapshot once; catch-up reads only the files changed since", async () => {
