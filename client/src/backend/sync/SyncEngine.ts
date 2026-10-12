@@ -2389,7 +2389,13 @@ export class SyncEngine {
         // landed while this ran) is named, with no maker; named only from a
         // full listing, as the cycle does (D26).
         const damaged = now.truncated ? null : await this.#damagedWinner(now.winner, now.sha!, now.size!, now.files.keys());
-        if (damaged !== null) return { kind: "replaced", epoch, winner: now.winner, damagedFile: damaged };
+        if (damaged !== null) {
+          // The state says so at once: the caller reloads once it is null
+          // again, and must not find it null before the next cycle.
+          if (this.#damaged?.path !== damaged.path || this.#damaged.reason !== damaged.reason) this.#damaged = damaged;
+          this.#emit();
+          return { kind: "replaced", epoch, winner: now.winner, damagedFile: damaged };
+        }
         return { kind: "replaced", epoch, winner: now.winner, ...(await this.#madeBy(now.winner, now.sha!)) };
       }
       // A cut listing may leave out a greater epoch (ADR-0008).
