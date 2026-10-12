@@ -22,7 +22,25 @@ import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opH
 import { diffDocuments } from "./diff";
 import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { appliedPart, checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import {
+  appliedPart,
+  checkGroup,
+  inEffect,
+  keptAfterChange,
+  keptAfterJoin,
+  keptAfterReapply,
+  leftBehind,
+  leftBehindItems,
+  reapplyTo,
+  registerAt,
+  supersededByOwn,
+  unkept,
+  withoutHeld,
+  type KeptJudge,
+  type LeftBehindGroup,
+  type LeftBehindItem,
+  type ReapplyResult,
+} from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
@@ -45,7 +63,7 @@ import {
 import { rehomeReissue } from "./rehome";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds, type FileRead } from "./repoFiles";
 import { applyOp, cloneState, emptyState, genesisState, holdsOp, joinInto, opState, type Op, type SyncState } from "./state";
-import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type VersionVector } from "./tags";
+import { LamportExhausted, compareTags, newDeviceId, nextLamport, randomHex, type Tag, type VersionVector } from "./tags";
 
 // The sync engine (design sections 3.4, 3.5, 7, 8, 10, 11 and 12): the
 // persisted state, the commit path and the stale-UI fence (the local half),
@@ -456,7 +474,8 @@ interface StreamSource {
 /** What #readStreams found: snapshots (as states) and ops to join, the file
  * versions they hold, and each stream's health. */
 interface Streams {
-  states: SyncState[];
+  /** The snapshots joined, by the device whose snapshot each is. */
+  snaps: [device: string, state: SyncState][];
   ops: [device: string, op: Op][];
   /** Files newly joined (each read here), name to blob sha. */
   joined: Record<string, string>;
@@ -547,12 +566,25 @@ interface NewEpoch {
 
 /** A write that resolves a group a restore left behind (reapply, discard):
  * its marker, carried as the op's `ra`, and what the device keeps of the
- * group (an own group's re-applied part, hidden while it is in effect), or
- * null to drop it in the op's own transaction. */
+ * group (an own group's re-applied part, which the op's own L then marks,
+ * D27), or null to drop it in the op's own transaction. */
 interface Resolves {
   marker: string;
   keep: LeftBehindGroup | null;
 }
+
+/** What a join knows beyond its ops (D27): the snapshots it joins, by
+ * their device, and the devices with a file in the epoch (null for a cut
+ * listing, which proves no absence). */
+interface JoinContext {
+  snaps: readonly [device: string, state: SyncState][];
+  listed: ReadonlySet<string> | null;
+}
+
+/** Judges nothing as having seen a re-apply: a change whose source is
+ * unknown (a rehome's rebuild) is set back, so it shows again rather than
+ * being lost (D27). */
+const UNSEEN: KeptJudge = { register: () => false, deletion: () => false };
 
 /** A notice's key: (winner op, loser op), so each pair is stored once. */
 function noticeKey(notice: FenceNotice, mine: Tag): string {
@@ -934,6 +966,8 @@ export class SyncEngine {
     const fenced = body ? this.#fence.apply(body, state, asOf) : { body: null, notices: [] };
     if (!fenced.body && fenced.notices.length === 0 && resolves === undefined) return Promise.resolve();
     this.#lastAllocated = L;
+    // An own re-apply's kept part is marked with the op's L (D27).
+    if (resolves?.keep) resolves = { ...resolves, keep: keptAfterReapply(resolves.keep, { L, device: meta.deviceId }) };
     let op: Op | null = null;
     if (fenced.body || resolves !== undefined) {
       const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
@@ -972,12 +1006,19 @@ export class SyncEngine {
       const mine: Tag = [L, me];
       writes.notices = { put: await Promise.all(notices.map(async (n): Promise<[string, string]> => [noticeKey(n, mine), await seal({ ...n, mine }, this.#key)])) };
     }
-    if (resolves !== undefined) {
-      const { marker, keep } = resolves;
-      writes.leftBehind = keep !== null ? { put: [[marker, await seal(keep, this.#key)]] } : { delete: [marker] };
-      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((m) => m !== marker || keep !== null));
-      if (old !== undefined) writes.old = old;
+    // The group this write resolves, and the kept groups it supersedes part
+    // of (D27): a kept change whose register this write sets, or whose
+    // record it deletes, is this device's newer word on it.
+    const groups = new Map<string, LeftBehindGroup | null>();
+    if (op) {
+      for (const group of this.#leftBehind.values()) {
+        if (group.applied === undefined || group.marker === resolves?.marker) continue;
+        const next = supersededByOwn(group, op);
+        if (next !== group) groups.set(group.marker, next);
+      }
     }
+    if (resolves !== undefined) groups.set(resolves.marker, resolves.keep);
+    if (groups.size > 0) Object.assign(writes, await this.#groupWrites(groups));
     // A reload (stop) or a takeover while this was being sealed writes nothing.
     this.#assertWritable();
     await this.#mutate(nextMeta, writes);
@@ -989,11 +1030,7 @@ export class SyncEngine {
       this.#chainHead = chain;
       this.#fence.wrote(this.#state!, me, op);
     }
-    if (resolves !== undefined) {
-      if (resolves.keep !== null) this.#leftBehind.set(resolves.marker, resolves.keep);
-      else this.#leftBehind.delete(resolves.marker);
-      if (writes.old !== undefined) this.#oldText = writes.old;
-    }
+    this.#applyGroups(groups, writes);
     this.#noticeCount += notices.length;
     // An own group this write put in effect stays stored until a join finds
     // it still in effect (#refreshLeftBehind).
@@ -1011,6 +1048,12 @@ export class SyncEngine {
    * snapshot): one transaction appends the delta to tail and records
    * `bookkeeping` in meta, then the delta is joined through the fence. */
   join(delta: { ops?: [device: string, op: Op][]; state?: SyncState }, bookkeeping: MetaPatch = {}): Promise<void> {
+    return this.#join(delta, bookkeeping, null);
+  }
+
+  /** join(), with what the cycle knows of the files the delta came from:
+   * the snapshots, by device, and the devices listed (D27). */
+  #join(delta: { ops?: [device: string, op: Op][]; state?: SyncState }, bookkeeping: MetaPatch, context: JoinContext | null): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
       this.#assertCycleCurrent();
@@ -1021,16 +1064,115 @@ export class SyncEngine {
       const meta = this.#meta!;
       const seen = new Map(this.#state!.seen);
       for (const [device, L] of source.seen) if (L > (seen.get(device) ?? 0)) seen.set(device, L);
+      // Kept own groups, judged against what this join does, in its own
+      // transaction (D27).
+      const groups = this.#keptAfterJoin(source, delta.ops ?? [], context);
+      const writes: Omit<Mutation, "expect" | "meta"> = { tail: [text], ...(groups.size > 0 ? await this.#groupWrites(groups) : {}) };
       this.#assertWritable();
       this.#assertCycleCurrent();
-      await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text] });
+      await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, writes);
 
       const changes = this.#fence.join(this.#state!, source);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
+      this.#applyGroups(groups, writes);
       // A re-apply marker joined may resolve a group left behind here.
       this.#refreshLeftBehind();
       this.#emit();
     });
+  }
+
+  /** The kept own groups (D27) once `source`, from `ops` and the snapshots
+   * in `context`, is joined: by marker, each changed group, or null for one
+   * to drop. A change whose register (or record) the join hands to another
+   * write is superseded when that write had seen the re-apply (an op's vv,
+   * or the least `seen` of the snapshots holding it, names the re-apply's
+   * L), and set back otherwise. A group with nothing set back is dropped
+   * once every other device with a file in the epoch has shown it saw the
+   * re-apply: its latest op here, or its snapshot. */
+  #keptAfterJoin(source: SyncState, ops: readonly [string, Op][], context: JoinContext | null): Map<string, LeftBehindGroup | null> {
+    const out = new Map<string, LeftBehindGroup | null>();
+    const kept = [...this.#leftBehind.values()].filter((group) => group.applied !== undefined);
+    if (kept.length === 0) return out;
+    const before = this.#state!;
+    const after = keptAfterJoin(kept, before, source);
+    const byTag = new Map<string, Op>();
+    const latest = new Map<string, Op>();
+    for (const [device, op] of ops) {
+      byTag.set(`${op.L}.${device}`, op);
+      if ((latest.get(device)?.L ?? 0) < op.L) latest.set(device, op);
+    }
+    const me = this.#meta!.deviceId;
+    for (const group of kept) {
+      const { L, device: by } = group.applied!;
+      const saw = (seen: number | undefined) => (seen ?? 0) >= L;
+      const judge: KeptJudge = {
+        register: (key, tag) => {
+          // Lamport: a write that had seen the re-apply has a greater L.
+          if (tag[0] <= L) return false;
+          const op = byTag.get(`${tag[0]}.${tag[1]}`);
+          if (op) return saw(op.vv[by]);
+          // Through snapshots: what the least-seeing one holding it had seen.
+          let least: number | null = null;
+          for (const [, snap] of context?.snaps ?? []) {
+            const reg = registerAt(snap, key);
+            if (reg && compareTags(reg.t, tag) === 0) least = Math.min(least ?? Infinity, snap.seen.get(by) ?? 0);
+          }
+          return least !== null && least >= L;
+        },
+        deletion: (deletion) => deletion.L > L && saw(deletion.vv[by]),
+      };
+      let next = keptAfterChange(group, before, after, judge);
+      if (next !== null && (next.setBack?.length ?? 0) === 0) {
+        const seenBy = new Set(next.seenBy ?? []);
+        for (const [device, op] of latest) if (saw(op.vv[by])) seenBy.add(device);
+        for (const [device, snap] of context?.snaps ?? []) if (saw(snap.seen.get(by))) seenBy.add(device);
+        const others = context?.listed ? [...context.listed].filter((device) => device !== me && device !== by) : null;
+        if (others !== null && others.every((device) => seenBy.has(device))) next = null;
+        else if (seenBy.size > (next.seenBy?.length ?? 0)) next = { ...next, seenBy: [...seenBy].sort() };
+      }
+      if (next !== group) out.set(group.marker, next);
+    }
+    return out;
+  }
+
+  /** The kept own groups after the state is replaced whole, from `before`
+   * to `after` (a rehome, D27): a change another write now holds is set
+   * back, since nothing says whether that write saw the re-apply. */
+  #keptAfterReplace(before: SyncState, after: SyncState): Map<string, LeftBehindGroup | null> {
+    const out = new Map<string, LeftBehindGroup | null>();
+    for (const group of this.#leftBehind.values()) {
+      if (group.applied === undefined) continue;
+      const next = keptAfterChange(group, before, after, UNSEEN);
+      if (next !== group) out.set(group.marker, next);
+    }
+    return out;
+  }
+
+  /** The records to write for `groups` (marker to group, or null to drop
+   * it), with `old` trimmed when a dropped group was the last one an
+   * earlier epoch's state was kept for. */
+  async #groupWrites(groups: ReadonlyMap<string, LeftBehindGroup | null>): Promise<Pick<Mutation, "leftBehind" | "old">> {
+    const put: [string, string][] = [];
+    const remove: string[] = [];
+    for (const [marker, group] of groups) {
+      if (group === null) remove.push(marker);
+      else put.push([marker, await seal(group, this.#key)]);
+    }
+    const writes: Pick<Mutation, "leftBehind" | "old"> = { leftBehind: { put, delete: remove } };
+    if (remove.length > 0) {
+      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => groups.get(marker) !== null));
+      if (old !== undefined) writes.old = old;
+    }
+    return writes;
+  }
+
+  /** `groups`, saved by `writes` (#groupWrites), as the device now holds them. */
+  #applyGroups(groups: ReadonlyMap<string, LeftBehindGroup | null>, writes: Pick<Mutation, "old">): void {
+    for (const [marker, group] of groups) {
+      if (group === null) this.#leftBehind.delete(marker);
+      else this.#leftBehind.set(marker, group);
+    }
+    if (writes.old !== undefined) this.#oldText = writes.old;
   }
 
   // --- The fence (section 3.4) ----------------------------------------------
@@ -1336,13 +1478,19 @@ export class SyncEngine {
       patch.refEtag = listing.etag;
     }
     // The genesis and every snapshot read join as one state.
-    const states = genesis.state ? [genesis.state, ...others.states] : others.states;
+    const states = genesis.state ? [genesis.state, ...others.snaps.map(([, snap]) => snap)] : others.snaps.map(([, snap]) => snap);
     let state: SyncState | undefined;
     if (states.length > 0) {
       state = emptyState();
       for (const part of states) joinInto(state, part);
     }
-    if (others.ops.length > 0 || state) await this.join({ ops: others.ops, ...(state ? { state } : {}) }, patch);
+    // The devices with a file in the epoch, for the kept groups (D27).
+    let listed: Set<string> | null = null;
+    if (!listing.truncated) {
+      listed = new Set();
+      for (const { file } of listing.files.values()) if (file.kind !== "genesis" && file.epoch === epoch) listed.add(file.device);
+    }
+    if (others.ops.length > 0 || state) await this.#join({ ops: others.ops, ...(state ? { state } : {}) }, patch, { snaps: others.snaps, listed });
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
   }
@@ -1501,7 +1649,7 @@ export class SyncEngine {
   async #readStreams(src: StreamSource): Promise<Streams> {
     const epoch = this.#meta!.epochKey;
     const out: Streams = {
-      states: [],
+      snaps: [],
       ops: [],
       joined: {},
       logReach: src.logReach,
@@ -1565,7 +1713,7 @@ export class SyncEngine {
         return refused;
       }
       this.#unlistedSeen.delete(at);
-      out.states.push(state);
+      out.snaps.push([file.device, state]);
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
       // Every version joined in this read is in the state, so the greatest
@@ -2182,6 +2330,8 @@ export class SyncEngine {
         const doc = materialize(next);
         const notice = await seal({ kind: "rehome", from: meta.deviceId, to: device, at, message: REHOMED }, this.#key);
         const base = await seal(storedState(next), this.#key);
+        const groups = this.#keptAfterReplace(pre, next);
+        const groupWrites = groups.size > 0 ? await this.#groupWrites(groups) : {};
         this.#assertWritable();
         await this.#mutate(nextMeta, {
           base,
@@ -2190,7 +2340,9 @@ export class SyncEngine {
           clearChain: true,
           chain: chainEntries,
           notices: { put: [[`rehome/${device}`, notice]] },
+          ...groupWrites,
         });
+        this.#applyGroups(groups, groupWrites);
         const before = this.#doc!;
         this.#fence.replace(pre, next, canonicalJson({ ...before, tombstones: [] }) !== canonicalJson({ ...doc, tombstones: [] }));
         this.#state = next;
@@ -2256,7 +2408,7 @@ export class SyncEngine {
       snaps: [...versions.keys()].filter((name) => parseRepoFileName(name)?.kind === "snap"),
       versions: (name) => versions.get(name) ?? [],
     });
-    for (const part of streams.states) joinInto(state, part);
+    for (const [, part] of streams.snaps) joinInto(state, part);
     for (const [device, op] of streams.ops) applyOp(state, device, op);
     return {
       state,
@@ -2396,10 +2548,13 @@ export class SyncEngine {
   /** Re-apply (section 9.4): one write, at its turn, that puts the group's
    * changes back on the current document and carries its marker, which
    * resolves the group on every device. What can't be applied is skipped
-   * and listed. This device's own group is kept as what was applied, hidden
-   * while it is in effect, so a concurrent re-apply of the same group from
-   * another device's older view, which may set some of it back, makes it
-   * show again (D18); it is dropped once a join finds it still in effect. */
+   * and listed. This device's own group is kept as what was applied, with
+   * the op's L, and hidden (owner decision D27): a write that hadn't seen
+   * the re-apply (another device's re-apply from an older view) and sets
+   * some of it back makes it show again (D18), while a later write that had
+   * seen it, this device's own included, supersedes what it changes. It is
+   * dropped once nothing is left, once every other device with a file in
+   * the epoch has shown it saw the re-apply, or at the next switch. */
   async reapply(id: string): Promise<ReapplyResult> {
     let result = undefined as ReapplyResult | undefined;
     let group = undefined as LeftBehindGroup | undefined;
@@ -2588,10 +2743,12 @@ export class SyncEngine {
     const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : null);
     // Groups shown now are carried, less what the new genesis already holds
     // (the projection's rule): a marker joined here never reaches the new
-    // epoch, so nothing else would hide one the genesis took in.
+    // epoch, so nothing else would hide one the genesis took in. A group this
+    // device re-applied is dropped while hidden, and carried as an ordinary
+    // own group once set back: the re-apply's L means nothing there (D27).
     const groups = new Map<string, LeftBehindGroup>();
     for (const [marker, group] of this.#leftBehind) {
-      const carried = this.#isHidden(group, pre) ? null : withoutHeld(group, genesis.state);
+      const carried = this.#isHidden(group, pre) ? null : withoutHeld(unkept(group), genesis.state);
       if (carried !== null) groups.set(marker, carried);
     }
     const kept = await this.#readOld();
@@ -2727,17 +2884,19 @@ export class SyncEngine {
    * resolved it) and, for this device's own changes, every one of them is
    * in effect. Owner decision D18: a device sees its own changes until they
    * are in effect or it resolves them, since only it holds the ones it
-   * never pushed. */
+   * never pushed. A group this device re-applied (D27) is hidden until a
+   * write that hadn't seen the re-apply sets some of it back. */
   #isHidden(group: LeftBehindGroup, state: SyncState): boolean {
+    if (group.applied !== undefined) return (group.setBack?.length ?? 0) === 0;
     if (!state.ra.has(group.marker)) return false;
     return !group.own || inEffect(group, state);
   }
 
   /** Counts the groups shown, and drops the hidden ones from the device:
    * every one for "all" (after a join, a switch or a rehome), other
-   * devices' only for "others" (after an own write: an own group it put in
-   * effect may be set back by a concurrent re-apply not joined yet, so it
-   * waits for a join that finds it still in effect), none for "none". */
+   * devices' only for "others" (after an own write), none for "none". A
+   * group this device re-applied is never dropped here: what the joins
+   * tell of the re-apply drops it (#keptAfterJoin, D27). */
   #refreshLeftBehind(tidy: "all" | "others" | "none" = "all"): void {
     const state = this.#state;
     let shown = 0;
@@ -2745,7 +2904,7 @@ export class SyncEngine {
     let hidden = false;
     if (state !== null) {
       for (const group of this.#leftBehind.values()) {
-        if (this.#isHidden(group, state)) hidden ||= tidy === "all" || !group.own;
+        if (this.#isHidden(group, state)) hidden ||= group.applied === undefined && (tidy === "all" || !group.own);
         else {
           shown++;
           if (group.own) own++;
@@ -2771,7 +2930,7 @@ export class SyncEngine {
         const state = this.#state!;
         const own = this.#tidyOwn;
         this.#tidyOwn = false;
-        const hidden = [...this.#leftBehind.values()].filter((group) => this.#isHidden(group, state) && (own || !group.own)).map((group) => group.marker);
+        const hidden = [...this.#leftBehind.values()].filter((group) => group.applied === undefined && this.#isHidden(group, state) && (own || !group.own)).map((group) => group.marker);
         if (hidden.length === 0) return;
         const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => !hidden.includes(marker)));
         this.#assertWritable();
