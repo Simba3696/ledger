@@ -191,7 +191,9 @@ export interface EngineState {
    * be stale) and the winner is older, or newer but can't be opened here:
    * nothing the device can switch to. Sync stays pending, local writes go
    * on, a restore is refused (it would write past `winner`), and #8 offers
-   * joining the ledger that's there now (EPOCH_GONE). Every cycle lists
+   * joining the ledger that's there now, or, with no winner (status
+   * `missing` too), restoring this device's data into the empty repo or
+   * creating a new ledger (epochGoneMessage). Every cycle lists
    * afresh meanwhile, and the first listing that counts the epoch again
    * clears it. Null otherwise. */
   epochGone: EpochGone | null;
@@ -204,16 +206,25 @@ export interface EngineState {
 }
 
 /** This device's epoch, gone from the repo, and the winner listed now
- * (EngineState.epochGone); `winner` is null when a restore finds no
- * counted epoch at all. */
+ * (EngineState.epochGone); `winner` is null when no epoch counts at all
+ * (no genesis listed, or an empty repo): no ledger is in the repo. */
 export interface EpochGone {
   epoch: string;
   winner: string | null;
 }
 
-/** What to tell the person when this device's epoch is gone (EpochGone). */
+/** What to tell the person when this device's epoch is gone (EpochGone)
+ * and another ledger is in the repo now. */
 export const EPOCH_GONE =
   "This device's ledger version was removed from the GitHub repo, so it can't sync. Its changes are kept on this device. To go on, join the ledger that's there now; its passphrase may differ.";
+/** The same when no ledger is in the repo now (`winner` null). */
+export const EPOCH_GONE_EMPTY =
+  "This device's ledger version was removed from the GitHub repo, and no ledger is in the repo now, so it can't sync. Its changes are kept on this device. To go on, export this device's data and restore it into the repo, or create a new ledger.";
+
+/** EPOCH_GONE, or EPOCH_GONE_EMPTY when no ledger is in the repo. */
+export function epochGoneMessage(gone: EpochGone): string {
+  return gone.winner === null ? EPOCH_GONE_EMPTY : EPOCH_GONE;
+}
 
 /** How a restore this tab started stands (EngineState.restore). */
 export interface RestoreState {
@@ -280,7 +291,8 @@ export type RestoreResult =
    * deleting it on GitHub lets sync, and a restore, go on (D26).
    * `epochGone`: this device's epoch no longer counts in a full listing, so
    * a restore based on it would write past the epoch listed now; join that
-   * ledger instead (EPOCH_GONE). */
+   * ledger instead, or, with no winner, restore into the empty repo
+   * (epochGoneMessage). */
   | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone }
   /** A PUT of `epoch`'s genesis got no answer, and the listing since didn't
    * show it: it may still land, and then it replaces the ledger like any
@@ -1255,8 +1267,10 @@ export class SyncEngine {
     // the ref is gone. Anything later is found again below.
     this.#blocker = null;
     if (ref.kind === "empty") {
+      // No ledger in this repo (section 9.5), so this device's epoch is
+      // gone too, with nothing listed in its place (stage 6 final review).
       this.#damaged = null;
-      this.#notGone();
+      this.#noteGone(this.#meta!.epochKey, null);
       this.#blocker = "missing";
       return false;
     }
@@ -1321,9 +1335,10 @@ export class SyncEngine {
       return null;
     }
     if (winner === null) {
-      // No genesis listed: no ledger in this repo (section 9.5).
+      // No genesis listed: no ledger in this repo (section 9.5), and this
+      // device's epoch is gone with nothing in its place.
       this.#damaged = null;
-      this.#notGone();
+      this.#noteGone(epoch, null);
       this.#blocker = "missing";
       return null;
     }
@@ -2546,7 +2561,7 @@ export class SyncEngine {
     // review). A cut listing got here only showing this epoch winning.
     if (!now.truncated && !epochCounted(now.files.keys(), meta.epochKey)) {
       const epochGone = { epoch: meta.epochKey, winner: listed };
-      return { kind: "failed", detail: EPOCH_GONE, epochGone };
+      return { kind: "failed", detail: epochGoneMessage(epochGone), epochGone };
     }
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
       const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.files.keys());
@@ -2623,7 +2638,7 @@ export class SyncEngine {
           // No epoch is written past a genesis this device can't open
           // (D26): the write waits until the file is deleted.
           if (written.kind === "failed" && written.damagedFile) throw new ApiError(503, needsNewEpochPast(written.damagedFile));
-          if (written.kind === "failed" && written.epochGone) throw new ApiError(503, EPOCH_GONE);
+          if (written.kind === "failed" && written.epochGone) throw new ApiError(503, epochGoneMessage(written.epochGone));
           throw new ApiError(503, NEEDS_NEW_EPOCH);
         }
         if (!(await this.#switchEpoch(from, written.genesis))) throw new ApiError(503, CHANGED_WHILE_SAVING);
