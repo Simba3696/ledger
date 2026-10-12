@@ -73,11 +73,22 @@ async function listNow(remote: Remote): Promise<{ names: string[]; files: Map<st
   return { names: [...files.keys()], files, truncated: listing.truncated };
 }
 
-/** The winning epoch in the repo now (section 9.1), or null when none is
- * counted. A cut listing may leave out a greater one. */
-export async function winningEpochNow(remote: Remote): Promise<string | null> {
+/** The winning epoch in a listing of the repo now (section 9.1). */
+export interface EpochNow {
+  /** The greatest counted epoch listed, or null when none is. */
+  winner: string | null;
+  /** GitHub cut the listing short: a greater epoch may be left out, so
+   * `winner` alone decides nothing (ADR-0008). A greater one listed is
+   * there all the same. */
+  truncated: boolean;
+}
+
+/** The winning epoch in the repo now (section 9.1), and whether the
+ * listing it comes from was cut. */
+export async function winningEpochNow(remote: Remote): Promise<EpochNow> {
   const listing = await listNow(remote);
-  return listing === null ? null : winningEpoch(listing.names);
+  if (listing === null) return { winner: null, truncated: false };
+  return { winner: winningEpoch(listing.names), truncated: listing.truncated };
 }
 
 /** "Is there a ledger?" (#8): the winning genesis and its header. */
@@ -197,7 +208,8 @@ export type CreateResult =
    * (findLedger). Nothing was started on this device. */
   | { kind: "replaced"; epoch: string; winner: string }
   /** A cut listing, or this create landed but the repo couldn't be listed
-   * after it: try again later, and the next try joins what it finds. */
+   * in full after it: try again later, and the next try joins what it
+   * finds. */
   | { kind: "unknown" }
   | Exclude<GenesisWrite, { kind: "written" }>;
 
@@ -225,16 +237,19 @@ export async function createLedger(
   const epoch = nextEpochKey(null);
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
   if (written.kind !== "written") return written;
-  let winner: string | null;
+  let now: EpochNow;
   try {
-    winner = await winningEpochNow(remote);
+    now = await winningEpochNow(remote);
   } catch (err) {
     if (isFinal(err)) throw err;
     // It landed, but whether another create beat it is unknown: the next
     // try finds the ledger, this one or the winner, and joins it.
     return { kind: "unknown" };
   }
-  if (winner !== null && compareEpochKeys(winner, epoch) > 0) return { kind: "replaced", epoch, winner };
+  if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner };
+  // A cut listing may leave out a greater epoch 1 (ADR-0008): as unknown as
+  // no listing at all.
+  if (now.truncated) return { kind: "unknown" };
   return { kind: "created", epoch, sha: written.sha, state: genesisState(doc) };
 }
 

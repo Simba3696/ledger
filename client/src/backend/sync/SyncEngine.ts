@@ -23,7 +23,7 @@ import { diffDocuments } from "./diff";
 import { compareEpochKeys, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
-import { rememberRestore, winningEpochNow, writeGenesis, type GenesisContent } from "./ledgerRepo";
+import { rememberRestore, winningEpochNow, writeGenesis, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
@@ -205,8 +205,8 @@ export type RestoreResult =
   /** The backup is the new epoch's genesis. Clear this device's sync
    * state and reload (#9): the device starts in it as a new device.
    * `winnerUnknown`: it landed, but the repo couldn't be listed after it,
-   * so a racing restore may have won; after the reload, takeRestoredEpoch()
-   * against epochKey still tells. */
+   * or GitHub cut the listing short, so a racing restore may have won;
+   * after the reload, takeRestoredEpoch() against epochKey still tells. */
   | { kind: "restored"; epoch: string; winnerUnknown?: true }
   /** It landed, but a greater epoch was already listed: "Sam's restore
    * replaced yours. [Restore again]". Clear and reload as for "restored". */
@@ -2230,14 +2230,20 @@ export class SyncEngine {
       rememberRestore(epoch);
       // Step 6: a restore that raced this one may have won. The genesis has
       // landed whatever this read says, so a failed read is no failure.
-      let winner: string | null;
+      let now: EpochNow;
       try {
-        winner = await winningEpochNow(remote);
+        now = await winningEpochNow(remote);
       } catch (err) {
         this.#log("the repo couldn't be listed after the restore landed; the reload finds the winner", err);
         return { kind: "restored", epoch, winnerUnknown: true };
       }
-      return winner !== null && compareEpochKeys(winner, epoch) > 0 ? { kind: "replaced", epoch, winner } : { kind: "restored", epoch };
+      if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) return { kind: "replaced", epoch, winner: now.winner };
+      // A cut listing may leave out a greater epoch (ADR-0008).
+      if (now.truncated) {
+        this.#log("GitHub cut the listing after the restore landed; the reload finds the winner");
+        return { kind: "restored", epoch, winnerUnknown: true };
+      }
+      return { kind: "restored", epoch };
     } finally {
       if (this.#restore === "writing") this.#restore = null;
       turn.end();
@@ -2317,7 +2323,15 @@ export class SyncEngine {
     const meta = this.#meta!;
     const seen: VersionVector = { ...vectorOf(this.#state!.seen), [meta.deviceId]: meta.ownMaxL };
     const basedOn = { epoch: meta.epochKey, seen };
-    const listed = await winningEpochNow(remote);
+    const now = await winningEpochNow(remote);
+    // A cut listing decides nothing (ADR-0008), unless it shows this
+    // device's own epoch winning: the restore is then numbered from that
+    // epoch, as a cycle on the same listing would go on syncing in it, and a
+    // greater epoch the cut left out is a race step 6 reports.
+    if (now.truncated && now.winner !== meta.epochKey) {
+      return { kind: "failed", detail: "GitHub cut the file listing short, so the winning epoch is unknown; try again later" };
+    }
+    const listed = now.winner;
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
       return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
     }
