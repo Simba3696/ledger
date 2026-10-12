@@ -506,6 +506,34 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
     expect(offered(b, true)).toContain("add:Taxi");
   });
 
+  it("the epoch the current one is based on stays in `old` too, so a third same-number restore based on it still offers a pushed change the winner lacks", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Bus"));
+    await cycle(w, b, a);
+    const oldB = b.engine.deviceId!;
+    const busL = b.store.meta().ownMaxL as number;
+    // E1 -> E2a: a's restore holds Bus, so nothing is left behind.
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    await cycle(w, b);
+    expect(remarks(b).sort()).toEqual(["Bus", "Groceries"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    // E2a -> E2b: Sam's restore of the first epoch had seen Bus too.
+    await plantRestore("e000002-fffffff0", backup, { [oldB]: busL });
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-fffffff0");
+    expect(offered(b)).toEqual([]);
+    // E2b -> E2c: another restore of the first epoch, which never saw Bus.
+    await plantRestore("e000002-ffffffff", backup);
+    await cycle(w, b);
+    expect(b.engine.epochKey).toBe("e000002-ffffffff");
+    expect(remarks(b)).toEqual(["Groceries"]);
+    expect(offered(b, true)).toContain("add:Bus");
+  });
+
   it("the epoch switched from stays in `old` once every group is resolved, so a racing restore listed later still offers what it lacks", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
