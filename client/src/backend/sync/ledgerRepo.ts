@@ -12,7 +12,7 @@ import {
 } from "../github/contents";
 import { forgetDevice } from "../github/deviceStore";
 import { FORMAT_VERSION, checkRepoFile } from "./codec";
-import { nextEpochKey, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, nextEpochKey, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { clearSyncState } from "./persist";
 import { seal, type DeviceKey } from "./records";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds } from "./repoFiles";
@@ -27,9 +27,10 @@ import type { VersionVector } from "./tags";
 //     and iterations to derive the key from the passphrase, then opens the
 //     genesis with the key (openGenesis), which the engine's first start
 //     takes as its state.
-//   - Create is one genesis PUT for epoch 1 (createLedger). Restoring a
-//     backup into a repo with no ledger is the same PUT with reason
-//     "restore". Restoring over an existing ledger is the engine's
+//   - Create is one genesis PUT for epoch 1 (createLedger), then a listing:
+//     a racing create's greater epoch 1 wins, and is joined instead.
+//     Restoring a backup into a repo with no ledger is the same PUT with
+//     reason "restore". Restoring over an existing ledger is the engine's
 //     (SyncEngine.restore), which needs what the device has seen.
 //   - A genesis is written under a fresh random name, never over a file. A
 //     lost answer is settled by listing the path: the sha of the bytes sent
@@ -191,16 +192,27 @@ export type CreateResult =
   /** The repo already holds a ledger (or one this build can't read): join
    * it instead. */
   | { kind: "exists" }
-  /** A cut listing: try again later. */
+  /** Another device's create landed beside this one and wins (a greater
+   * epoch 1 is listed after this one landed): join the winner instead
+   * (findLedger). Nothing was started on this device. */
+  | { kind: "replaced"; epoch: string; winner: string }
+  /** A cut listing, or this create landed but the repo couldn't be listed
+   * after it: try again later, and the next try joins what it finds. */
   | { kind: "unknown" }
   | Exclude<GenesisWrite, { kind: "written" }>;
 
 /** #8 Create, and #9's restore into a repo with no ledger: one genesis PUT
  * for epoch 1 (section 9.5), `doc` an empty document or the backup, under
- * `key` (the household's, or a backup's own salt and iterations). Two
- * devices creating at once each write their own epoch 1; the greater key
- * wins, and the other device's writes are offered for re-apply (section
- * 9.3). Returns the state the engine's first start begins from. */
+ * `key` (the household's, or a backup's own salt and iterations). Returns
+ * the state the engine's first start begins from. Two devices creating at
+ * once each write their own epoch 1, and the greater key wins. Each derived
+ * its key with a fresh salt, so a device started on the losing epoch could
+ * never read the winner's files, nor offer its writes. So the repo is
+ * listed again once the genesis lands (as a restore's step 6 does): a
+ * greater epoch 1 listed is "replaced", and the caller joins the winner
+ * before anything is written on this device. A create that listed before
+ * the winner's landed is still told "created" (ADR-0008, design
+ * questions). */
 export async function createLedger(
   remote: Remote,
   key: DeviceKey,
@@ -213,6 +225,16 @@ export async function createLedger(
   const epoch = nextEpochKey(null);
   const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
   if (written.kind !== "written") return written;
+  let winner: string | null;
+  try {
+    winner = await winningEpochNow(remote);
+  } catch (err) {
+    if (isFinal(err)) throw err;
+    // It landed, but whether another create beat it is unknown: the next
+    // try finds the ledger, this one or the winner, and joins it.
+    return { kind: "unknown" };
+  }
+  if (winner !== null && compareEpochKeys(winner, epoch) > 0) return { kind: "replaced", epoch, winner };
   return { kind: "created", epoch, sha: written.sha, state: genesisState(doc) };
 }
 

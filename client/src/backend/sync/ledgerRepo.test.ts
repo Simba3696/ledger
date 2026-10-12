@@ -10,6 +10,7 @@ import { testKey } from "./localTestkit";
 import { openSyncStore } from "./persist";
 import type { DeviceKey } from "./records";
 import type { SyncEngine } from "./SyncEngine";
+import { genesisState, type SyncState } from "./state";
 import { docText, emptyDocument } from "./testkit";
 
 // The epoch hooks onboarding (#8) and backup (#9) call (design section
@@ -84,16 +85,75 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     expect(d.engine.getState().status).toBe("idle");
   });
 
-  it("two devices creating at once: the greater epoch key wins, and the other device's writes are offered for re-apply (section 9.3, cut {})", async () => {
-    const first = await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 });
-    // The second device's listing lags behind the first create.
-    fake.staleReads(1);
-    const second = await createLedger(remote(), key, { doc: emptyDocument(), by: "sam", at: 2 });
-    fake.staleReads(0);
-    if (first.kind !== "created" || second.kind !== "created") throw new Error("both should create");
+  /** An epoch 1 genesis another device created, planted as it would land. */
+  async function plantCreate(epoch: string, with_: DeviceKey): Promise<void> {
+    const content = { fv: 1, kind: "genesis", epoch, reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() };
+    await fake.seedFile(FULL, `ledger/${epoch}.genesis.enc`, await encryptDocument(content, with_.key, { salt: with_.salt, iter: with_.iter }));
+  }
+
+  /** A client whose first ref read sees the repo as it was before the
+   * last commit: a listing that lags behind another device's create. */
+  function lagging(login: string): GitHubClient {
+    let first = true;
+    return createGitHubClient({
+      owner: "alex",
+      repo: "ledger-data",
+      token: `github_pat_${login}`,
+      fetch: async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (!first || !/git\/ref/.test(url)) return fake.fetch(input, init);
+        first = false;
+        fake.staleReads(1);
+        try {
+          return await fake.fetch(input, init);
+        } finally {
+          fake.staleReads(0);
+        }
+      },
+    });
+  }
+
+  it("two devices creating at once with their own salts: the one that lists a greater epoch 1 after its create joins it, having written nothing locally", async () => {
+    const keyA = await testKey();
+    const keyB = await testKey();
+    await plantCreate("e000001-ffffffff", keyA);
+    // The second create's listing lags behind the first.
+    const second = await createLedger({ client: lagging("sam"), branch: "main" }, keyB, { doc: emptyDocument(), by: "sam", at: 2 });
+    expect(second).toMatchObject({ kind: "replaced", epoch: expect.stringMatching(/^e000001-/), winner: "e000001-ffffffff" });
+    // Its join finds the winner, whose header names the other salt.
+    const found = await findLedger(remote());
+    expect(found).toMatchObject({ kind: "ledger", epoch: "e000001-ffffffff", salt: keyA.salt });
+  });
+
+  it("a create whose genesis landed but can't be listed after says so, and the next try joins what is found", async () => {
+    let failRef = false;
+    const flaky = createGitHubClient({
+      owner: "alex",
+      repo: "ledger-data",
+      token: "github_pat_alex",
+      fetch: async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = init?.method ?? "GET";
+        if (failRef && method === "GET" && /git\/ref/.test(url)) throw new TypeError("Failed to fetch");
+        const res = await fake.fetch(input, init);
+        if (method === "PUT" && res.ok) failRef = true;
+        return res;
+      },
+    });
+    expect(await createLedger({ client: flaky, branch: "main" }, key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "unknown" });
+    expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "exists" });
+    expect(puts()).toHaveLength(1);
+  });
+
+  it("two devices creating at once with one salt: when the later create wins, the earlier device's writes are offered for re-apply (section 9.3, cut {})", async () => {
+    // The first create landed and its device started, before the second's.
+    await plantCreate("e000001-00000000", key);
+    const first = { epoch: "e000001-00000000", state: genesisState(emptyDocument()) };
+    const second = await createLedger({ client: lagging("sam"), branch: "main" }, key, { doc: emptyDocument(), by: "sam", at: 2 });
+    if (second.kind !== "created") throw new Error(`the greater key wins: ${second.kind}`);
     const w = { fake, key, doc: emptyDocument(), clock: { wall: Date.UTC(2026, 4, 10, 9), mono: 1_000_000 } };
     let offline = true;
-    const open = async (login: string, from: typeof first): Promise<Device> => {
+    const open = async (login: string, from: { epoch: string; state: SyncState }): Promise<Device> => {
       // Offline at first: each writes in the epoch it created.
       const wrapFetch = (inner: typeof fetch): typeof fetch => (input, request) => (offline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, request));
       const d = await device(w, { login, init: { epoch: from.epoch, state: from.state }, wrapFetch });
@@ -106,13 +166,11 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     await b.backend.addEntry(entry("Bus"));
     offline = false;
     await quiesce(w, a, b);
-    const winner = first.epoch > second.epoch ? first.epoch : second.epoch;
-    for (const d of [a, b]) expect(d.engine.epochKey).toBe(winner);
+    for (const d of [a, b]) expect(d.engine.epochKey).toBe(second.epoch);
     expectConverged(a, b);
-    const loser = first.epoch === winner ? b : a;
-    const [group] = loser.engine.leftBehind();
+    const [group] = a.engine.leftBehind();
     expect(group).toMatchObject({ own: true });
-    await loser.engine.reapply(group.id);
+    await a.engine.reapply(group.id);
     await quiesce(w, a, b);
     expect(remarks(a).sort()).toEqual(["Bus", "Groceries"]);
     expectConverged(a, b);
