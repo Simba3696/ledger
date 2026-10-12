@@ -416,6 +416,36 @@ describe("re-apply and discard (section 9.4)", () => {
     expectConverged(a2, b, c);
   });
 
+  it("an own group carried across a switch is dropped when the new genesis already holds its changes", async () => {
+    let bOffline = false;
+    let a = await open({ login: "alex" });
+    const b = await open({ login: "sam", wrapFetch: (inner) => (input, init) => (bOffline ? Promise.reject(new TypeError("Failed to fetch")) : inner(input, init)) });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b, c);
+    const backup = structuredClone(a.engine.current());
+    await b.backend.addEntry(entry("Taxi"));
+    await cycle(w, b, c);
+    w.fake.failNext({ method: "GET", path: /git\/ref/, network: true });
+    expect((await a.engine.restore(backup)).kind).toBe("restored");
+    a = await reload(a);
+    await cycle(w, b, c);
+    expect(b.engine.leftBehind()).toMatchObject([{ own: true, items: [{ kind: "add", record: { remarks: "Taxi" } }] }]);
+    // While b is offline, c re-applies b's Taxi, and a restores what it now
+    // has, Taxi included: b never sees the re-apply's marker.
+    bOffline = true;
+    await c.engine.reapply(c.engine.leftBehind()[0].id);
+    await quiesce(w, a, c);
+    expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+    a = await reload(a);
+    bOffline = false;
+    await quiesce(w, a, b, c);
+    expect(remarks(b).sort()).toEqual(["Groceries", "Taxi"]);
+    expect(b.engine.leftBehind()).toEqual([]);
+    expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
+    expect((await b.store.load())?.leftBehind).toEqual([]);
+  });
+
   it("two devices re-applying the same group at once is harmless: one record, everywhere", async () => {
     const { a2, b, c } = await leftOnTwo();
     const [mine] = b.engine.leftBehind();
