@@ -492,6 +492,30 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
   });
 });
 
+describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", () => {
+  it("one that leaves out a greater epoch after the genesis lands: the restore says the winner is unknown", async () => {
+    // Three tree entries: the folder, a's log and the first genesis. Sam's
+    // restore, and a's own, sort after them and are cut.
+    w = await world({ fake: { treeEntryLimit: 3 } });
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await cycle(w, a);
+    await plantRestore("e000002-ffffffff", structuredClone(a.engine.current()));
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toEqual({ kind: "restored", epoch: expect.stringMatching(/^e000002-/), winnerUnknown: true });
+  });
+
+  it("one that doesn't show this device's epoch winning: nothing is written, and the restore can be tried again", async () => {
+    // One tree entry: the folder. Every genesis is cut.
+    w = await world({ fake: { treeEntryLimit: 1 } });
+    const a = await open({ login: "alex" });
+    const before = puts(w).length;
+    expect(await a.engine.restore(structuredClone(a.engine.current()))).toMatchObject({ kind: "failed" });
+    expect(puts(w).length).toBe(before);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
+  });
+});
+
 describe("a newer epoch that can't be read (section 9.1)", () => {
   const cases: [string, () => Promise<void>, string][] = [
     [

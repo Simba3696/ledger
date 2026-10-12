@@ -145,6 +145,22 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     expect(puts()).toHaveLength(1);
   });
 
+  it("a create that lands but can't list the repo in full after it says unknown: a cut listing never decides the epoch (ADR-0008)", async () => {
+    let cut = false;
+    const cutting: Pick<GitHubClient, "getRef" | "listDir" | "readBlob" | "putFile"> = {
+      getRef: (...args) => client.getRef(...args),
+      readBlob: (...args) => client.readBlob(...args),
+      putFile: async (write) => {
+        const res = await client.putFile(write);
+        cut = true;
+        return res;
+      },
+      listDir: async (...args) => ({ ...(await client.listDir(...args)), truncated: cut }),
+    };
+    expect(await createLedger({ client: cutting, branch: "main" }, key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "unknown" });
+    expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "exists" });
+  });
+
   it("two devices creating at once with one salt: when the later create wins, the earlier device's writes are offered for re-apply (section 9.3, cut {})", async () => {
     // The first create landed and its device started, before the second's.
     await plantCreate("e000001-00000000", key);
