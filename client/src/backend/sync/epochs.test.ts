@@ -1210,6 +1210,34 @@ describe("a device whose epoch is gone (stage 6 final review)", () => {
     expect(b.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
     expect(b.engine.epochKey).toBe(e2);
   });
+
+  it("with no genesis left in the repo, the cycle says the epoch is gone with no winner, and a restore says to restore into the empty repo or create a new ledger", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    // The ledger's genesis is deleted on GitHub; a's own log is still listed.
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    await cycle(w, a, a);
+    expect(a.engine.getState()).toMatchObject({ status: "missing", epochGone: { epoch: EPOCH, winner: null }, damagedFile: null });
+    const result = await a.engine.restore(structuredClone(a.engine.current()));
+    expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: EPOCH, winner: null } });
+    const detail = (result as { detail: string }).detail;
+    expect(detail).toContain("no ledger is in the repo");
+    expect(detail).toContain("create a new ledger");
+    expect(detail).not.toContain("join the ledger that's there now");
+    expect(remarks(a)).toEqual(["Groceries"]);
+  });
+
+  it("an empty repo is the same: two cycles in a row that find it empty say the epoch is gone with no winner", async () => {
+    const a = await open({ login: "alex" });
+    for (let i = 0; i < 2; i++) {
+      w.fake.failNext({ path: "/git/ref/", status: 409, message: "Git Repository is empty." });
+      await cycle(w, a);
+    }
+    expect(a.engine.getState()).toMatchObject({ status: "missing", epochGone: { epoch: EPOCH, winner: null } });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", epochGone: null });
+  });
 });
 
 describe("Lamport exhaustion (ADR-0008)", () => {
