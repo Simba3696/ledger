@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
-import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch } from "./ledgerRepo";
+import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
-import type { Op } from "./state";
-import { ALREADY_RESOLVED, NEEDS_NEW_EPOCH, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
+import { genesisState, type Op } from "./state";
+import { ALREADY_RESOLVED, EPOCH_GONE, NEEDS_NEW_EPOCH, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
 
@@ -945,6 +945,60 @@ describe("a newer genesis no device can open stops sync safely until it is delet
     expect(result).toMatchObject({ kind: "failed" });
     expect(result).not.toHaveProperty("damagedFile");
     expect(puts(w).length).toBe(before);
+  });
+});
+
+describe("racing creates with two salts (D26)", () => {
+  // a started on the world's epoch 1; y created another epoch 1 at the same
+  // time, with a greater key, under its own passphrase's salt.
+  const THEIRS = "e000001-0000000b";
+  const THEIRS_PATH = `ledger/${THEIRS}.genesis.enc`;
+
+  async function racing(): Promise<{ a: Device; y: Device }> {
+    const other = await testKey();
+    await plant(w, { kind: "genesis", epoch: THEIRS }, { fv: 1, kind: "genesis", epoch: THEIRS, reason: "create", by: "sam", at: 2, basedOn: null, doc: w.doc }, other);
+    const y = await device({ ...w, key: other }, { login: "sam", init: { epoch: THEIRS, state: genesisState(w.doc) } });
+    running.push(y.engine);
+    const a = await open({ login: "alex" });
+    return { a, y };
+  }
+
+  it("the other creator's genesis is named as another device's ledger, not as one Ledger never writes; deleting it leaves that device's epoch gone, said so, and it restores nothing past this one", async () => {
+    const { a, y } = await racing();
+    await a.backend.addEntry(entry("Groceries"));
+    await y.backend.addEntry(entry("Bus"));
+    // y can't push yet (its first sync came before its write), so no file of
+    // its epoch but the genesis is listed: a may be told to delete it.
+    await cycle(w, a);
+    const damagedFile = { path: THEIRS_PATH, epoch: THEIRS, reason: "foreignKey" };
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile });
+    const message = damagedFileMessage(damagedFile as DamagedFile);
+    expect(message).toContain("another device's ledger created at the same time");
+    expect(message).toContain("deleting it removes that ledger");
+    expect(message).not.toContain("never writes a file like it");
+    // The person deletes it: a syncs on, and y's epoch is gone.
+    w.fake.removeFile(FULL, THEIRS_PATH);
+    await cycle(w, a, y);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null, epochGone: null });
+    expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: EPOCH }, pendingCount: 1 });
+    expect(EPOCH_GONE).toContain("join the ledger that's there now");
+    // y restores nothing past a's genesis: that would bring the flip-flop back.
+    const before = puts(w).length;
+    expect(await y.engine.restore(structuredClone(y.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: EPOCH } });
+    expect(puts(w).length).toBe(before);
+    // Its own change stays on it, for the join #8 offers.
+    expect(remarks(y)).toEqual(["Bus"]);
+    expect(w.fake.violations).toEqual([]);
+  });
+
+  it("once the other creator has written in its epoch, its genesis is named as joined, never as one to delete", async () => {
+    const { a, y } = await racing();
+    await y.backend.addEntry(entry("Bus"));
+    await cycle(w, y);
+    expect(w.fake.file(FULL, `ledger/${THEIRS}.${y.engine.deviceId}.log.enc`)).not.toBeNull();
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", damagedFile: { path: THEIRS_PATH, epoch: THEIRS, reason: "joined" } });
+    expect(await a.engine.restore(structuredClone(a.engine.current()), { discardUnsynced: true })).toMatchObject({ kind: "failed", damagedFile: { reason: "joined" } });
   });
 });
 
