@@ -56,8 +56,8 @@ async function reload(d: Device): Promise<Device> {
 }
 
 /** A restore genesis another device wrote, planted as it would land. */
-async function plantRestore(epoch: string, doc: LedgerDocument, seen: Record<string, number> = {}): Promise<void> {
-  await plant(w, { kind: "genesis", epoch }, { fv: 1, kind: "genesis", epoch, reason: "restore", by: "sam", at: 7, basedOn: { epoch: EPOCH, seen }, doc });
+async function plantRestore(epoch: string, doc: LedgerDocument, seen: Record<string, number> = {}, basedOn = EPOCH): Promise<void> {
+  await plant(w, { kind: "genesis", epoch }, { fv: 1, kind: "genesis", epoch, reason: "restore", by: "sam", at: 7, basedOn: { epoch: basedOn, seen }, doc });
 }
 
 /** The ops in a device's log file, as the repo holds it. */
@@ -705,6 +705,42 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
     expect(offered(b, true)).toContain("add:Bus");
     expect(offered(b, true)).toContain("add:Taxi");
   });
+  // Stage 6 final review, finding 2: c's pushed Bus is held only by the
+  // losing restore E2a's genesis. Sam's E2b (based on the first epoch,
+  // never saw Bus) wins, then Sam restores E3 based on E2b. A device that
+  // cycles once on E2b re-projects the first epoch under E2b's cut and
+  // offers Bus; one that was away goes from E2a straight to E3, and must
+  // offer it too.
+  for (const seesWinnerFirst of [true, false]) {
+    it(`a pushed change only a losing restore's genesis held is offered when the device ${seesWinnerFirst ? "switches through the race's winner" : "skips the race's winner"} to a later restore (seesWinnerFirst ${seesWinnerFirst})`, async () => {
+      const a = await open({ login: "alex" });
+      const c = await open({ login: "alex" });
+      await a.backend.addEntry(entry("Groceries"));
+      await quiesce(w, a, c);
+      const samBackup = structuredClone(a.engine.current());
+      await c.backend.addEntry(entry("Bus"));
+      await cycle(w, c, a);
+      // E2a: a's restore holds Bus, so c switches with nothing left behind.
+      expect((await a.engine.restore(structuredClone(a.engine.current()))).kind).toBe("restored");
+      await cycle(w, c);
+      expect(c.engine.epochKey).toMatch(/^e000002-/);
+      expect(remarks(c).sort()).toEqual(["Bus", "Groceries"]);
+      expect(c.engine.leftBehind()).toEqual([]);
+      const E2B = "e000002-ffffffff";
+      const E3 = "e000003-0000000b";
+      await plantRestore(E2B, samBackup);
+      if (seesWinnerFirst) {
+        await cycle(w, c);
+        expect(c.engine.epochKey).toBe(E2B);
+        expect(offered(c, true)).toContain("add:Bus");
+      }
+      await plantRestore(E3, samBackup, {}, E2B);
+      await cycle(w, c);
+      expect(c.engine.epochKey).toBe(E3);
+      expect(remarks(c)).toEqual(["Groceries"]);
+      expect(offered(c, true)).toContain("add:Bus");
+    });
+  }
 });
 
 describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", () => {
