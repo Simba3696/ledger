@@ -56,9 +56,20 @@ export interface SyncMeta {
   ownSnapSha: string | null;
   lastSentSnapSha: string | null;
   lastSentSnapThrough: number;
-  /** Repo file name to the blob sha this state already includes. */
+  /** Repo file name to the blob sha this state already includes: only
+   * versions this device read and joined itself, never ones another file
+   * says it holds (owner decision D24). */
   joined: Record<string, string>;
   seen: VersionVector;
+  /** Per other device, what this device read from that device's own files
+   * (owner decision D24): the last L of the version of its log joined, and
+   * the `through` of the version of its snapshot joined. A log's ops at or
+   * below `logReach` are not joined again (that log gave them), and a log
+   * whose snapThrough is past both waits for its snapshot (section 8.2).
+   * Neither is ever `seen`, which another device's snapshot raises on its
+   * word alone, and a snapshot's `through` never leaves a log's ops out. */
+  logReach: VersionVector;
+  snapReach: VersionVector;
   lastSeenCommit: string | null;
   refEtag: string | null;
   /** The tab that may write (section 10.2): every mutation checks it. */
@@ -91,6 +102,8 @@ const META_KEYS = [
   "lastSentSnapThrough",
   "joined",
   "seen",
+  "logReach",
+  "snapReach",
   "lastSeenCommit",
   "refEtag",
   "writerToken",
@@ -115,6 +128,7 @@ export function checkMeta(value: unknown): MetaCheck {
   if (!isTextOrNull(value.refEtag) || typeof value.writerToken !== "string") return bad("meta tokens are malformed");
   if (!isPlainObject(value.joined) || !Object.values(value.joined).every((sha) => isShaOrNull(sha) && sha !== null)) return bad("meta joined is malformed");
   if (!isVersionVector(value.seen)) return bad("meta seen is malformed");
+  if (!isVersionVector(value.logReach) || !isVersionVector(value.snapReach)) return bad("meta reach is malformed");
   return { ok: true, meta: value as unknown as SyncMeta };
 }
 

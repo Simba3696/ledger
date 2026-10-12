@@ -828,6 +828,8 @@ describe("nothing on the device is plaintext (AC15)", () => {
         "ownLogThrough",
         "ownMaxL",
         "ownSnapSha",
+        "logReach",
+        "snapReach",
         "refEtag",
         "seen",
         "writerToken",

@@ -27,7 +27,7 @@ import { LOCAL_FORMAT_VERSION, checkMeta, decodeDelta, decodeStoredState, isChai
 import { rehomeReissue } from "./rehome";
 import { LEDGER_DIR, READ_BOUNDS, openRepoFile, plainSize, repoPath, type FileBounds, type FileRead } from "./repoFiles";
 import { applyOp, cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
-import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from "./tags";
+import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag, type VersionVector } from "./tags";
 
 // The sync engine (design sections 3.4, 3.5, 7, 8, 10, 11 and 12): the
 // persisted state, the commit path and the stale-UI fence (the local half),
@@ -79,9 +79,10 @@ import { LamportExhausted, newDeviceId, nextLamport, randomHex, type Tag } from 
 //      a malformed one halts only its own stream (section 12), and its sha
 //      is not recorded, so it is read again once its device writes anew. A
 //      log whose snapshot point is past what this device holds from its
-//      device needs that device's snapshot first (section 8.2); a first
-//      start begins from the largest snapshot instead (section 8.3). A
-//      snapshot also vouches for the file versions in its `joined` map.
+//      device's own files needs that device's snapshot first (section
+//      8.2), a first start included (section 8.3). A snapshot vouches only
+//      for its own device's ops: its `joined` and `seen` never stand in for
+//      reading another file (owner decision D24).
 //   5. Settle this device's own snap, then its own log, from the listed
 //      sha alone: the sha it knows, the one it last sent (that send
 //      landed), or anything else, which is read and either is this device's
@@ -156,6 +157,8 @@ export type MetaPatch = Partial<
     | "lastSentSnapSha"
     | "lastSentSnapThrough"
     | "joined"
+    | "logReach"
+    | "snapReach"
     | "lastSeenCommit"
     | "refEtag"
   >
@@ -293,6 +296,8 @@ type Halt = "needsUpdate" | "needsAttention";
 interface ColdJoin {
   state: SyncState;
   joined: Record<string, string>;
+  logReach: VersionVector;
+  snapReach: VersionVector;
   complete: boolean;
   halted: Map<string, Halt>;
   gap: boolean;
@@ -303,9 +308,11 @@ interface StreamSource {
   listing: Listing;
   /** The epoch's genesis state, which every snap is checked against. */
   genesis: () => Promise<SyncState>;
-  /** Per device, the greatest L the state being built holds: raised as
-   * snapshots and logs are read. */
-  seen: Map<string, number>;
+  /** Per device, the last L of its log and the `through` of its snapshot
+   * that the state being built holds, as read from that device's own files
+   * (meta.logReach and meta.snapReach): raised as they are read. */
+  logReach: Map<string, number>;
+  snapReach: Map<string, number>;
   /** The file versions that state already includes. */
   joined: Readonly<Record<string, string>>;
   /** The device whose files are not read (this device, in a cycle). */
@@ -314,8 +321,6 @@ interface StreamSource {
   logs: string[];
   /** A file's versions to try, the listed one first. */
   versions: (name: string) => Listed[];
-  /** Nothing is joined from any device yet: start from one snapshot. */
-  cold: boolean;
 }
 
 /** What #readStreams found: snapshots (as states) and ops to join, the file
@@ -323,9 +328,11 @@ interface StreamSource {
 interface Streams {
   states: SyncState[];
   ops: [device: string, op: Op][];
-  /** Files newly joined, name to blob sha, with the joined maps of the
-   * snapshots read (section 8.3). */
+  /** Files newly joined (each read here), name to blob sha. */
   joined: Record<string, string>;
+  /** The source's reaches, raised by what was read. */
+  logReach: Map<string, number>;
+  snapReach: Map<string, number>;
   /** Listed files that can't be joined (a log, or a snap a log waits for),
    * and listed files found sound. */
   halted: Map<string, Halt>;
@@ -604,6 +611,8 @@ export class SyncEngine {
         lastSentSnapThrough: 0,
         joined: {},
         seen: vectorOf(state.seen),
+        logReach: {},
+        snapReach: {},
         lastSeenCommit: null,
         refEtag: null,
         writerToken: "",
@@ -1043,7 +1052,12 @@ export class SyncEngine {
     }
 
     const others = await this.#readOthers(listing);
-    const patch: MetaPatch = { ...own.patch, joined: { ...this.#meta!.joined, ...genesis.joined, ...others.joined } };
+    const patch: MetaPatch = {
+      ...own.patch,
+      joined: { ...this.#meta!.joined, ...genesis.joined, ...others.joined },
+      logReach: vectorOf(others.logReach),
+      snapReach: vectorOf(others.snapReach),
+    };
     if (others.complete && !listing.truncated) {
       patch.lastSeenCommit = listing.commit;
       patch.refEtag = listing.etag;
@@ -1125,10 +1139,10 @@ export class SyncEngine {
 
   /** Step 4: every other device's log in the epoch that this device hasn't
    * joined at its listed sha, read by blob sha, and a device's snapshot
-   * only when its log needs it (section 8.2), or, on a first start, the one
-   * largest snapshot (section 8.3). A file that can't be read halts its
+   * only when its log needs it (sections 8.2 and 8.3; a first start is no
+   * different, owner decision D24). A file that can't be read halts its
    * stream (section 12); a log whose snapshot point is past what this device
-   * has seen from it waits for that snapshot. Neither is joined in part, and
+   * holds from its device's own files waits for that snapshot. Neither is joined in part, and
    * neither sha is recorded, so the next cycle tries again. `complete` says
    * nothing was left out. */
   async #readOthers(listing: Listing): Promise<Streams> {
@@ -1138,7 +1152,8 @@ export class SyncEngine {
     const streams = await this.#readStreams({
       listing,
       genesis: () => this.#epochGenesis(listing),
-      seen: new Map(this.#state!.seen),
+      logReach: new Map(Object.entries(meta.logReach)),
+      snapReach: new Map(Object.entries(meta.snapReach)),
       joined: meta.joined,
       skip: meta.deviceId,
       logs,
@@ -1146,9 +1161,6 @@ export class SyncEngine {
         const listed = listing.files.get(name);
         return listed ? [listed] : [];
       },
-      // Nothing joined from any other device: an own write made before the
-      // first cycle joined anything doesn't count.
-      cold: [...this.#state!.seen.keys()].every((device) => device === meta.deviceId),
     });
     for (const name of streams.healthy) this.#halted.delete(name);
     for (const [name, halt] of streams.halted) this.#halted.set(name, halt);
@@ -1160,20 +1172,35 @@ export class SyncEngine {
 
   /** Reads the epoch's device streams (sections 8.2 and 8.3): for each log,
    * the first of its versions that can be joined. A log whose snapThrough
-   * is past what the state holds from its device needs that device's
-   * snapshot first, and is never joined across the gap: its snap is read
-   * (each version not yet joined, in order) and joined, and if none reaches
-   * the log's snapThrough (a stale read) the log waits. A cold read starts
-   * from the largest listed snapshot instead (cost only, never correctness).
-   * Every snapshot joined also marks the file versions in its `joined` map
-   * as joined: blobs are content-addressed, so the snapshot holds them.
-   * Ops at or below what the state holds from a device are left out: logs
-   * are cumulative and joined whole. */
+   * is past what the state holds from its device's own files needs that
+   * device's snapshot first, and is never joined across the gap: its snap
+   * is read (each version not yet joined, in order) and joined, and if
+   * none reaches the log's snapThrough (a stale read) the log waits. A
+   * snapshot's coverage claims are never taken for correctness (owner
+   * decision D24): its `joined` and its `seen` for other devices never mark
+   * a file joined, skip a log's ops or close another device's gap, and its
+   * `through` only closes its own device's gap. So every log whose version
+   * this device hasn't joined is read and its ops joined, and the state is
+   * the join of the files read. The only ops left out are those at or below
+   * the last L of the version of the same log joined before: logs are
+   * cumulative, so that log already gave them. */
   async #readStreams(src: StreamSource): Promise<Streams> {
     const epoch = this.#meta!.epochKey;
-    const out: Streams = { states: [], ops: [], joined: {}, halted: new Map(), healthy: new Set(), gap: false, complete: true };
+    const out: Streams = {
+      states: [],
+      ops: [],
+      joined: {},
+      logReach: src.logReach,
+      snapReach: src.snapReach,
+      halted: new Map(),
+      healthy: new Set(),
+      gap: false,
+      complete: true,
+    };
     const holds = (name: string, sha: string) => (out.joined[name] ?? src.joined[name]) === sha;
-    const seenOf = (device: string) => src.seen.get(device) ?? 0;
+    const logOf = (device: string) => src.logReach.get(device) ?? 0;
+    // What the state holds of a device's ops from its own files.
+    const heldOf = (device: string) => Math.max(logOf(device), src.snapReach.get(device) ?? 0);
     const isListed = (name: string, sha: string) => src.listing.files.get(name)?.sha === sha;
     // The devices with a file in the epoch. A device's ops reach another
     // only through its log, and nothing is ever deleted, so every device an
@@ -1200,29 +1227,12 @@ export class SyncEngine {
         }
       }
       out.states.push(state);
-      for (const [device, L] of state.seen) if (L > seenOf(device)) src.seen.set(device, L);
+      // Its own device's ops through `through` (its seen for itself, which
+      // the validator holds it to), and nothing about any other device's.
+      if (file.through > (src.snapReach.get(file.device) ?? 0)) src.snapReach.set(file.device, file.through);
       out.joined[name] = listed.sha;
-      for (const [joinedName, sha] of Object.entries(file.joined)) {
-        const joinedFile = parseRepoFileName(joinedName);
-        // The genesis is the cycle's own to read and record.
-        if (!joinedFile || joinedFile.epoch !== epoch || joinedFile.kind === "genesis" || joinedFile.device === src.skip) continue;
-        // A name no file has would only grow meta and every own snapshot:
-        // a file listed later is read then, which costs only that read.
-        if (!src.listing.files.has(joinedName)) continue;
-        if (out.joined[joinedName] === undefined && src.joined[joinedName] === undefined) out.joined[joinedName] = sha;
-      }
       return read;
     };
-
-    if (src.cold) {
-      const snaps = [...src.listing.files]
-        .filter(([, { file }]) => file.kind === "snap" && file.epoch === epoch && file.device !== src.skip)
-        .sort(([nameA, a], [nameB, b]) => b.size - a.size || (nameA < nameB ? -1 : 1));
-      for (const [name, listed] of snaps) {
-        if (holds(name, listed.sha)) continue;
-        if ((await joinSnap(name, listed)).ok) break;
-      }
-    }
 
     for (const name of src.logs) {
       const file = parseRepoFileName(name);
@@ -1244,7 +1254,7 @@ export class SyncEngine {
           continue;
         }
         const log = read.read.file;
-        if (log.snapThrough > seenOf(device)) {
+        if (log.snapThrough > heldOf(device)) {
           for (const snap of src.versions(snapName)) {
             if (holds(snapName, snap.sha)) continue;
             const snapRead = await joinSnap(snapName, snap);
@@ -1252,9 +1262,9 @@ export class SyncEngine {
               if (listed && isListed(snapName, snap.sha)) out.halted.set(snapName, haltOf(snapRead));
               continue;
             }
-            if (seenOf(device) >= log.snapThrough) break;
+            if (heldOf(device) >= log.snapThrough) break;
           }
-          if (log.snapThrough > seenOf(device)) {
+          if (log.snapThrough > heldOf(device)) {
             // Not joined across the gap: a stale snap read waits for the
             // next cycle, and a snap that can't be read halts the stream.
             if (listed && !out.halted.has(snapName)) out.gap = true;
@@ -1265,9 +1275,9 @@ export class SyncEngine {
           out.halted.delete(snapName);
           for (const healthy of [name, snapName]) out.healthy.add(healthy);
         }
-        for (const op of log.ops) if (op.L > seenOf(device)) out.ops.push([device, op]);
+        for (const op of log.ops) if (op.L > logOf(device)) out.ops.push([device, op]);
         const last = log.ops.at(-1)?.L ?? 0;
-        if (last > seenOf(device)) src.seen.set(device, last);
+        if (last > logOf(device)) src.logReach.set(device, last);
         out.joined[name] = version.sha;
         done = true;
         break;
@@ -1786,6 +1796,8 @@ export class SyncEngine {
           lastSentSnapThrough: 0,
           joined: rebuilt.joined,
           seen: vectorOf(next.seen),
+          logReach: rebuilt.logReach,
+          snapReach: rebuilt.snapReach,
           lastSeenCommit: rebuilt.complete ? listing.commit : null,
           refEtag: rebuilt.complete ? listing.etag : null,
         };
@@ -1821,9 +1833,9 @@ export class SyncEngine {
     }
   }
 
-  /** The epoch rebuilt from its files (section 8.3): the genesis, the
-   * largest listed snapshot, then every log, each device's snapshot read
-   * where its log needs it (section 8.2). A version that can't be joined
+  /** The epoch rebuilt from its files (section 8.3): the genesis, then every
+   * log, each device's snapshot read where its log needs it (section 8.2),
+   * none skipped on another file's word (D24). A version that can't be joined
    * now is replaced by the one this device joined before, which still reads
    * by its sha, so nothing this device had from another device is dropped.
    * A listed file that wasn't joined is reported as #readOthers would find
@@ -1854,18 +1866,20 @@ export class SyncEngine {
     const streams = await this.#readStreams({
       listing,
       genesis: async () => genesis.state,
-      seen: new Map(state.seen),
+      logReach: new Map(),
+      snapReach: new Map(),
       joined: {},
       skip: null,
       logs,
       versions: (name) => versions.get(name) ?? [],
-      cold: true,
     });
     for (const part of streams.states) joinInto(state, part);
     for (const [device, op] of streams.ops) applyOp(state, device, op);
     return {
       state,
       joined: { [genesisName]: genesis.sha, ...streams.joined },
+      logReach: vectorOf(streams.logReach),
+      snapReach: vectorOf(streams.snapReach),
       complete: !listing.truncated && streams.complete,
       halted: streams.halted,
       gap: streams.gap,

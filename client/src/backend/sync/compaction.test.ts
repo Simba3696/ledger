@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bytesToBase64 } from "../base64";
 import { checkRepoFile } from "./codec";
-import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, edits, entry, expectConverged, nextTask, plant, puts, quiesce, remarks, row, since, world, type Device, type World } from "./cycleTestkit";
+import { EPOCH, FULL, GENESIS, MemoryStore, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, since, world, type Device, type World } from "./cycleTestkit";
 import type { RepoFile } from "./epoch";
 import { unseal } from "./records";
 import { repoPath } from "./repoFiles";
@@ -12,8 +12,10 @@ import { Rng, deviceId, testEnv } from "./testkit";
 // Compaction, the gap check and cold start (design section 8), against the
 // fake GitHub: a device snapshots its own log with no agreement between
 // devices (8.1), a reader never joins a log across a snapshot it hasn't read
-// (8.2), a new or long-offline device catches up through snapshots and their
-// `joined` maps (8.3), and the device folds its saved tail into its base
+// (8.2), a new or long-offline device catches up by reading every log it
+// hasn't joined and the snapshots those logs need, never taking a
+// snapshot's coverage claims on its word (8.3, owner decision D24), and the
+// device folds its saved tail into its base
 // (8.4). Acceptance item 12: no op is lost for any reader at any point, and
 // a device offline past several compactions catches up and publishes its
 // own offline writes. Fictional data only.
@@ -455,8 +457,7 @@ describe("the gap check (section 8.2)", () => {
     await cycle(w, b);
     expect(status(b)).toBe("saving");
     expect(remarks(b)).toEqual(["One", "Two"]);
-    // The stale snap's joined map names an older version of a's log; the
-    // listed one is not joined across the gap.
+    // The listed log is not joined across the gap.
     const joined = b.store.meta().joined as Record<string, string>;
     expect(joined[`${EPOCH}.${a.engine.deviceId}.log.enc`]).not.toBe(stored(a, "log")!.sha);
     await cycle(w, b);
@@ -491,74 +492,17 @@ describe("the gap check (section 8.2)", () => {
 });
 
 describe("cold start and offline catch-up (section 8.3)", () => {
-  it("a new device reads the genesis, one snapshot and only the logs changed since it; a retired device's log is skipped through `joined`", async () => {
-    const retired = await open({ login: "sam" });
-    await write(retired, "Retired");
-    await cycle(w, retired);
-    retired.engine.stop();
+  it("a snapshot no listed log needs is never read: a cold start doesn't start from the largest one, and a garbage one halts nothing", async () => {
     const a = await open(every(2));
     await write(a, "One", "Two");
     await compactNow(a);
-    await write(a, "Three");
-    await cycle(w, a);
-    const from = w.fake.requests.length;
-    const fresh = await open({ login: "sam" });
-    const read = blobReads(from).map((r) => r.path.split("/").at(-1));
-    expect(read.sort()).toEqual([w.fake.file(FULL, `ledger/${GENESIS}`)!.sha, stored(a, "snap")!.sha, stored(a, "log")!.sha].sort());
-    expect(readsOf(from, stored(retired, "log")!.sha)).toBe(0);
-    expect(remarks(fresh).sort()).toEqual(["One", "Retired", "Three", "Two"]);
-    expectConverged(a, fresh);
-    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
-  });
-
-  it("a write made before the first cycle joins anything still starts cold: no retired device's files are read", async () => {
-    const retired: Device[] = [];
-    for (let i = 0; i < 3; i++) {
-      const d = await open({ ...every(1), login: "sam" });
-      await write(d, `Retired ${i}`);
-      await compactNow(d);
-      retired.push(d);
-    }
-    const a = await open(every(1));
-    await write(a, "A");
-    await compactNow(a);
-    for (const d of retired) d.engine.stop();
-    const retiredShas = retired.flatMap((d) => [stored(d, "log")!.sha, stored(d, "snap")!.sha]);
-    const from = w.fake.requests.length;
-    let ready!: (d: Device) => void;
-    const opened = new Promise<Device>((resolve) => (ready = resolve));
-    let armed = true;
-    const wrapFetch =
-      (inner: typeof fetch): typeof fetch =>
-      async (input, init) => {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (armed && url.includes("/git/trees/")) {
-          armed = false;
-          // The user adds an entry while the first listing is in flight.
-          await write(await opened, "Fresh");
-        }
-        return inner(input, init);
-      };
-    const fresh = await open({ login: "sam", noSettle: true, wrapFetch });
-    ready(fresh);
-    await fresh.engine.sync();
-    expect(armed).toBe(false);
-    expect(retiredShas.reduce((n, sha) => n + readsOf(from, sha), 0)).toBe(0);
-    expect(blobReads(from)).toHaveLength(3);
-    expect(remarks(fresh).sort()).toEqual(["A", "Fresh", "Retired 0", "Retired 1", "Retired 2"]);
-  });
-
-  it("a cold start whose largest snapshot can't be read takes the next, and still converges", async () => {
-    const a = await open(every(2));
-    await write(a, "One", "Two");
-    await compactNow(a);
-    // Larger than a's: random padding doesn't compress.
+    // Larger than a's (random padding doesn't compress), and no log names it.
     const X = deviceId(0xc);
     const padding = bytesToBase64(crypto.getRandomValues(new Uint8Array(20_000)));
     const garbage = await plant(w, { kind: "snap", epoch: EPOCH, device: X }, { fv: 1, kind: "snap", epoch: EPOCH, device: X, padding });
     const from = w.fake.requests.length;
     const fresh = await open({ login: "sam" });
-    expect(readsOf(from, garbage)).toBe(1);
+    expect(readsOf(from, garbage)).toBe(0);
     expect(readsOf(from, stored(a, "snap")!.sha)).toBe(1);
     expect(remarks(fresh)).toEqual(["One", "Two"]);
     expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
@@ -800,9 +744,9 @@ describe("file bounds: a device never publishes an own file every reader would r
 describe("a snapshot's seen and joined name only devices and files the repo lists", () => {
   const hex = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
 
-  /** Plants `x`'s snapshot again under the name of a device `z` that has no
-   * log, changed by `edit`: the largest snapshot, which a cold start reads
-   * first. */
+  /** Plants `x`'s snapshot again under the name of a device `z`, changed by
+   * `edit`, with a log for `z` trimmed to it: a snapshot every reader's gap
+   * check (section 8.2) reads. */
   async function plantFromSnap(x: Device, edit: (snap: SnapContent & Record<string, unknown>) => void): Promise<string> {
     const snap = (await unseal(stored(x, "snap")!.text, w.key)) as SnapContent & Record<string, unknown>;
     const z = `d${hex()}`;
@@ -811,6 +755,7 @@ describe("a snapshot's seen and joined name only devices and files the repo list
     edit(snap);
     snap.seen = Object.fromEntries(Object.entries(snap.seen).sort(([a], [b]) => (a < b ? -1 : 1)));
     await plant(w, { kind: "snap", epoch: EPOCH, device: z }, snap);
+    await plant(w, { kind: "log", epoch: EPOCH, device: z }, logFile(z, [], { snapThrough: snap.through, chain: snap.chain }));
     return z;
   }
 
@@ -831,13 +776,14 @@ describe("a snapshot's seen and joined name only devices and files the repo list
     await cycle(w, r);
     await cycle(w, r);
     expect(puts(w).length).toBeGreaterThan(before);
-    expect(r.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    // Only z's stream halts, on the snapshot its log needs.
+    expect(r.engine.getState()).toMatchObject({ status: "needsAttention", pendingCount: 0 });
     const s = await open({ login: "sam" });
     expect(remarks(s).sort()).toEqual(["From x", "Mine"]);
     expect(r.logs.some((l) => l.includes("no file in the repo"))).toBe(true);
   });
 
-  it("joined names no file lists are not taken: they never reach the reader's own snapshot", async () => {
+  it("a snapshot's joined map is never taken: names no file lists never reach the reader's meta or its own snapshot", async () => {
     const x = await open({ ...every(1), login: "sam" });
     await write(x, "From x");
     await compactNow(x);
@@ -851,6 +797,138 @@ describe("a snapshot's seen and joined name only devices and files the repo list
     await write(r, "Mine");
     await compactNow(r);
     expect(Object.keys((await repoSnap(r))!.joined).filter((name) => phantoms.includes(name))).toEqual([]);
+  });
+});
+
+describe("a snapshot's coverage claims are never trusted (owner decision D24)", () => {
+  const logName = (d: Device) => `${EPOCH}.${d.engine.deviceId}.log.enc`;
+
+  /** Re-plants `author`'s snapshot (validly encrypted, and valid to every
+   * check a reader runs) claiming coverage of `other`'s ops that its state
+   * doesn't hold: `seen` through `other`'s greatest L, and/or `other`'s
+   * listed log as joined. */
+  async function overClaim(author: Device, other: Device, claims: { seen?: boolean; joined?: boolean }): Promise<void> {
+    const snap = (await unseal(stored(author, "snap")!.text, w.key)) as SnapContent & { maxL: number };
+    const L = other.store.meta().ownMaxL as number;
+    if (claims.seen) {
+      snap.seen[other.engine.deviceId!] = L;
+      snap.seen = Object.fromEntries(Object.entries(snap.seen).sort(([a], [b]) => (a < b ? -1 : 1)));
+      snap.maxL = Math.max(snap.maxL, L);
+    }
+    if (claims.joined) snap.joined[logName(other)] = stored(other, "log")!.sha;
+    expect(checkRepoFile(file(author, "snap"), snap, genesisState(w.doc)).ok).toBe(true);
+    await plant(w, file(author, "snap"), snap);
+  }
+
+  it.each([
+    ["seen", { seen: true }],
+    ["joined", { joined: true }],
+    ["seen and joined", { seen: true, joined: true }],
+  ])("a snapshot over-claiming %s for another device's log: a cold start still reads that log, and the devices converge", async (_, claims) => {
+    const y = await open({ ...every(1), login: "sam" });
+    await write(y, "From y");
+    await compactNow(y);
+    y.engine.stop();
+    const x = await open({ login: "alex" });
+    await write(x, "From x 1", "From x 2");
+    await cycle(w, x);
+    await overClaim(y, x, claims);
+    const fresh = await open({ login: "sam" });
+    expect(remarks(fresh).sort()).toEqual(["From x 1", "From x 2", "From y"]);
+    await quiesce(w, x, fresh);
+    expectConverged(x, fresh);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("a snapshot over-claiming seen, read to close its own device's gap, can't make a device back from offline skip another device's snapshot", async () => {
+    const r = await open({ login: "alex" });
+    const pair = [await open({ ...every(2), login: "sam" }), await open({ ...every(2), login: "sam" })];
+    // y's log is read before x's: the listing is in name order.
+    const [y, x] = pair.sort((a, b) => (a.engine.deviceId! < b.engine.deviceId! ? -1 : 1));
+    await write(x, "X early");
+    await cycle(w, x);
+    await cycle(w, r);
+    expect(remarks(r)).toEqual(["X early"]);
+    // r is offline from here on.
+    await write(y, "Y 1", "Y 2");
+    await compactNow(y);
+    y.engine.stop();
+    await write(x, "X late 1", "X late 2");
+    await compactNow(x);
+    // y's snapshot claims x's ops through x's snapshot point; its state
+    // holds only "X early".
+    await overClaim(y, x, { seen: true });
+    const from = w.fake.requests.length;
+    await cycle(w, r);
+    expect(readsOf(from, stored(x, "snap")!.sha)).toBe(1);
+    expect(remarks(r).sort()).toEqual(["X early", "X late 1", "X late 2", "Y 1", "Y 2"]);
+    await quiesce(w, r, x);
+    expectConverged(r, x);
+    expect(r.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("a snapshot over-claiming its own through closes its log's gap, but never leaves out that log's ops", async () => {
+    const r = await open({ login: "sam" });
+    const x = await open(every(3));
+    await write(x, "One", "Two", "Three");
+    await compactNow(x);
+    await write(x, "Four", "Five");
+    await cycle(w, x);
+    const log = await repoLog(x);
+    expect(log.ops.map((op) => op.L)).toEqual([log.snapThrough + 1, log.snapThrough + 2]);
+    await cycle(w, r);
+    x.engine.stop();
+    // x's snapshot claims x's ops through the log's last L; its state holds
+    // only those through the log's snapThrough.
+    const snap = (await unseal(stored(x, "snap")!.text, w.key)) as SnapContent & { maxL: number };
+    const last = log.snapThrough + 2;
+    snap.through = last;
+    snap.seen[x.engine.deviceId!] = last;
+    snap.maxL = Math.max(snap.maxL, last);
+    expect(checkRepoFile(file(x, "snap"), snap, genesisState(w.doc)).ok).toBe(true);
+    await plant(w, file(x, "snap"), snap);
+    const fresh = await open({ login: "sam" });
+    expect(remarks(fresh)).toEqual(["One", "Two", "Three", "Four", "Five"]);
+    expectConverged(r, fresh);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
+  });
+
+  it("a cold start reads every listed log once, and exactly the snapshots those logs need; catch-up reads only the logs changed since", async () => {
+    const retired = await open({ ...every(1), login: "sam" });
+    await write(retired, "Retired");
+    await compactNow(retired);
+    retired.engine.stop();
+    const b = await open({ login: "sam" });
+    await write(b, "From b");
+    await cycle(w, b);
+    const a = await open(every(2));
+    await write(a, "One", "Two");
+    await compactNow(a);
+    await write(a, "Three");
+    await cycle(w, a);
+    // a's snapshot names every other log as joined: a cold start reads them anyway.
+    const claimed = (await repoSnap(a))!.joined;
+    expect(claimed).toMatchObject({ [logName(retired)]: stored(retired, "log")!.sha, [logName(b)]: stored(b, "log")!.sha });
+    const genesis = w.fake.file(FULL, `ledger/${GENESIS}`)!.sha;
+    const logs = [a, b, retired].map((d) => stored(d, "log")!.sha);
+    // b's log names no snapshot point, so b has none to read.
+    const snaps = [a, retired].map((d) => stored(d, "snap")!.sha);
+    let from = w.fake.requests.length;
+    const fresh = await open({ login: "sam" });
+    expect(blobReads(from).map((r) => r.path.split("/").at(-1)).sort()).toEqual([genesis, ...logs, ...snaps].sort());
+    expect(remarks(fresh).sort()).toEqual(["From b", "One", "Retired", "Three", "Two"]);
+    expectConverged(a, fresh);
+    // Catch-up: one log changed, so one read.
+    await write(b, "Later");
+    await cycle(w, b);
+    from = w.fake.requests.length;
+    await cycle(w, fresh);
+    expect(blobReads(from).map((r) => r.path.split("/").at(-1))).toEqual([stored(b, "log")!.sha]);
+    // Nothing changed: no read at all.
+    from = w.fake.requests.length;
+    await cycle(w, fresh);
+    expect(blobReads(from)).toEqual([]);
+    expect(fresh.engine.getState()).toMatchObject({ status: "idle" });
   });
 });
 
