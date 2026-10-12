@@ -2522,9 +2522,12 @@ export class SyncEngine {
     for (const group of leftBehind(pre, cutFor(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
-    // it behind. An earlier one is kept only while a group from it is.
+    // it behind. So is the epoch this one is based on, for a restore of the
+    // same number based on it with another cut (E1 -> E2a -> E2b -> E2c,
+    // all based on E1). An earlier one is kept only while a group from it is.
     const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
-    const olds: OldEpoch[] = [...kept.filter((entry) => entry.epoch !== from && hasGroups(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
+    const keep = (epoch: string) => epoch !== from && (epoch === basedOn?.epoch || hasGroups(epoch));
+    const olds: OldEpoch[] = [...kept.filter((entry) => keep(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
 
     const device = newDeviceId();
     const next = cloneState(genesis.state);
@@ -2553,6 +2556,7 @@ export class SyncEngine {
       refEtag: null,
       writerToken: meta.writerToken,
       prev: { epoch: from, device: meta.deviceId },
+      ...(basedOn !== null ? { basedOn: basedOn.epoch } : {}),
     };
     const base = await seal(storedState(next), this.#key);
     const oldText = olds.length > 0 ? await seal(storedOld(olds), this.#key) : null;
@@ -2613,17 +2617,18 @@ export class SyncEngine {
   }
 
   /** The `old` record to keep once only the groups `markers` are left:
-   * the epoch this device last switched from (meta.prev) is kept even with
-   * no group, since a restore that raced the one switched to may be based
-   * on it with another cut, until the device switches again; an earlier
-   * epoch only while a group from it is left. Undefined when that changes
+   * the epoch this device last switched from (meta.prev) and the one its
+   * epoch's genesis is based on (meta.basedOn) are kept even with no group,
+   * since a restore that raced the one switched to may be based on either
+   * with another cut, until the device switches again; an earlier epoch
+   * only while a group from it is left. Undefined when that changes
    * nothing, or when `old` can't be read (it is then left as it is). */
   async #oldKeeping(markers: readonly string[]): Promise<string | null | undefined> {
     if (this.#oldText === null) return undefined;
     const entries = await this.#decodeOld();
     if (entries === null) return undefined;
-    const from = this.#meta!.prev?.epoch;
-    const keep = entries.filter((entry) => entry.epoch === from || markers.some((marker) => marker.startsWith(`${entry.epoch}/`)));
+    const { prev, basedOn } = this.#meta!;
+    const keep = entries.filter((entry) => entry.epoch === prev?.epoch || entry.epoch === basedOn || markers.some((marker) => marker.startsWith(`${entry.epoch}/`)));
     if (keep.length === entries.length) return undefined;
     return keep.length === 0 ? null : seal(storedOld(keep), this.#key);
   }
