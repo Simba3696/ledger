@@ -186,13 +186,14 @@ export interface EngineState {
    * device's epoch is gone (epochGone): such a device may be the one that
    * lost, so it never advises deleting or rolling back the winner. */
   damagedFile: DamagedFile | null;
-  /** This device's epoch no longer counts in a full listing (its genesis,
-   * or one below it, was deleted on GitHub) and the listing's winner is
-   * older, or newer but can't be opened here: nothing the device can
-   * switch to. Sync stays
-   * pending, local writes go on, a restore is refused (it would write
-   * past `winner`), and #8 offers joining the ledger that's there now
-   * (EPOCH_GONE). Null otherwise. */
+  /** This device's epoch no longer counts in two full listings in a row
+   * (its genesis, or one below it, was deleted on GitHub; one listing may
+   * be stale) and the winner is older, or newer but can't be opened here:
+   * nothing the device can switch to. Sync stays pending, local writes go
+   * on, a restore is refused (it would write past `winner`), and #8 offers
+   * joining the ledger that's there now (EPOCH_GONE). Every cycle lists
+   * afresh meanwhile, and the first listing that counts the epoch again
+   * clears it. Null otherwise. */
   epochGone: EpochGone | null;
   /** A restore this tab started (restore()), once its genesis was sent:
    * "pending" while a PUT got no answer and no listing has settled it
@@ -731,6 +732,10 @@ export class SyncEngine {
   /** This device's epoch no longer counts in a full listing (EpochGone),
    * as last decided by a listing that could tell. */
   #epochGone: EpochGone | null = null;
+  /** The epoch the last full listing didn't count, if it didn't: one such
+   * listing may be stale, so epochGone waits for a second (#noteGone), and
+   * every cycle lists again while this is set. */
+  #goneSeen: string | null = null;
   /** Own log PUTs sent in the last hour, and when one last landed
    * (monotonic ms). */
   #putTimes: number[] = [];
@@ -1242,21 +1247,23 @@ export class SyncEngine {
   async #run(): Promise<boolean> {
     // A restore whose genesis may still land is settled by a listing, so
     // the head is read and listed even when nothing seems to have changed.
-    const settling = this.#restoreUnknown !== null;
-    const ref = await this.#head(!settling);
+    // So is a device whose epoch the last full listing didn't count: a
+    // 304 for the head it last handled would settle nothing (#noteGone).
+    const relist = this.#restoreUnknown !== null || this.#goneSeen !== null;
+    const ref = await this.#head(!relist);
     // The repo answered with this token: whatever stopped the last cycle at
     // the ref is gone. Anything later is found again below.
     this.#blocker = null;
     if (ref.kind === "empty") {
       this.#damaged = null;
-      this.#epochGone = null;
+      this.#notGone();
       this.#blocker = "missing";
       return false;
     }
     let listedOwn: string | undefined;
     if (ref.kind === "head") {
       const meta = this.#meta!;
-      if (ref.commitSha !== meta.lastSeenCommit || settling) {
+      if (ref.commitSha !== meta.lastSeenCommit || relist) {
         const pulled = await this.#pull(await this.#list(ref.commitSha, ref.etag));
         if (pulled === null) return false;
         listedOwn = pulled.listedOwn;
@@ -1316,7 +1323,7 @@ export class SyncEngine {
     if (winner === null) {
       // No genesis listed: no ledger in this repo (section 9.5).
       this.#damaged = null;
-      this.#epochGone = null;
+      this.#notGone();
       this.#blocker = "missing";
       return null;
     }
@@ -1330,7 +1337,7 @@ export class SyncEngine {
       // way; the state says the epoch no longer counts, so #8 can
       // offer joining the ledger that's there now, and a restore is refused.
       // (A cut listing never gets here: it stopped above.)
-      if (this.#epochGone?.epoch !== epoch || this.#epochGone.winner !== winner) this.#epochGone = { epoch, winner };
+      this.#noteGone(epoch, winner);
       this.#log(`the repo listing is older than what this device has joined, or its epoch ${epoch} is gone (the winner is ${winner}); trying again later`);
       return null;
     }
@@ -1344,7 +1351,7 @@ export class SyncEngine {
       if (!(await this.#switchToListed(listing, winner, gone))) return null;
       return this.#pull(listing);
     }
-    this.#epochGone = null;
+    this.#notGone();
     // This device's epoch wins: nothing newer stands in the way (a damaged
     // genesis that did was deleted, D26).
     this.#damaged = null;
@@ -1393,6 +1400,22 @@ export class SyncEngine {
     if (others.ops.length > 0 || state) await this.join({ ops: others.ops, ...(state ? { state } : {}) }, patch);
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
+  }
+
+  /** A full listing doesn't count this device's epoch (`winner` is the
+   * one it counts instead). A listing that lags a commit looks the same, so
+   * epochGone is set only once the listing before it, the last this device
+   * made, didn't count the epoch either (stage 6 final review); until a
+   * listing counts it again, every cycle lists afresh. */
+  #noteGone(epoch: string, winner: string | null): void {
+    if (this.#goneSeen === epoch && (this.#epochGone?.epoch !== epoch || this.#epochGone.winner !== winner)) this.#epochGone = { epoch, winner };
+    this.#goneSeen = epoch;
+  }
+
+  /** A listing counts this device's epoch, or can't tell: nothing is gone. */
+  #notGone(): void {
+    this.#goneSeen = null;
+    this.#epochGone = null;
   }
 
   /** Whether a restore genesis whose PUT got no answer landed, as far as
@@ -2635,14 +2658,14 @@ export class SyncEngine {
       const problem = read.ok ? "malformed" : read.problem;
       if (gone) {
         const epoch = this.#meta!.epochKey;
-        if (this.#epochGone?.epoch !== epoch || this.#epochGone.winner !== winner) this.#epochGone = { epoch, winner };
+        this.#noteGone(epoch, winner);
         this.#damaged = null;
         // A newer build may open it: updating the app is still a way on.
         if (problem === "needsUpdate") this.#blocker = "needsUpdate";
         this.#log(`this device's epoch ${epoch} is gone, and the winner ${winner} can't be read here (${problem}); nothing is named`);
         return false;
       }
-      this.#epochGone = null;
+      this.#notGone();
       this.#blocker = problem === "needsUpdate" ? "needsUpdate" : problem === "malformed" ? "needsAttention" : "needsPassphrase";
       // Another device already joined it: never named as one to delete.
       const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
@@ -2652,7 +2675,7 @@ export class SyncEngine {
       return false;
     }
     this.#damaged = null;
-    this.#epochGone = null;
+    this.#notGone();
     const file = read.read.file;
     const from = this.#meta!.epochKey;
     const turn = this.#turn();

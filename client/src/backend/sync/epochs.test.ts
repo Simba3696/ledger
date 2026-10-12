@@ -1069,9 +1069,10 @@ describe("racing creates with two salts (D26)", () => {
     expect(message).toContain("another device's ledger created at the same time");
     expect(message).toContain("deleting it removes that ledger");
     expect(message).not.toContain("never writes a file like it");
-    // The person deletes it: a syncs on, and y's epoch is gone.
+    // The person deletes it: a syncs on, and y's epoch is gone (two full
+    // listings in a row say so: one may be stale).
     w.fake.removeFile(FULL, THEIRS_PATH);
-    await cycle(w, a, y);
+    await cycle(w, a, y, y);
     expect(a.engine.getState()).toMatchObject({ status: "idle", damagedFile: null, epochGone: null });
     expect(y.engine.getState()).toMatchObject({ epochGone: { epoch: THEIRS, winner: EPOCH }, pendingCount: 1 });
     expect(EPOCH_GONE).toContain("join the ledger that's there now");
