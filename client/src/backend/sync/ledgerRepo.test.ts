@@ -69,9 +69,12 @@ describe("is there a ledger, create and join (section 9.5)", () => {
   it("a genesis this build can't read is found, but not joined", async () => {
     await fake.seedFile(FULL, "ledger/e000001-0000000a.genesis.enc", '{"v":2}\nxx');
     expect(await findLedger(remote())).toEqual({ kind: "needsUpdate", epoch: "e000001-0000000a" });
-    await fake.seedFile(FULL, "ledger/e000001-0000000a.genesis.enc", "not a file");
-    expect(await findLedger(remote())).toEqual({ kind: "malformed", epoch: "e000001-0000000a" });
     expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "exists" });
+    await fake.seedFile(FULL, "ledger/e000001-0000000a.genesis.enc", "not a file");
+    // A damaged one is named, so the person can delete it (D26).
+    const damagedFile = { path: "ledger/e000001-0000000a.genesis.enc", epoch: "e000001-0000000a", reason: "malformed" };
+    expect(await findLedger(remote())).toEqual({ kind: "malformed", epoch: "e000001-0000000a", damagedFile });
+    expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 })).toEqual({ kind: "exists", damagedFile });
   });
 
   it("restoring a backup into a repo with no ledger is a create with the backup's own key; a device joins it", async () => {
@@ -87,35 +90,51 @@ describe("is there a ledger, create and join (section 9.5)", () => {
     expect(d.engine.getState().status).toBe("idle");
   });
 
-  it("restoring a backup over a ledger whose winning genesis is damaged numbers the restore after it, so a household with no working device can recover (ADR-0008)", async () => {
+  it("a winning genesis this key can't open is named by findLedger, openGenesis and a restore's createLedger, nothing is written past it, and once it is deleted the restore creates the ledger (D26)", async () => {
     const backup = emptyDocument();
     backup.debts.push({ id: "00000000-0000-4000-8000-000000000d01", updatedAt: 1, updatedBy: "alex", name: "Sam", amount: "5.00" });
-    const sealed = await encryptDocument({ fv: 1, kind: "genesis", epoch: "e000001-0000000b", reason: "create", by: "alex", at: 1, basedOn: null, doc: emptyDocument() }, key.key, { salt: key.salt, iter: key.iter });
-    const damaged: [string, string][] = [
-      ["garbage bytes", "not a ledger file"],
-      ["a valid genesis cut in two", sealed.slice(0, Math.floor(sealed.length / 2))],
+    const content = (doc: unknown) => ({ fv: 1, kind: "genesis", epoch: "e000001-0000000b", reason: "create", by: "alex", at: 1, basedOn: null, doc });
+    const sealed = await encryptDocument(content(emptyDocument()), key.key, { salt: key.salt, iter: key.iter });
+    const at = sealed.indexOf("\n") + 40;
+    const other = await testKey();
+    const path = "ledger/e000001-0000000b.genesis.enc";
+    // The file, the reason the person is told, whether findLedger can tell
+    // (it has no key), whether openGenesis can (its key is derived from the
+    // file's own salt, so a key that doesn't fit reads as a wrong
+    // passphrase), and whether a create can (its key is new, so a genesis
+    // under another salt is a ledger to join).
+    const cases: [string, string, string, boolean, boolean, boolean][] = [
+      ["garbage bytes", "not a ledger file", "malformed", true, false, true],
+      ["a sealed genesis that isn't a ledger", await encryptDocument(content({}), key.key, { salt: key.salt, iter: key.iter }), "malformed", false, true, false],
+      ["a genesis altered after it was sealed", sealed.slice(0, at) + (sealed[at] === "A" ? "B" : "A") + sealed.slice(at + 1), "undecryptable", false, false, false],
+      ["a genesis under another key", await encryptDocument(content(emptyDocument()), other.key, { salt: other.salt, iter: other.iter }), "foreignKey", false, false, false],
     ];
-    for (const [name, text] of damaged) {
+    for (const [name, text, reason, byFind, byOpen, byCreate] of cases) {
       fake = createFakeGitHub({ repos: [{ owner: "alex", name: "ledger-data", private: true }], tokens: { github_pat_alex: { login: "alex", repos: [FULL], permission: "write" } } });
       client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_alex", fetch: fake.fetch });
-      await fake.seedFile(FULL, "ledger/e000001-0000000b.genesis.enc", text);
-      // A create is still refused: there is a ledger, if a damaged one.
-      expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1 }), name).toEqual({ kind: "exists" });
-      const created = await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" });
-      expect(created, name).toMatchObject({ kind: "created", epoch: expect.stringMatching(/^e000002-[0-9a-f]{8}$/) });
-      if (created.kind !== "created") throw new Error(created.kind);
+      await fake.seedFile(FULL, path, text);
+      const damagedFile = { path, epoch: "e000001-0000000b", reason };
       const found = await findLedger(remote());
-      expect(found, name).toMatchObject({ kind: "ledger", epoch: created.epoch });
-      if (found.kind !== "ledger") throw new Error(found.kind);
-      const opened = await openGenesis(found, key);
-      expect(opened.ok && opened.doc.debts.map((x) => x.name), name).toEqual(["Sam"]);
+      if (byFind) expect(found, name).toEqual({ kind: "malformed", epoch: "e000001-0000000b", damagedFile });
+      else expect(found, name).toMatchObject({ kind: "ledger", epoch: "e000001-0000000b" });
+      if (found.kind === "ledger") {
+        const opened = await openGenesis(found, key);
+        if (byOpen) expect(opened, name).toEqual({ ok: false, problem: "malformed", damagedFile });
+        else expect(opened, name).toMatchObject({ ok: false, problem: "wrongPassphrase" });
+      }
+      // Nothing is written past it, whatever the reason.
+      expect(await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" }), name).toEqual({ kind: "exists", damagedFile });
+      expect(await createLedger(remote(), await testKey(), { doc: emptyDocument(), by: "alex", at: 1 }), name).toEqual(byCreate ? { kind: "exists", damagedFile } : { kind: "exists" });
+      expect(puts(), name).toHaveLength(0);
+      // The person deletes it on GitHub: the restore goes ahead.
+      fake.removeFile(FULL, path);
+      const created = await createLedger(remote(), key, { doc: backup, by: "alex", at: 1, reason: "restore" });
+      expect(created, name).toMatchObject({ kind: "created", epoch: expect.stringMatching(/^e000001-[0-9a-f]{8}$/) });
+      const now = await findLedger(remote());
+      if (now.kind !== "ledger") throw new Error(now.kind);
+      const restored = await openGenesis(now, key);
+      expect(restored.ok && restored.doc.debts.map((x) => x.name), name).toEqual(["Sam"]);
     }
-  });
-
-  it("restoring a backup over a ledger whose genesis is under another salt is refused: it may be fine under another passphrase", async () => {
-    await plantCreate("e000001-0000000b", await testKey());
-    expect(await createLedger(remote(), key, { doc: emptyDocument(), by: "alex", at: 1, reason: "restore" })).toEqual({ kind: "exists" });
-    expect(puts()).toHaveLength(0);
   });
 
   /** An epoch 1 genesis another device created, planted as it would land. */
