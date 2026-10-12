@@ -6,7 +6,7 @@ import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
 import { genesisState, type Op } from "./state";
-import { ALREADY_RESOLVED, EPOCH_GONE, NEEDS_NEW_EPOCH, SYNC_TIMING, type SyncEngine } from "./SyncEngine";
+import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
 
@@ -1225,6 +1225,9 @@ describe("a device whose epoch is gone (stage 6 final review)", () => {
     expect(detail).toContain("no ledger is in the repo");
     expect(detail).toContain("create a new ledger");
     expect(detail).not.toContain("join the ledger that's there now");
+    expect(detail).toBe(EPOCH_GONE_EMPTY);
+    expect(epochGoneMessage(a.engine.getState().epochGone!)).toBe(EPOCH_GONE_EMPTY);
+    expect(epochGoneMessage({ epoch: EPOCH, winner: "e000001-00000001" })).toBe(EPOCH_GONE);
     expect(remarks(a)).toEqual(["Groceries"]);
   });
 
