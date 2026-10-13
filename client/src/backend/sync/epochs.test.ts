@@ -780,6 +780,59 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
       expect(offered(c, true)).toContain("add:Bus");
     });
   }
+
+  // Stage 8a (the stage 6 final review's tracked item): a device that
+  // skips an epoch takes its exact cut from the skipped epoch's genesis.
+  // c pushed Bus, which a saw, then wrote Taxi offline. a restored an older
+  // backup (E2, its cut holding Bus: replaced on purpose), then restored
+  // again (E3, based on E2). c goes from the first epoch straight to E3:
+  // only Taxi was left out, as if c had passed through E2.
+  it("a device that skips a restore's epoch offers only what that epoch's cut left out, read from the skipped genesis", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Bus"));
+    await cycle(w, c, a);
+    expect(remarks(a)).toContain("Bus");
+    await c.backend.addEntry(entry("Taxi")); // c is away from now on
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    const a3 = await reload(a2);
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe(a3.engine.epochKey);
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    // Re-applied, every device has it; Bus stays replaced, as the restorer chose.
+    await c.engine.reapply(c.engine.leftBehind()[0].id);
+    await quiesce(w, a3, c);
+    for (const d of [a3, c]) expect(remarks(d).sort()).toEqual(["Groceries", "Taxi"]);
+    expectConverged(a3, c);
+  });
+
+  it("a skipped epoch whose genesis can't be read falls back to the cut {}: it offers more, and loses nothing", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Bus"));
+    await cycle(w, c, a);
+    await c.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    const a3 = await reload(a2);
+    // E2's genesis can't be read by c: a failed blob read, every time.
+    const e2Sha = w.fake.file(FULL, repoPath({ kind: "genesis", epoch: e2 }))!.sha;
+    for (let i = 0; i < 4; i++) w.fake.failNext({ method: "GET", status: 500, path: `/git/blobs/${e2Sha}` });
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe(a3.engine.epochKey);
+    expect(offered(c).sort()).toEqual(["add:Bus", "add:Taxi"]);
+  });
 });
 
 describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", () => {
