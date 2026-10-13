@@ -25,9 +25,9 @@ import type { Op } from "./state";
 //     is listed and so is one for every number from 1 up (ADR-0008);
 //   - what a restore leaves behind is each device's writes above the cut,
 //     less display stamps, the categories, records never created and,
-//     for a record deleted in the old epoch, everything but its deletion; a
-//     record created and deleted above the cut leaves nothing (section 9.3,
-//     ADR-0008 stage 6).
+//     for a record deleted in the old epoch, everything but its deletion,
+//     which is owed even when the record was created above the cut too (a
+//     backup is any document; section 9.3, ADR-0008 stages 6 and 8a).
 
 /** One write's place: [L, device], "g" for a genesis. */
 interface Cell {
@@ -388,9 +388,8 @@ export function obligations(epoch: string, genesis: LedgerDocument, ops: readonl
     out.push({ epoch, device: cell.d, L: cell.L, kind: "set", key, value: structuredClone(cell.v) });
   }
   for (const [rk, del] of f.dels) {
+    // A record created above the cut too: a backup may hold it (stage 8a).
     if (!above(del.by, del.L)) continue;
-    const create = f.cells.get(`${rk}/_c`);
-    if (create && above(create.d, create.L)) continue;
     out.push({ epoch, device: del.by, L: del.L, kind: "del", key: rk });
   }
   return out;
