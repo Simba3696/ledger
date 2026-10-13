@@ -618,6 +618,12 @@ interface NewEpoch {
   basedOn: GenesisContent["basedOn"];
   by: string;
   at: number;
+  /** When it is based on an epoch other than the one switched from: the
+   * cut each epoch further down its line was left behind with (the first
+   * genesis in the line based on it), read from the listed geneses. A
+   * device that skipped an epoch projects what it had with these exact
+   * cuts instead of {} (stage 8a). */
+  line?: ReadonlyMap<string, VersionVector>;
 }
 
 /** What a write's commit does besides its op. `resolves`: a left-behind
@@ -2880,13 +2886,43 @@ export class SyncEngine {
     try {
       await turn.ready;
       this.#assertWritable();
-      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at });
+      const line = file.basedOn !== null && file.basedOn.epoch !== from ? await this.#lineCuts(listing, file.basedOn) : undefined;
+      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, ...(line ? { line } : {}) });
       // The cycle reads and records for the epoch it switched to.
       if (switched && this.#cycleFor !== null) this.#cycleFor = this.#identity();
       return switched;
     } finally {
       turn.end();
     }
+  }
+
+  /** The cut each epoch in a restore's line was left behind with, walking
+   * `basedOn` down through the listed geneses: `basedOn.epoch` with
+   * `basedOn.seen`, then the epoch that one's genesis is based on with its
+   * cut, and so on. The walk stops at a genesis that isn't listed or can't
+   * be read (a skipped epoch then falls back to the cut {}, which may offer
+   * more but loses nothing), and after as many steps as geneses are
+   * listed. Read only when a device switches to a restore not based on its
+   * own epoch, which skips one: one GET per epoch skipped. */
+  async #lineCuts(listing: Listing, basedOn: NonNullable<GenesisContent["basedOn"]>): Promise<Map<string, VersionVector>> {
+    const cuts = new Map<string, VersionVector>();
+    let next: GenesisContent["basedOn"] = basedOn;
+    for (let steps = 0; next !== null && !cuts.has(next.epoch) && steps < listing.files.size; steps++) {
+      const epoch = next.epoch;
+      cuts.set(epoch, next.seen);
+      const name = repoFileName({ kind: "genesis", epoch });
+      const listed = listing.files.get(name);
+      if (!listed) break;
+      try {
+        const read = await this.#read(name, listed);
+        if (!read.ok || read.read.file.kind !== "genesis") break;
+        next = read.read.file.basedOn;
+      } catch (err) {
+        this.#log(`the genesis of ${epoch} couldn't be read for its restore cut; what this device had there is offered with the cut {}`, err);
+        break;
+      }
+    }
+    return cuts;
   }
 
   /** Switches from epoch `from` to `genesis`'s, in the mutation queue;
@@ -2934,9 +2970,12 @@ export class SyncEngine {
     // the epoch `from` was based on (meta.basedOn, kept in `old`) is
     // projected again with the cut {}: it may offer more than E2b left
     // out, but loses nothing (stage 6 final review).
+    // Since stage 8a the cut is read from the skipped epoch's line when it
+    // can be (genesis.line), and is {} only when it can't.
     const skipped = basedOn === null || (basedOn.epoch !== from && !kept.some((entry) => entry.epoch === basedOn.epoch));
     const fallback = skipped ? meta.basedOn : undefined;
-    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? {} : null);
+    const line = genesis.line ?? new Map<string, VersionVector>();
+    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? (line.get(epoch) ?? {}) : null);
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
       if (cut === null || entry.epoch === from) continue;
@@ -2951,7 +2990,7 @@ export class SyncEngine {
       for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && !(group.own && !replaced.has(marker))) groups.delete(marker);
       for (const group of projected) groups.set(group.marker, group);
     }
-    for (const group of leftBehind(pre, cutFor(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
+    for (const group of leftBehind(pre, cutFor(from) ?? line.get(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
     // it behind. So is the epoch this one is based on, for a restore of the
