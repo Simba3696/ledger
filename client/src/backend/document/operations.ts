@@ -50,6 +50,7 @@ import {
   monthName,
   noEntry,
   storableDate,
+  storableDateText,
   subscriptionNotFound,
   validateCardYear,
   validateCardYearMonth,
@@ -560,7 +561,7 @@ function emiFieldsToStore(input: EmiFields, today: Date) {
 
 export function addEmi(ctx: WriteContext, input: EmiFields): EmiEntryComputed {
   const prepared = prepareEmi(input);
-  const untilTarget = prepared.durationMonths ? resolveUntilTarget(prepared.durationMonths, ctx.today) : null;
+  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today)) : null;
   const record: EmiRecord = { ...newRecord(ctx), ...emiFieldsToStore(prepared, ctx.today), untilTarget };
   ctx.doc.emis.push(record);
   return emiWithComputed(toEmi(record, ctx.handles), ctx.today);
@@ -571,7 +572,7 @@ export function updateEmi(ctx: WriteContext, row: number, input: EmiFields): Emi
   if (!isPossibleId(row)) throw emiNotFound(row);
   // A fresh Duration replaces the target; without one the stored target is
   // kept, as the store's coalesce does.
-  const untilTarget = prepared.durationMonths ? resolveUntilTarget(prepared.durationMonths, ctx.today) : null;
+  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today)) : null;
   const record = byHandle(ctx.doc.emis, ctx.handles, row);
   if (!record) throw emiNotFound(row);
   applyChanges(record, { ...emiFieldsToStore(prepared, ctx.today), untilTarget: untilTarget ?? record.untilTarget }, ctx);
