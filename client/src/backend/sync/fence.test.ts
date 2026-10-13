@@ -63,7 +63,7 @@ async function world(view = true) {
   const lastOp = () => engine.pushableOps().at(-1)!;
   const notices = async () => {
     const records = (await openSyncStore().load())!;
-    expect(records.noticeCount).toBe(engine.getState().noticeCount);
+    expect(records.notices.length).toBe(engine.getState().noticeCount);
     return records;
   };
   return { engine, backend, row: entry.row, sam, samWrites, amount, lastOp, notices };
@@ -92,7 +92,7 @@ describe("an unrendered remote change", () => {
     expect(w.amount()).toBe("15.00");
     expect(w.lastOp().set.map(([k]) => k.split("/")[2])).toEqual(["amount", "_s"]);
     const records = await w.notices();
-    expect(records.noticeCount).toBe(1);
+    expect(records.notices.length).toBe(1);
   });
 
   it("leaves no op at all when only untouched fields remain (stamps alone say nothing), but still saves the notice", async () => {
@@ -103,7 +103,7 @@ describe("an unrendered remote change", () => {
     expect(w.amount()).toBe("12.00");
     expect(w.engine.pushableOps()).toHaveLength(ops);
     expect(w.engine.getState().noticeCount).toBe(1);
-    const stored = (await w.notices()).noticeCount;
+    const stored = (await w.notices()).notices.length;
     expect(stored).toBe(1);
   });
 

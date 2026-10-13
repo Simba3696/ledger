@@ -59,7 +59,8 @@ export interface StoredRecords {
   ownLog: [L: number, text: string][];
   /** The chain entry with the greatest L, or null when there is none. */
   chainHead: [L: number, text: string] | null;
-  noticeCount: number;
+  /** Notices to show (section 4.2), by key. */
+  notices: [key: string, text: string][];
   /** Restore leftovers (section 9.3), by key. */
   leftBehind: [key: string, text: string][];
   /** The previous epochs' states after a restore, if kept. */
@@ -266,14 +267,15 @@ async function readAll(db: IDBDatabase): Promise<StoredRecords | null> {
   const tx = db.transaction([...STORES], "readonly");
   const store = (name: StoreName) => tx.objectStore(name);
   const done = finished(tx, () => null);
-  const [meta, base, tail, ownKeys, ownValues, chainCursor, noticeCount, leftKeys, leftValues, old, counts] = await Promise.all([
+  const [meta, base, tail, ownKeys, ownValues, chainCursor, noticeKeys, noticeValues, leftKeys, leftValues, old, counts] = await Promise.all([
     settle(store("meta").get(META_KEY)),
     settle(store("base").get(BASE_KEY)),
     settle(store("tail").getAll()),
     settle(store("ownLog").getAllKeys()),
     settle(store("ownLog").getAll()),
     settle(store("chain").openCursor(null, "prev")),
-    settle(store("notices").count()),
+    settle(store("notices").getAllKeys()),
+    settle(store("notices").getAll()),
     settle(store("leftBehind").getAllKeys()),
     settle(store("leftBehind").getAll()),
     settle(store("old").get(OLD_KEY)),
@@ -292,7 +294,7 @@ async function readAll(db: IDBDatabase): Promise<StoredRecords | null> {
     tail: tail as string[],
     ownLog: (ownKeys as number[]).map((L, i) => [L, ownValues[i] as string]),
     chainHead: chainCursor ? [chainCursor.key as number, chainCursor.value as string] : null,
-    noticeCount,
+    notices: (noticeKeys as string[]).map((key, i) => [key, noticeValues[i] as string]),
     leftBehind: (leftKeys as string[]).map((key, i) => [key, leftValues[i] as string]),
     old: old as string | undefined,
   };
@@ -383,7 +385,7 @@ function readMemory(): StoredRecords | null {
     tail: [...memory.tail],
     ownLog: ascending(memory.ownLog),
     chainHead: chain.at(-1) ?? null,
-    noticeCount: memory.notices.size,
+    notices: [...memory.notices].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     leftBehind: [...memory.leftBehind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     old: memory.old,
   };

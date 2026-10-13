@@ -70,7 +70,7 @@ describe("records and transactions", () => {
         [5, "o-5"],
       ],
       chainHead: [3, "c-3"],
-      noticeCount: 1,
+      notices: [["n1", "x"]],
       leftBehind: [["g1", "y"]],
       old: "old-1",
     });
@@ -80,7 +80,7 @@ describe("records and transactions", () => {
     const store = openSyncStore(noWait);
     await store.mutate(first({ tail: ["t-a", "t-b"], ownLog: { put: [[2, "o-2"], [3, "o-3"], [4, "o-4"]] }, chain: [[4, "c-4"]], notices: { put: [["n1", "x"], ["n2", "y"]] }, old: "old-1" }));
     await store.mutate({ expect: "t1", meta: META, base: "base-2", clearTail: true, tail: ["t-c"], ownLog: { dropThrough: 3 }, notices: { delete: ["n1"] }, old: null });
-    expect(await store.load()).toMatchObject({ base: "base-2", tail: ["t-c"], ownLog: [[4, "o-4"]], chainHead: [4, "c-4"], noticeCount: 1, old: undefined });
+    expect(await store.load()).toMatchObject({ base: "base-2", tail: ["t-c"], ownLog: [[4, "o-4"]], chainHead: [4, "c-4"], notices: [["n2", "y"]], old: undefined });
     await store.mutate({ expect: "t1", meta: META, clearChain: true, chain: [[1, "c-1"]] });
     expect((await store.load())?.chainHead).toEqual([1, "c-1"]);
   });
