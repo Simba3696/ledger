@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../ApiError";
 import type { LedgerBackend } from "../LedgerBackend";
-import { EPOCH, cycle, device, entry, expectConverged, logFile, plant, quiesce, remarks, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
+import { EPOCH, cycle, device, entry, expectConverged, logFile, nextTask, plant, quiesce, remarks, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { findLedger, openGenesis } from "./ledgerRepo";
-import type { SyncEngine } from "./SyncEngine";
+import { NEEDS_NEW_EPOCH, type SyncEngine } from "./SyncEngine";
 import type { Op } from "./state";
 import { MAX_L } from "./tags";
 import { Replica, deviceId, docText } from "./testkit";
@@ -100,6 +100,25 @@ describe("Lamport values at the top of the range (2^50 - 1)", () => {
     for (const d of [a, b]) expect(remarks(d).sort()).toEqual(["Planted", "Rent", "Taxi"]);
     expectConverged(a, b);
     expect(w.fake.violations).toEqual([]);
+  });
+
+  it("a device that runs out of L after another already started the next epoch: the write is refused as a change, not as offline; the device switches on its own, and the write goes through when tried again", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await plantAt(MAX_L - 1);
+    await cycle(w, a, b);
+    await a.backend.addEntry(entry("Rent")); // a starts the next epoch
+    const next = a.engine.epochKey!;
+    const refused = await b.backend.addEntry(entry("Taxi")).catch((err: unknown) => err);
+    expect(refused).toMatchObject({ status: 503 });
+    expect((refused as Error).message).not.toBe(NEEDS_NEW_EPOCH);
+    // No trigger from the test: the refusal itself sets the switch going.
+    for (let i = 0; i < 200 && b.engine.epochKey !== next; i++) await nextTask();
+    expect(b.engine.epochKey).toBe(next);
+    await expect(b.backend.addEntry(entry("Taxi"))).resolves.toBeDefined();
+    await quiesce(w, a, b);
+    for (const d of [a, b]) expect(remarks(d).sort()).toEqual(["Planted", "Rent", "Taxi"]);
+    expectConverged(a, b);
   });
 
   it("a cloned profile writing the last L there is: the fork rehomes, re-issuing at that L, and the next write starts a next epoch", async () => {
