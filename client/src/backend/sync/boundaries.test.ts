@@ -4,6 +4,7 @@ import type { LedgerBackend } from "../LedgerBackend";
 import { EPOCH, cycle, device, entry, expectConverged, logFile, plant, quiesce, remarks, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { findLedger, openGenesis } from "./ledgerRepo";
 import type { SyncEngine } from "./SyncEngine";
+import type { Op } from "./state";
 import { MAX_L } from "./tags";
 import { Replica, deviceId, docText } from "./testkit";
 
@@ -177,6 +178,39 @@ describe("dates at the ends of the calendar (0001 and 9999)", () => {
       for (const d of [now, late]) expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
     });
   }
+});
+
+describe("month keys past year 9999 (a remote op may use any 1-10 digit year)", () => {
+  it("expenses, finances, card bills and locks in years 10000 and 9999999999: every read answers, and local writes go on", async () => {
+    const r = new Replica(X, w.doc, { actor: "sam" });
+    await r.backend.addEntry(entry("Far"));
+    const [create] = r.ops;
+    const far = (month: string, L: number): Op => ({ ...create, L, set: create.set.map(([k, v]) => [k.replace(/[0-9a-f-]{36}/, `00000000-0000-4000-8000-00000000000${L}`), k.endsWith("/_c") ? { m: month } : v]) });
+    const units = (month: string, L: number): Op => ({
+      L,
+      at: 1,
+      by: "sam",
+      vv: {},
+      set: [
+        [`fm/${month}`, { salary: "1.00", otherIncome: null, savings: [] }],
+        [`cb/${month}`, [{ id: "00000000-0000-4000-8000-00000000c001", updatedAt: 1, updatedBy: "sam", name: "Card A", due: "1.00", paid: "0.00", dueDate: null, settled: false }]],
+        [`lk/${month}`, true],
+      ],
+      del: [],
+    });
+    await plant(w, { kind: "log", epoch: EPOCH, device: X }, logFile(X, [far("10000-01", 2), units("10000-01", 3), far("9999999999-12", 4), units("9999999999-12", 5)]));
+    const a = await open({ login: "alex" });
+    expect(Object.keys(a.engine.current().expenses).sort()).toEqual(["10000-01", "9999999999-12"]);
+    // Reads are asked for the years the app offers (2018 to next year) and,
+    // here, for year 10000. (A read for a year near 2^31 is O(years) in the
+    // shared finance math, a memory blow-up the year picker never asks for.)
+    for (const [year, month] of [[2026, 5], [10000, 1]] as const) await everyRead(a.backend, year, month);
+    await expect(a.backend.addEntry(entry("Near"))).resolves.toBeDefined();
+    await expect(a.backend.setMonthIncome(10000, 2, { salary: 5, otherIncome: null, savings: [] })).resolves.toBeDefined();
+    await expect(a.backend.setMonthLock(10000, 1, false)).resolves.toBeDefined();
+    await quiesce(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+  });
 });
 
 describe("an EMI term that would end past 9999-12-31", () => {
