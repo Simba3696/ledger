@@ -854,8 +854,15 @@ async function check(h: Harness, where: string): Promise<void> {
     /** The markers `ob`'s group may carry there: its device's, or an id
      * its device's slot rehomed to in that epoch. */
     const markersOf = (ob: Obligation) => new Set([ob.device, ...(owners.get(`${epoch}/${ob.device}`) ?? []).flatMap((o) => slotIds.get(o)?.get(epoch) ?? [])].map((d) => `${epoch}/${d}`));
-    const reapplied = (ob: Obligation): boolean =>
-      wOps.some(({ op }) => (ob.kind === "del" ? op.del.includes(ob.key) : op.set.some(([key, value]) => key === ob.key && (key.endsWith("/_c") || plainText(value) === plainText(ob.value)))));
+    // Re-applied into the winner's line by any device: an item a re-apply
+    // result listed as applied (and found in effect or told then), or the
+    // same write in the winning epoch by an op carrying the group's marker
+    // (not any equal write: another device may have made it on its own).
+    const reapplied = (ob: Obligation, text: string): boolean => {
+      const markers = markersOf(ob);
+      if (h.slots.some((s) => [...markers].some((m) => { const done = s.settled.get(`${m}|${text}`); return done?.how === "applied" && line.has(done.epoch); }))) return true;
+      return wOps.some(({ op }) => (op.ra ?? []).some((m) => markers.has(m)) && (ob.kind === "del" ? op.del.includes(ob.key) : op.set.some(([key, value]) => key === ob.key && (key.endsWith("/_c") || plainText(value) === plainText(ob.value)))));
+    };
     for (const ob of obligations(epoch, genesis.doc, ops, cut)) {
       counts.obligations++;
       // The near-top phantom has no device to offer its change on (D18 owes
@@ -865,9 +872,9 @@ async function check(h: Harness, where: string): Promise<void> {
       const slots = owners.get(`${epoch}/${ob.device}`) ?? [];
       expect(slots.length, `${where}: ${epoch}/${ob.device} belongs to no device`).toBeGreaterThan(0);
       const text = obligationText(ob);
-      // Re-applied by any device into the winning epoch: the change is in
-      // the oracle's op set there (AC6), whatever later writes did to it.
-      if (reapplied(ob)) {
+      // Re-applied by any device into the winner's line (AC6), whatever
+      // later writes did to it.
+      if (reapplied(ob, text)) {
         counts.reappliedOb++;
         continue;
       }
@@ -875,10 +882,10 @@ async function check(h: Harness, where: string): Promise<void> {
         if (holdsIn(finalFold, ob)) return true;
         const after = slot.epochs.slice(slot.epochs.indexOf(epoch) + 1);
         if (after.some((e) => history.geneses.has(e) && holds(history.geneses.get(e)!.doc, ob))) return true;
-        // Re-applied, skipped (it said why) or discarded on its own device,
-        // item by item, in the winner's line (in a losing epoch none is an
+        // Skipped (it said why) or discarded on its own device, item by
+        // item, in the winner's line (in a losing epoch neither is an
         // answer: the group is offered again, D18).
-        if ([...markersOf(ob)].some((m) => { const done = slot.settled.get(`${m}|${text}`); return done !== undefined && line.has(done.epoch); })) return true;
+        if ([...markersOf(ob)].some((m) => { const done = slot.settled.get(`${m}|${text}`); return done !== undefined && done.how !== "applied" && line.has(done.epoch); })) return true;
         if (slot.discardedAt.some((at) => slot.epochs.indexOf(epoch) <= slot.epochs.indexOf(at))) return true;
         const own = slot.restored.find((r) => r.from === epoch && r.device === ob.device);
         if (own && ob.L <= (history.geneses.get(own.epoch)?.basedOn?.seen[ob.device] ?? 0)) return true;
