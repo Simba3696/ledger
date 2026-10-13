@@ -7,7 +7,7 @@ import { recordEmiPayment } from "../document/operations";
 import { keyBetween } from "../document/sortKey";
 import type { ExpenseRecord, LedgerDocument } from "../document/types";
 import { sameValue } from "./canonical";
-import { COLLECTIONS, CREATE, FIELDS, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
+import { COLLECTIONS, CREATE, FIELDS, NAME_FIELD, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
 import type { StoredNotice } from "./notices";
 import type { SyncState } from "./state";
 import type { Tag } from "./tags";
@@ -345,8 +345,6 @@ export interface NoticeView {
   /** Its actions, each with what it would write now or why it can't. */
   actions: ActionPreview[];
 }
-
-const NAME_FIELD: Record<Coll, string> = { e: "remarks", debt: "name", emi: "cardOrBank", sub: "service" };
 
 /** `notice` as the list shows it, against the current `doc` (which `state`
  * materialises to). Changes nothing. */

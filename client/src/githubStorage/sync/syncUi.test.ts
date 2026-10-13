@@ -213,6 +213,17 @@ describe("labels", () => {
     expect(leftBehindItemText({ kind: "delete", coll: "debt", id: ID, record: { id: ID, name: "Sam" } })).toBe("Deleted Sam");
     expect(leftBehindItemText({ kind: "unit", key: "lk/2026-05", value: true })).toBe("the lock on May 2026: locked");
     expect(reapplyText({ applied: [add], skipped: [] })).toBe("Re-applied 1 change.");
+    // Each collection by its own name field, as a notice names it: an EMI
+    // by its card or bank (its remarks are often ""), a subscription by its
+    // service, never another collection's field.
+    const emi = { kind: "add" as const, coll: "emi" as const, id: EMI, record: { id: EMI, cardOrBank: "Car Loan", remarks: "", emiAmount: "1000.00" }, fields: {} };
+    expect(leftBehindItemText(emi)).toBe("Added Car Loan (1000.00)");
+    const sub = { kind: "delete" as const, coll: "sub" as const, id: ID, record: { id: ID, service: "Music", cardOrBank: "Card A", amount: "199.00" } };
+    expect(leftBehindItemText(sub)).toBe("Deleted Music");
+    expect(leftBehindItemText({ kind: "edit", coll: "emi", id: EMI, record: { id: EMI, cardOrBank: "Car Loan", remarks: "x" }, fields: { dueDay: 5 } })).toBe("Changed Car Loan: due day 5");
+    expect(reapplyText({ applied: [], skipped: [{ item: emi, reason: "moduleOff" }, { item: sub, reason: "notInLedger" }] })).toBe(
+      "Re-applied 0 changes. Skipped: Added Car Loan (1000.00) (its section is turned off); Deleted Music (isn't in the restored ledger).",
+    );
     expect(reapplyText({ applied: [], skipped: [{ item: add, reason: "monthLocked" }] })).toBe("Re-applied 0 changes. Skipped: Added Taxi (20.00) in May 2026 (its month is locked).");
   });
 });

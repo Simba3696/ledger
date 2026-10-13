@@ -1,6 +1,6 @@
 import type { LeftBehindItem, ReapplyResult } from "../../backend/sync/leftBehind";
 import { REFUSALS, type ActionPreview, type NoticeView } from "../../backend/sync/noticeActions";
-import { parseRegisterKey } from "../../backend/sync/keys";
+import { NAME_FIELD, parseRegisterKey } from "../../backend/sync/keys";
 import { DEVICE_SAVE_FAILED, LEDGER_UPDATED, OTHER_TAB, type EngineState, type LeftBehindView } from "../../backend/sync/SyncEngine";
 
 // The words of GitHub mode's sync UI (#7 stage 7): the status line, the
@@ -156,11 +156,14 @@ export function refusalText(action: ActionPreview, view?: NoticeView): string | 
   return REFUSALS[action.refused.reason].message;
 }
 
-/** One change a restore left behind, in words. */
+/** One change a restore left behind, in words. A record is named by its
+ * own collection's name field (keys.ts NAME_FIELD), as a notice names it:
+ * an EMI's remarks or a subscription's card would name the wrong thing. */
 export function leftBehindItemText(item: LeftBehindItem): string {
   if (item.kind === "unit") return `${registerLabel(item.key, {})}: ${valueText(item.key, item.value)}`;
   const record = item.record as Record<string, unknown>;
-  const name = String(record.remarks ?? record.name ?? record.cardOrBank ?? record.service ?? "an entry");
+  const named = record[NAME_FIELD[item.coll]];
+  const name = typeof named === "string" && named !== "" ? named : "an entry";
   const amount = record.amount ?? record.emiAmount;
   const where = item.kind === "add" && item.month ? ` in ${monthLabel(item.month)}` : "";
   if (item.kind === "add") return `Added ${name}${amount !== undefined ? ` (${String(amount)})` : ""}${where}`;

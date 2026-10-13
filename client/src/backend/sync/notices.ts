@@ -1,5 +1,5 @@
 import { sameValue } from "./canonical";
-import { CREATE, STAMP, TOGETHER, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
+import { CREATE, NAME_FIELD, STAMP, TOGETHER, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
 import { beats, joinRecord, type Op, type Register, type SyncState } from "./state";
 import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 
@@ -47,9 +47,6 @@ const QUIET_FIELDS = new Set([CREATE, STAMP, "sortKey"]);
 
 /** An EMI's balance pair: a payment, which notifies even at equal values. */
 const BALANCE = new Set(["emi/remainingAsOf", "emi/asOfDate"]);
-
-/** A record's name, as a list shows it. */
-const NAME_FIELD: Record<Coll, string> = { e: "remarks", debt: "name", emi: "cardOrBank", sub: "service" };
 
 /** An op, as a notice names it: its tag, and who made it when known. */
 interface NoticeOp {
