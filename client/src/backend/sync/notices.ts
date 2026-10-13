@@ -29,11 +29,17 @@ import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 // `seen[me]` is at least R.vv[me] (seen only grows, and R's vv was its
 // device's seen when R was made), so it can only miss a notice (section
 // 12.2 item 6), never tell of a causally later change. Another device's
-// snapshot that carries R says nothing about what R's writer had seen, and
-// R always reaches a reader through its own device's log or snapshot too
-// (every listed log and snapshot is read, ADR-0008 D24), so such a write
-// raises nothing on that snapshot's word. A deletion carries its deleter's
-// vv wherever it arrives from, so rule 2 is exact.
+// snapshot that carries R says nothing about what R's writer had seen, so
+// such a write raises nothing on that snapshot's word. Usually R reaches
+// this device through its own device's log or snapshot as well (every
+// listed log and snapshot is read, ADR-0008 D24) and is told then, but not
+// always: if another device's snapshot carrying R is joined while R's own
+// device's stream is halted (a file this build can't read) or waiting out
+// a gap, R is in the state before its own log arrives, and that later
+// arrival replaces nothing of mine. That notice is missed, an accepted
+// residual beside section 12.2 item 6 (ADR-0008, stage 7 review);
+// convergence is unaffected. A deletion carries its deleter's vv wherever
+// it arrives from, so rule 2 is exact.
 //
 // A notice is keyed by (winner op, loser op, kind, what it is about):
 // "<L>.<device>/<L>.<device>/<overwrite|deleted>/<record or register key>",
