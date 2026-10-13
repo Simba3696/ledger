@@ -205,6 +205,50 @@ describe("payEmi / payEmi (D20)", () => {
   });
 });
 
+describe("Record again across days (F5)", () => {
+  it("a list left open past a due date shows what Record again writes now, and a stale button writes nothing", async () => {
+    let clock = Date.UTC(2026, 5, 10, 9);
+    const doc = emptyDocument();
+    const g = new Replica(deviceId(0xf), doc, { actor: "alex", clock });
+    await g.backend.addEmi({ cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 9000, interestRate: null, foreclosureCharge: null });
+    const engine = new SyncEngine({ key: await testKey(), actor: "alex", store: new MemoryStore(), locks: null, log: () => {}, now: () => clock });
+    running.push(engine);
+    await engine.start();
+    await engine.initialize(EPOCH, genesisState(g.doc));
+    const backend = new DocumentBackend({ host: new SyncedHost(engine), now: () => clock, actor: "alex", newId: () => crypto.randomUUID() });
+    const sam = new Replica(deviceId(0x5), g.doc, { actor: "sam", clock });
+    await backend.payEmi((await backend.getEmis())[0].row, 1000);
+    // Sam writes once more first, so Sam's payment has the greater L.
+    await sam.backend.setMonthLock(2026, 1, true);
+    await sam.backend.payEmi((await sam.backend.getEmis())[0].row, 1000);
+    await engine.join({ ops: sam.ops.map((op): [string, Op] => [sam.device, op]) });
+    const [view] = engine.notices();
+    const shown = view.actions.find((x) => x.kind === "recordAgain")!;
+    expect(shown.refused).toBeNull();
+
+    // 90 days on, with nothing synced or written: the preview is worked out again.
+    clock += 90 * 86_400_000;
+    const [later] = engine.notices();
+    expect(later).not.toBe(view);
+    const now = later.actions.find((x) => x.kind === "recordAgain")!;
+    expect(now.writes).not.toEqual(shown.writes);
+
+    // The button still showing the old preview writes nothing, and the list moves on.
+    const revision = engine.getState().noticeRevision;
+    await expect(engine.noticeAction(view.key, "recordAgain", shown)).rejects.toMatchObject({ status: 409 });
+    expect(engine.getState().noticeRevision).not.toBe(revision);
+    expect(engine.getState().noticeCount).toBe(1);
+    // What the button shows now is exactly what it writes.
+    await engine.noticeAction(view.key, "recordAgain", now);
+    const emi = engine.current().emis[0];
+    expect(now.writes).toEqual([
+      { key: `emi/${emi.id}/remainingAsOf`, value: emi.remainingAsOf },
+      { key: `emi/${emi.id}/asOfDate`, value: emi.asOfDate },
+    ]);
+    expect(engine.getState().noticeCount).toBe(0);
+  });
+});
+
 describe("through a snapshot (section 4.2)", () => {
   it("a write that reaches this device only in a snapshot is told, with no author", async () => {
     const { offline, wrapFetch } = offlineSwitch();

@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { NoticeActionKind, NoticeView } from "../../backend/sync/noticeActions";
+import type { NoticeActionKind, NoticeView, ShownAction } from "../../backend/sync/noticeActions";
 import type { ReapplyResult } from "../../backend/sync/leftBehind";
 import type { EngineState, LeftBehindView } from "../../backend/sync/SyncEngine";
 
@@ -15,7 +15,8 @@ export interface SyncStateValue extends EngineState {
   /** This device's own groups first (D18), then other devices'. */
   leftBehind: LeftBehindView[];
   syncNow(): Promise<void>;
-  noticeAction(key: string, kind: NoticeActionKind): Promise<void>;
+  /** `shown`: what its button showed, which it must still write. */
+  noticeAction(key: string, kind: NoticeActionKind, shown?: ShownAction): Promise<void>;
   dismissNotice(key: string): Promise<void>;
   reapply(id: string): Promise<ReapplyResult>;
   discard(id: string): Promise<void>;

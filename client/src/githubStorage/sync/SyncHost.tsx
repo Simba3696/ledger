@@ -32,7 +32,7 @@ export function SyncHost({ engine, children }: { engine: SyncEngine; children?: 
       notices: engine.notices(),
       leftBehind: engine.leftBehind(),
       syncNow: () => engine.syncNow(),
-      noticeAction: (key, kind) => engine.noticeAction(key, kind),
+      noticeAction: (key, kind, shown) => engine.noticeAction(key, kind, shown),
       dismissNotice: (key) => engine.dismissNotice(key),
       reapply: (id) => engine.reapply(id),
       discard: (id) => engine.discard(id),

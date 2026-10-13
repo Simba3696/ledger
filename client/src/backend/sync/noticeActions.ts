@@ -108,6 +108,19 @@ type Plan = { refused: { reason: Refusal; detail?: string }; current?: { key: st
 
 const refuse = (reason: Refusal, detail?: string): Plan => ({ refused: detail === undefined ? { reason } : { reason, detail } });
 
+/** What a button showed: the writes (and the amount) its action previewed.
+ * An action given one runs only if it would still write exactly that. */
+export type ShownAction = Pick<ActionPreview, "writes" | "paid">;
+
+/** The refusal for an action whose plan no longer matches its button: the
+ * document or the day changed since the list was worked out. */
+export class ShownChanged extends ApiError {
+  constructor() {
+    super(409, "That changed since it was shown, so nothing was written. Check what the button says now.");
+    this.name = "ShownChanged";
+  }
+}
+
 /** "Today" in the document's zone, or UTC when this runtime's Intl doesn't
  * know it (as DocumentBackend works it out). */
 function todayOf(now: number, timeZone: string): Date {
@@ -117,6 +130,12 @@ function todayOf(now: number, timeZone: string): Date {
     if (err instanceof RangeError) return todayInAppZone(new Date(now), "UTC");
     throw err;
   }
+}
+
+/** The day "today" is for an action's plan, as text: a preview that
+ * depends on it (Record again) is worked out again when it changes. */
+export function actionDay(now: number, timeZone: string): string {
+  return todayOf(now, timeZone).toISOString().slice(0, 10);
 }
 
 /** The month an expense was created in, from its `_c` register. */
@@ -360,12 +379,15 @@ export const REFUSALS: Record<Refusal, { status: number; message: string }> = {
 
 /** Runs action `kind` of `notice` on `doc` (a copy of the current
  * document, which `state` materialises to), checked as it stands now.
- * Throws an ApiError, with `doc` unchanged, when it can't run. */
-export function applyAction(notice: StoredNotice, kind: NoticeActionKind, doc: LedgerDocument, state: SyncState, env: ActionEnv): void {
+ * Throws an ApiError, with `doc` unchanged, when it can't run, and
+ * ShownChanged when `shown` (what its button showed) isn't what it would
+ * write now. */
+export function applyAction(notice: StoredNotice, kind: NoticeActionKind, doc: LedgerDocument, state: SyncState, env: ActionEnv, shown?: ShownAction): void {
   const p = plan(notice, kind, doc, state, env);
   if (p.refused !== null) {
     const { status, message } = REFUSALS[p.refused.reason];
     throw new ApiError(status, p.refused.detail ?? message);
   }
+  if (shown !== undefined && !(sameValue(p.writes, shown.writes) && (p.paid ?? null) === (shown.paid ?? null))) throw new ShownChanged();
   p.apply(doc);
 }

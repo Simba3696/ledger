@@ -220,7 +220,7 @@ describe("SyncStatus", () => {
 describe("NoticeList", () => {
   it("offers each action with the exact value it writes, and Dismiss; a refused one is disabled with its reason", () => {
     const calls: string[] = [];
-    const node = NoticeList({ notices: [amountClash, deleted, payment], work: { busy: null, errors: {} }, onAction: (key, kind) => calls.push(`${kind} ${key}`), onDismiss: (key) => calls.push(`dismiss ${key}`) });
+    const node = NoticeList({ notices: [amountClash, deleted, payment], work: { busy: null, errors: {} }, onAction: (key, action) => calls.push(`${action.kind} ${key}`), onDismiss: (key) => calls.push(`dismiss ${key}`) });
     button(node, "Use 10.00").props.onClick();
     button(node, "Add it back as a new entry: Groceries, 45.00").props.onClick();
     button(node, /^Record again: pay 1000.00/).props.onClick();

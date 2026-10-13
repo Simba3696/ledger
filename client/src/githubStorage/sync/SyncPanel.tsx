@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import type { NoticeActionKind } from "../../backend/sync/noticeActions";
+import type { ActionPreview } from "../../backend/sync/noticeActions";
 import { LeftBehindList } from "./LeftBehindList";
 import { NoticeList, type PendingWork } from "./NoticeList";
 import { SyncMessages } from "./SyncMessages";
@@ -32,7 +32,8 @@ export function SyncPanel({ initiallyOpen = false }: { initiallyOpen?: boolean }
       (err: unknown) => setWork((w) => ({ busy: null, errors: { ...w.errors, [key]: err instanceof Error ? err.message : String(err) } })),
     );
   };
-  const onAction = (key: string, kind: NoticeActionKind) => run(key, () => sync.noticeAction(key, kind).then(() => null));
+  // The button's preview goes along: the action refuses if it would now write anything else.
+  const onAction = (key: string, action: ActionPreview) => run(key, () => sync.noticeAction(key, action.kind, { writes: action.writes, ...(action.paid !== undefined ? { paid: action.paid } : {}) }).then(() => null));
   const onDismiss = (key: string) => run(key, () => sync.dismissNotice(key).then(() => null));
   const onReapply = (id: string) => run(id, () => sync.reapply(id).then(reapplyText));
   const onDiscard = (id: string) => run(id, () => sync.discard(id).then(() => null));

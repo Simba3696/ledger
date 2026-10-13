@@ -25,7 +25,7 @@ import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
-import { applyAction, noticeView, type NoticeActionKind, type NoticeView } from "./noticeActions";
+import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
 import { checkNotice, detectNotices, overCap, type Arrivals, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
@@ -694,8 +694,9 @@ export class SyncEngine {
   #noticeRev = 0;
   /** The document the last emitted state was made with. */
   #emittedDoc: LedgerDocument | null = null;
-  /** notices() as last built, for the revision it was built at. */
-  #noticeViews: { rev: number; views: NoticeView[] } | null = null;
+  /** notices() as last built, for the revision and the day it was built
+   * at: Record again's preview depends on today (section 4.1). */
+  #noticeViews: { rev: number; day: string; views: NoticeView[] } | null = null;
   #leftBehindCount = 0;
   #leftBehindOwnCount = 0;
   /** Groups of changes restores left behind (section 9.3), by marker, as
@@ -2576,17 +2577,18 @@ export class SyncEngine {
 
   /** The notices to review, newest first, each with what its actions would
    * write now (or why they can't): the same array until noticeRevision
-   * changes. */
+   * changes or the day does (in the ledger's time zone). */
   notices(): NoticeView[] {
     const state = this.#state;
     const doc = this.#doc;
     if (state === null || doc === null) return [];
-    if (this.#noticeViews?.rev === this.#noticeRev) return this.#noticeViews.views;
     const env = this.#actionEnv();
+    const day = actionDay(env.now, doc.settings.timeZone);
+    if (this.#noticeViews?.rev === this.#noticeRev && this.#noticeViews.day === day) return this.#noticeViews.views;
     const views = [...this.#notices]
       .sort(([ka, a], [kb, b]) => b.seq - a.seq || (ka < kb ? -1 : ka > kb ? 1 : 0))
       .map(([key, notice]) => noticeView(key, notice, doc, state, env));
-    this.#noticeViews = { rev: this.#noticeRev, views };
+    this.#noticeViews = { rev: this.#noticeRev, day, views };
     return views;
   }
 
@@ -2609,12 +2611,23 @@ export class SyncEngine {
    * (an ApiError, nothing written) on a locked month, a module that is off,
    * a record that is deleted or gone ("Add it back" aside), or a ledger that
    * already holds what it would write; the notice then stays. Once the write
-   * is saved the notice is gone, in the same transaction. */
-  noticeAction(key: string, kind: NoticeActionKind): Promise<void> {
+   * is saved the notice is gone, in the same transaction. `shown`, what the
+   * button showed, must still be what it writes: otherwise it refuses
+   * (ShownChanged, 409) and noticeRevision moves, so the list shows what
+   * it would write now (a day passed, or the document changed). */
+  noticeAction(key: string, kind: NoticeActionKind, shown?: ShownAction): Promise<void> {
     return this.#amend((doc) => {
       const notice = this.#notices.get(key);
       if (!notice) throw new ApiError(404, NOTICE_GONE);
-      applyAction(notice, kind, doc, this.#state!, this.#actionEnv());
+      try {
+        applyAction(notice, kind, doc, this.#state!, this.#actionEnv(), shown);
+      } catch (err) {
+        if (err instanceof ShownChanged) {
+          this.#noticeRev++;
+          this.#emit();
+        }
+        throw err;
+      }
     }, { settles: key });
   }
 

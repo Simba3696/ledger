@@ -1,4 +1,4 @@
-import type { NoticeActionKind, NoticeView } from "../../backend/sync/noticeActions";
+import type { ActionPreview, NoticeView } from "../../backend/sync/noticeActions";
 import { actionLabel, noticeText, refusalText } from "./labels";
 
 /** Per notice key: an action under way, or why the last one failed. */
@@ -13,7 +13,7 @@ export interface PendingWork {
  * exact values it writes, and Dismiss. A button that can't run now is
  * disabled with the reason beside it. Edit/delete keeps its own words
  * (the old B9 split labels): "Add it back as a new entry", never "Keep". */
-export function NoticeList({ notices, work, onAction, onDismiss }: { notices: NoticeView[]; work: PendingWork; onAction: (key: string, kind: NoticeActionKind) => void; onDismiss: (key: string) => void }) {
+export function NoticeList({ notices, work, onAction, onDismiss }: { notices: NoticeView[]; work: PendingWork; onAction: (key: string, action: ActionPreview) => void; onDismiss: (key: string) => void }) {
   if (notices.length === 0) return null;
   return (
     <ul className="sync-review-list" aria-label="Changes that clashed">
@@ -29,7 +29,7 @@ export function NoticeList({ notices, work, onAction, onDismiss }: { notices: No
                 const reasonId = `${view.key}-${action.kind}-why`;
                 return (
                   <span key={action.kind} className="sync-review-action">
-                    <button type="button" className="sync-review-primary" disabled={busy || reason !== null} aria-describedby={reason !== null ? reasonId : undefined} onClick={() => onAction(view.key, action.kind)}>
+                    <button type="button" className="sync-review-primary" disabled={busy || reason !== null} aria-describedby={reason !== null ? reasonId : undefined} onClick={() => onAction(view.key, action)}>
                       {actionLabel(view, action)}
                     </button>
                     {reason !== null && (
