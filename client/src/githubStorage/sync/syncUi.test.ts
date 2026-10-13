@@ -22,6 +22,7 @@ import { SyncStatus } from "./SyncStatus";
 import { actionLabel, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
 import { useSyncState, type SyncStateValue } from "./syncContext";
 import { nextFocus } from "./reviewFocus";
+import syncCss from "./sync.css?raw";
 
 // GitHub mode's sync UI (#7 stage 7): the status line with "N to review",
 // the notices with their actions, the changes a restore left behind (D18),
@@ -360,6 +361,26 @@ describe("accessibility (F9)", () => {
     expect(nextFocus(["a"], "a", [])).toBeNull();
     // Items that arrived since: the next of those it knew, in order.
     expect(nextFocus(["a", "b", "c"], "a", ["x", "c"])).toBe("c");
+  });
+});
+
+describe("sync.css (F10)", () => {
+  /** Every declaration the stylesheet gives `selector`, comments left out. */
+  function rulesFor(selector: string): string {
+    const css = syncCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    return [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+      .filter(([, selectors]) => selectors.split(",").some((part: string) => part.trim() === selector))
+      .map(([, , body]) => body)
+      .join(";");
+  }
+
+  it("lets the long values a notice or button names wrap at phone width, never widen the page", () => {
+    for (const selector of [".sync-review-text", ".sync-review-reason", ".sync-review-note", ".sync-review-done", ".sync-review-error", ".sync-review-changes", ".sync-review button", ".sync-message-line", ".sync-status > span"]) {
+      expect(rulesFor(selector), selector).toMatch(/overflow-wrap:\s*anywhere/);
+    }
+    for (const selector of [".sync-review-action", ".sync-review-reason", ".sync-review-changes", ".sync-review button", ".sync-status > span"]) {
+      expect(rulesFor(selector), selector).toMatch(/min-width:\s*0/);
+    }
   });
 });
 
