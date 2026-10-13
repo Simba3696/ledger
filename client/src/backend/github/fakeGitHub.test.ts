@@ -142,3 +142,32 @@ describe("fake GitHub path ownership (AC10)", () => {
     expect(fake.requests.at(-1)?.device).toBeUndefined();
   });
 });
+
+describe("fake GitHub test views (the stage 8a property harness's oracle reads them)", () => {
+  it("versions: every file version the branch ever held, overwritten and deleted ones included, each once", async () => {
+    const gh = client();
+    await fake.seedFile(REPO, `ledger/${EPOCH}.genesis.enc`, "g");
+    const v1 = await gh.putFile({ path: MY_LOG, text: "v1", sha: null, message: sync });
+    await gh.putFile({ path: MY_LOG, text: "v2", sha: v1.sha, message: sync });
+    await gh.putFile({ path: OTHER_LOG, text: "other", sha: null, message: "Sync fedcba98" });
+    fake.removeFile(REPO, OTHER_LOG);
+    const seen = fake.versions(REPO).map(({ path, text }) => `${path}=${text}`);
+    expect(seen.sort()).toEqual([`ledger/${EPOCH}.genesis.enc=g`, `${MY_LOG}=v1`, `${MY_LOG}=v2`, `${OTHER_LOG}=other`].sort());
+    // Reading them is not a request.
+    expect(fake.requests.every((r) => r.method === "PUT")).toBe(true);
+  });
+
+  it("cutTrees: from now on a tree lists at most N entries and says it is truncated; null ends it", async () => {
+    const gh = client();
+    const first = await gh.putFile({ path: MY_LOG, text: "v1", sha: null, message: sync });
+    const second = await gh.putFile({ path: OTHER_LOG, text: "other", sha: null, message: "Sync fedcba98" });
+    fake.cutTrees(1);
+    const cut = await gh.listDir(second.commitSha);
+    expect(cut.truncated).toBe(true);
+    expect(cut.files).toHaveLength(0);
+    fake.cutTrees(null);
+    const whole = await gh.listDir(second.commitSha);
+    expect(whole.truncated).toBe(false);
+    expect(whole.files.map((f) => f.sha).sort()).toEqual([first.sha, second.sha].sort());
+  });
+});

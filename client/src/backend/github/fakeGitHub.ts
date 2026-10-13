@@ -166,6 +166,14 @@ export interface FakeGitHub {
    * tree by branch answer 409 "Git Repository is empty.", contents 404
    * "This repository is empty.", as GitHub answers an empty repo. */
   staleReads(lag: number): void;
+  /** From now on a tree response lists at most `limit` entries and sets
+   * `truncated`, as GitHub does past its 100,000 entries or 7 MB; null goes
+   * back to the limit the fake was made with. A cut listing at will. */
+  cutTrees(limit: number | null): void;
+  /** Every file version the branch has held, each (path, blob sha) once:
+   * the files at every commit of its history, overwritten and deleted ones
+   * included. A test's view, not a request. */
+  versions(repo: string): { path: string; sha: string; text: string }[];
 }
 
 /** Response headers a cross-origin page can read from api.github.com: the
@@ -516,6 +524,7 @@ export function createFakeGitHub({
   const violations: string[] = [];
   let lag = 0;
   let commitCounter = 0;
+  let treeCut: number | null = null;
 
   const addRepo = (info: FakeRepo) => {
     repoStates.set(repoKey(`${info.owner}/${info.name}`), {
@@ -927,10 +936,11 @@ export function createFakeGitHub({
         }
       };
       list(treeSha, "", query.has("recursive"));
-      const truncated = entries.length > treeEntryLimit;
+      const limit = treeCut ?? treeEntryLimit;
+      const truncated = entries.length > limit;
       return {
         status: 200,
-        json: { sha: treeSha, url: `${api}/git/trees/${treeSha}`, tree: truncated ? entries.slice(0, treeEntryLimit) : entries, truncated },
+        json: { sha: treeSha, url: `${api}/git/trees/${treeSha}`, tree: truncated ? entries.slice(0, limit) : entries, truncated },
         etag: `W/"${etag64(`${treeSha}\n${accept}`)}"`,
         cacheControl: byBranch ? CACHE_SHORT : CACHE_LONG,
       };
@@ -1217,6 +1227,20 @@ export function createFakeGitHub({
     },
     staleReads(n) {
       lag = Math.max(0, Math.floor(n));
+    },
+    cutTrees(limit) {
+      treeCut = limit === null ? null : Math.max(0, Math.floor(limit));
+    },
+    versions(repo) {
+      const state = repoState(repo);
+      const out = new Map<string, { path: string; sha: string; text: string }>();
+      for (const commitSha of state.history) {
+        for (const [path, sha] of state.commitObjects.get(commitSha)!.files) {
+          const key = `${path}@${sha}`;
+          if (!out.has(key)) out.set(key, { path, sha, text: new TextDecoder().decode(state.blobs.get(sha)) });
+        }
+      }
+      return [...out.values()];
     },
   };
 }
