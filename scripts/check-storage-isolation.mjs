@@ -39,6 +39,10 @@ const FORBIDDEN_IN_DEFAULT = [
   'ledger:restored',
   'Ledger needs to reach GitHub to save more changes',
   'Those changes were already re-applied or discarded',
+  'That notice was already dealt with',
+  'Add it back as a new entry',
+  'just before you saved; its value was kept',
+  'Changes from other devices not in the restore',
 ]
 
 // No file in the default build may have these in its name.
