@@ -1028,6 +1028,20 @@ async function main() {
       emiAmountDesc.indexOf("E2E Coral") < emiAmountDesc.indexOf("E2E Amber"),
     );
 
+    // Total Amount is each loan's original total: Coral ₹12,000, Amber ₹2,000.
+    await page.click('.emi-sort button:has-text("Total Amount")'); // ascending: smallest loan first
+    const totalAmountAsc = await emiNames();
+    check(
+      "Sorting by Total Amount ascending puts the ₹2,000 loan first",
+      totalAmountAsc.indexOf("E2E Amber") < totalAmountAsc.indexOf("E2E Coral"),
+    );
+    await page.click('.emi-sort button:has-text("Total Amount")'); // descending: largest loan first
+    const totalAmountDesc = await emiNames();
+    check(
+      "Sorting by Total Amount descending puts the ₹12,000 loan first",
+      totalAmountDesc.indexOf("E2E Coral") < totalAmountDesc.indexOf("E2E Amber"),
+    );
+
     // % Paid (foreclosure hint): Coral is 83% paid, Amber is a fresh 0% —
     // sorting by this (not the raw remaining amount, which happens to be
     // equal for both right now) is what actually distinguishes them.

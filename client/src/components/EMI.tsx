@@ -7,13 +7,14 @@ import { confirmDialog, promptDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./EMI.css";
 
-type SortField = "name" | "dueDay" | "emiAmount" | "remaining" | "percentPaid";
+type SortField = "name" | "dueDay" | "emiAmount" | "totalAmount" | "remaining" | "percentPaid";
 type SortDir = "asc" | "desc";
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "name", label: "Name" },
   { field: "dueDay", label: "Due Day" },
   { field: "emiAmount", label: "EMI Amount" },
+  { field: "totalAmount", label: "Total Amount" },
   { field: "remaining", label: "Remaining" },
   { field: "percentPaid", label: "% Paid" },
 ];
@@ -36,6 +37,7 @@ function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): Emi
     if (field === "name") cmp = a.cardOrBank.localeCompare(b.cardOrBank);
     else if (field === "dueDay") cmp = a.dueDay - b.dueDay;
     else if (field === "emiAmount") cmp = a.emiAmount - b.emiAmount;
+    else if (field === "totalAmount") cmp = a.totalAmount - b.totalAmount;
     else if (field === "remaining") cmp = a.remaining - b.remaining;
     else cmp = percentPaid(a) - percentPaid(b);
     return dir === "asc" ? cmp : -cmp;
