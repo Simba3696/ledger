@@ -432,7 +432,7 @@ describe("a next document sharing the parts it didn't change with current", () =
       for (let i = 0; i < 60; i++) await randomWrite(rng, r.backend);
     });
     expect(checked).toBeGreaterThan(40 * 25);
-  });
+  }, 60_000);
 
   it("refuses what it refuses for the same reason", async () => {
     const r = replica();

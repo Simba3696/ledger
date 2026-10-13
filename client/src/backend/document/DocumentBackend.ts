@@ -69,6 +69,13 @@ export interface HostWrite {
    * `amend`), and a write that read the document while one of those was
    * still saving would set back a whole-unit register it changed. */
   ready?: Promise<void>;
+  /** Optional: the copy of `doc` (current(), read at the write's turn) the
+   * write changes in place, instead of the whole structuredClone made
+   * otherwise. It must read exactly as that clone would, before and after
+   * any change, and nothing the write can reach through it may be shared
+   * with `doc` or anything else; the write then commits it. The sync engine
+   * copies only the parts a write reads (stage 8c-2). */
+  draft?(doc: LedgerDocument): LedgerDocument;
   commit(next: LedgerDocument): Promise<void>;
   end(): void;
 }
@@ -152,10 +159,11 @@ class Session {
 
   /** Queues a write: one at a time, in call order (the stand-in for the
    * store's per-month advisory locks). It runs on a clone of the current
-   * document and commits that clone once; if anything throws, nothing is
-   * committed and the current document is untouched. A host with begin()
-   * hears of the write at the call, before it waits in the queue, and the
-   * write reads the document only once the handle is ready. */
+   * document (the handle's draft, when it offers one) and commits that
+   * clone once; if anything throws, nothing is committed and the current
+   * document is untouched. A host with begin() hears of the write at the
+   * call, before it waits in the queue, and the write reads the document
+   * only once the handle is ready. */
   write<T>(module: ModuleName, run: (ctx: ops.WriteContext) => T): Promise<T> {
     const { host, now, actor, newId } = this.#options;
     let submitted: HostWrite | undefined;
@@ -169,7 +177,7 @@ class Session {
         if (submitted?.ready) await submitted.ready;
         const current = host.current();
         assertModuleEnabled(current.settings.modules, module);
-        const doc = structuredClone(current);
+        const doc = submitted?.draft ? submitted.draft(current) : structuredClone(current);
         const at = now();
         const value = run(Object.assign(this.#context(doc, at), { now: at, actor, newId }));
         await (submitted ? submitted.commit(doc) : host.commit(doc));

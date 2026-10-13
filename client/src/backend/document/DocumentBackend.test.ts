@@ -267,6 +267,40 @@ describe("DocumentBackend writes", () => {
     expect(host.current().monthLocks).toEqual({ [monthKey(2026, 6)]: true });
     expect(host.current().expenses[monthKey(2026, 5)].map((e) => e.remarks)).toEqual(["Lunch"]);
   });
+
+  it("runs a write on the handle's draft of the document at its turn, when it offers one, and commits that draft", async () => {
+    const { host, backend } = setup();
+    await populate(backend);
+    const drafts: [LedgerDocument, LedgerDocument][] = [];
+    const committed: LedgerDocument[] = [];
+    Object.assign(host, {
+      begin: () => ({
+        draft: (doc: LedgerDocument) => {
+          const copy = structuredClone(doc);
+          drafts.push([doc, copy]);
+          return copy;
+        },
+        commit: (next: LedgerDocument) => {
+          committed.push(next);
+          return host.commit(next);
+        },
+        end: () => {},
+      }),
+    });
+    const before = host.current();
+    const added = await backend.addEntry(entry("Tea"));
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0][0]).toBe(before);
+    expect(committed[0]).toBe(drafts[0][1]);
+    expect(host.current().expenses[monthKey(2026, 5)].map((e) => e.remarks)).toContain("Tea");
+    // The result is still the caller's own, and a refused write commits
+    // nothing.
+    added.remarks = "junk";
+    expect(host.current().expenses[monthKey(2026, 5)].map((e) => e.remarks)).not.toContain("junk");
+    await expect(backend.addEntry(entry("", 1))).rejects.toMatchObject({ status: 400 });
+    expect(drafts).toHaveLength(2);
+    expect(committed).toHaveLength(1);
+  });
 });
 
 describe("DocumentBackend order and handles", () => {

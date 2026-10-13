@@ -21,6 +21,7 @@ import { BlobReads } from "./blobReads";
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
+import { draftOf, settleDraft } from "./draft";
 import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
@@ -989,7 +990,10 @@ export class SyncEngine {
    * was before that write, and win with the later L. */
   beginWrite(): HostWrite & { ready: Promise<void> } {
     const turn = this.#turn();
-    return { ready: turn.ready, commit: (next) => turn.commit(next), end: turn.end };
+    // The write's copy is made as the write reads it (draft.ts), and its
+    // unread parts are current()'s own once settled: current() is never
+    // changed, only replaced, and the diff passes over them by identity.
+    return { ready: turn.ready, draft: draftOf, commit: (next) => turn.commit(settleDraft(next)), end: turn.end };
   }
 
   /** A write's turn (beginWrite), whose commit may also resolve a group a
