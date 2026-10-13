@@ -21,6 +21,7 @@ import { SyncPanel } from "./SyncPanel";
 import { SyncStatus } from "./SyncStatus";
 import { actionLabel, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
 import { useSyncState, type SyncStateValue } from "./syncContext";
+import { nextFocus } from "./reviewFocus";
 
 // GitHub mode's sync UI (#7 stage 7): the status line with "N to review",
 // the notices with their actions, the changes a restore left behind (D18),
@@ -256,7 +257,9 @@ describe("NoticeList", () => {
     button(node, /^Record again: pay 1000.00/).props.onClick();
     const useMine = button(node, "Use mine");
     expect(useMine.props.disabled).toBe(true);
-    expect(useMine.props["aria-describedby"]).toBe(`${payment.key}-useMine-why`);
+    // Described by the notice's sentence, and by the reason when refused (F9).
+    expect(useMine.props["aria-describedby"]).toBe("sync-notice-2-text sync-notice-2-useMine-why");
+    expect(button(node, "Use 10.00").props["aria-describedby"]).toBe("sync-notice-0-text");
     (elements(node).filter((el) => el.type === "button" && text(el) === "Dismiss")[0].props as { onClick: () => void }).onClick();
     expect(calls).toEqual([`useMine ${amountClash.key}`, `addBack ${deleted.key}`, `recordAgain ${payment.key}`, `dismiss ${amountClash.key}`]);
     const html = renderToString(node);
@@ -312,8 +315,11 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
     expect(html.indexOf("Re-apply")).toBeLessThan(html.indexOf("to review"));
     expect(html).toContain("2 to review");
     // Other devices' groups and the notices stay behind the closed toggle.
-    expect(html.slice(html.indexOf("to review"))).not.toContain("Added Bus");
-    expect(html).not.toContain("Use 10.00");
+    const review = html.slice(html.indexOf("<section"));
+    expect(review).toMatch(/^<section[^>]* hidden=""/);
+    expect(html.slice(0, html.indexOf("<section"))).not.toContain("Added Bus");
+    expect(html.slice(0, html.indexOf("<section"))).not.toContain("Use 10.00");
+    expect(review).toContain("Added Bus");
   });
 
   it("with only own groups there is nothing behind the toggle", () => {
@@ -321,6 +327,39 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
     const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
     expect(html).toContain("Added Taxi");
     expect(html).not.toContain("to review");
+  });
+});
+
+describe("accessibility (F9)", () => {
+  it("the toggle controls a list that is always in the page, hidden while closed", () => {
+    const value = contextValue({ noticeCount: 1 }, [amountClash], []);
+    for (const initiallyOpen of [false, true]) {
+      const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel, { initiallyOpen }) }));
+      const controls = /aria-controls="([^"]+)"/.exec(html)![1];
+      const section = new RegExp(`<section[^>]*id="${controls.replace(/[^\w-]/g, "\\$&")}"[^>]*>`).exec(html)?.[0];
+      expect(section, `open: ${initiallyOpen}`).toBeDefined();
+      expect(section!.includes('hidden=""')).toBe(!initiallyOpen);
+      expect(html).toContain(`aria-expanded="${initiallyOpen}"`);
+    }
+  });
+
+  it("each left-behind group's buttons are described by its heading", () => {
+    const node = LeftBehindList({ groups: [group(true, A), group(false, B)], work: { busy: null, errors: {} }, idPrefix: "p", onReapply: () => {}, onDiscard: () => {} });
+    const html = renderToString(node);
+    const described = elements(node)
+      .filter((el) => el.type === "button")
+      .map((el) => (el.props as { "aria-describedby"?: string })["aria-describedby"]);
+    expect(described).toEqual(["p-own-0", "p-own-0", "p-other-0", "p-other-0"]);
+    expect(html).toContain('id="p-own-0"');
+    expect(html).toContain('id="p-other-0"');
+  });
+
+  it("after an action removes its item, focus goes to the next item, else the one before, else the list", () => {
+    expect(nextFocus(["a", "b", "c"], "b", ["a", "c"])).toBe("c");
+    expect(nextFocus(["a", "b", "c"], "c", ["a", "b"])).toBe("b");
+    expect(nextFocus(["a"], "a", [])).toBeNull();
+    // Items that arrived since: the next of those it knew, in order.
+    expect(nextFocus(["a", "b", "c"], "a", ["x", "c"])).toBe("c");
   });
 });
 

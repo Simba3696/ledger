@@ -75,6 +75,12 @@
   background: var(--card-bg);
 }
 
+/* The review list stays in the page while closed (the toggle's
+   aria-controls names it), so hidden must win over any display rule. */
+.sync-review[hidden] {
+  display: none;
+}
+
 .sync-review-list {
   list-style: none;
   margin: 0;
