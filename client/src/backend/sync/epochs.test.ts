@@ -864,6 +864,95 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
     expectConverged(a3, c);
   });
 
+  /** The GETs of `epoch`'s genesis blob since request `from`. */
+  const genesisReads = (epoch: string, from: number) => {
+    const sha = w.fake.file(FULL, repoPath({ kind: "genesis", epoch }))!.sha;
+    return w.fake.requests.slice(from).filter((r) => r.method === "GET" && r.path.includes(`/git/blobs/${sha}`)).length;
+  };
+
+  it("the walk down a skipped epoch's line stops at the epoch switched from: no genesis below it is read (stage 8a review, E3)", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    await reload(a2);
+    const from = w.fake.requests.length;
+    await cycle(w, c);
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    // E2's genesis gives E1's cut; E1, the epoch c switched from, is not read.
+    expect(genesisReads(e2, from)).toBe(1);
+    expect(genesisReads(EPOCH, from)).toBe(0);
+  });
+
+  it("the walk stops once the cut it needs is known: the epoch the one switched from was based on is not read (stage 8a review, E3)", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    await cycle(w, c);
+    expect(c.engine.epochKey).toMatch(/^e000002-/);
+    await c.backend.addEntry(entry("Taxi"));
+    // Sam's restore of the same number, based on E1, wins; then E3 based
+    // on it. c skips both and goes from its E2 to E3.
+    await plantRestore("e000002-ffffffff", older);
+    await plantRestore("e000003-0000000c", older, {}, "e000002-ffffffff");
+    const from = w.fake.requests.length;
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe("e000003-0000000c");
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    expect(genesisReads("e000002-ffffffff", from)).toBe(1);
+    expect(genesisReads(EPOCH, from)).toBe(0);
+  });
+
+  it("the walk runs before the switch's write turn: a local write while it reads a genesis is not held up, and is offered after the switch (stage 8a review, E3)", async () => {
+    let held: string | null = null;
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let waiting = false;
+    const wrap = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (hold && held && url.includes(`/git/blobs/${held}`)) {
+        waiting = true;
+        await hold;
+      }
+      return inner(input, init);
+    };
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam", wrapFetch: wrap });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    await reload(a2);
+    held = w.fake.file(FULL, repoPath({ kind: "genesis", epoch: e2 }))!.sha;
+    hold = new Promise((resolve) => (release = resolve));
+    w.clock.mono += 30_000;
+    const switching = c.engine.sync();
+    for (const until = Date.now() + 10_000; !waiting && Date.now() < until; ) await nextTask();
+    expect(waiting).toBe(true);
+    let saved = false;
+    const write = c.backend.addEntry(entry("Late")).then(() => (saved = true));
+    for (const until = Date.now() + 10_000; !saved && Date.now() < until; ) await nextTask();
+    expect(saved).toBe(true);
+    release();
+    await switching;
+    await write;
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c, true)).toEqual(["add:Late"]);
+  }, 30_000);
+
   it("a skipped epoch whose genesis can't be read falls back to the cut {}: it offers more, and loses nothing", async () => {
     const a = await open({ login: "alex" });
     const c = await open({ login: "sam" });
