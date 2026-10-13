@@ -166,6 +166,14 @@ export interface FakeGitHub {
    * tree by branch answer 409 "Git Repository is empty.", contents 404
    * "This repository is empty.", as GitHub answers an empty repo. */
   staleReads(lag: number): void;
+  /** From now on a tree response lists at most `limit` entries and sets
+   * `truncated`, as GitHub does past its 100,000 entries or 7 MB; null goes
+   * back to the limit the fake was made with. A cut listing at will. */
+  cutTrees(limit: number | null): void;
+  /** Every file version the branch has held, each (path, blob sha) once:
+   * the files at every commit of its history, overwritten and deleted ones
+   * included. A test's view, not a request. */
+  versions(repo: string): { path: string; sha: string; text: string }[];
 }
 
 /** Response headers a cross-origin page can read from api.github.com: the
@@ -480,6 +488,7 @@ export function createFakeGitHub({
   putLatencyMs = 0,
   rateLimit = 5000,
   treeEntryLimit = TREE_ENTRY_LIMIT,
+  now = () => Date.now(),
 }: {
   apiBase?: string;
   repos?: FakeRepo[];
@@ -501,6 +510,10 @@ export function createFakeGitHub({
   rateLimit?: number;
   /** Entries a tree response holds before it sets `truncated`. */
   treeEntryLimit?: number;
+  /** The clock rate limits and token expiry are measured on (ms). Default
+   * Date.now; a simulation that runs hours of device time in seconds
+   * passes its own, so GitHub's per-minute and per-hour limits follow it. */
+  now?: () => number;
 } = {}): FakeGitHub {
   const base = apiBase.replace(/\/+$/, "");
   const repoStates = new Map<string, RepoState>();
@@ -516,6 +529,7 @@ export function createFakeGitHub({
   const violations: string[] = [];
   let lag = 0;
   let commitCounter = 0;
+  let treeCut: number | null = null;
 
   const addRepo = (info: FakeRepo) => {
     repoStates.set(repoKey(`${info.owner}/${info.name}`), {
@@ -629,11 +643,11 @@ export function createFakeGitHub({
       budget = { read: { used: 0, reset: 0 }, write: { used: 0, reset: 0 }, writes: [] };
       budgets.set(login, budget);
     }
-    const now = Math.floor(Date.now() / 1000);
+    const nowSeconds = Math.floor(now() / 1000);
     for (const counter of [budget.read, budget.write]) {
-      if (now >= counter.reset) {
+      if (nowSeconds >= counter.reset) {
         counter.used = 0;
-        counter.reset = now + 3600;
+        counter.reset = nowSeconds + 3600;
       }
     }
     return budget;
@@ -642,10 +656,10 @@ export function createFakeGitHub({
   /** Counts one request with no token and returns its rate headers. Ledger
    * always sends a token, so running past the limit is not modelled. */
   function anonymousHeaders(): Record<string, string> {
-    const now = Math.floor(Date.now() / 1000);
-    if (now >= anonymous.reset) {
+    const nowSeconds = Math.floor(now() / 1000);
+    if (nowSeconds >= anonymous.reset) {
       anonymous.used = 0;
-      anonymous.reset = now + 3600;
+      anonymous.reset = nowSeconds + 3600;
     }
     anonymous.used++;
     const remaining = Math.max(0, UNAUTHENTICATED_LIMIT - anonymous.used);
@@ -660,7 +674,7 @@ export function createFakeGitHub({
   function validGrant(authorization: string | undefined): FakeToken | undefined {
     const token = authorization?.match(/^(?:Bearer|token)\s+(.+)$/i)?.[1];
     const grant = token === undefined ? undefined : grants.get(token);
-    return grant && !(grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now()) ? grant : undefined;
+    return grant && !(grant.expiresAt && Date.parse(grant.expiresAt) <= now()) ? grant : undefined;
   }
 
   /** The token's read or write counter for an authenticated request, as
@@ -680,7 +694,7 @@ export function createFakeGitHub({
     const counter = failure.status === 401 ? null : counterFor(request);
     if (counter && !(failure.status === 403 && failure.rateLimit === "primary")) counter.used++;
     const counted = counter ? counterHeaders(counter) : {};
-    const secondary = { ...(counter ? counted : rateLimitHeaders(4990)), "retry-after": "60" };
+    const secondary = { ...(counter ? counted : rateLimitHeaders(4990, undefined, Math.floor(now() / 1000) + 3600)), "retry-after": "60" };
     const reply = (status: number, message: string, headers?: Record<string, string>) =>
       toResponse(error(status, message, DOCS.rest), headers ?? counted);
     switch (failure.status) {
@@ -690,8 +704,8 @@ export function createFakeGitHub({
         if (failure.rateLimit === "primary") {
           // The hour spent, with its window ending in a minute.
           const spent = {
-            ...rateLimitHeaders(0, rateLimit, undefined, rateLimit),
-            "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 60),
+            ...rateLimitHeaders(0, rateLimit, Math.floor(now() / 1000) + 3600, rateLimit),
+            "x-ratelimit-reset": String(Math.floor(now() / 1000) + 60),
           };
           return reply(403, failure.message ?? "API rate limit exceeded", spent);
         }
@@ -803,9 +817,9 @@ export function createFakeGitHub({
       return toResponse(error(403, "API rate limit exceeded", DOCS.rest), { ...common, ...counterHeaders(counter) });
     }
     if (method === "PUT") {
-      const now = Date.now();
-      budget.writes = budget.writes.filter((t) => now - t < 3_600_000);
-      const lastMinute = budget.writes.filter((t) => now - t < 60_000).length;
+      const at = now();
+      budget.writes = budget.writes.filter((t) => at - t < 3_600_000);
+      const lastMinute = budget.writes.filter((t) => at - t < 60_000).length;
       if (lastMinute >= SECONDARY_PER_MINUTE || budget.writes.length >= SECONDARY_PER_HOUR) {
         counter.used++;
         return toResponse(error(403, "You have exceeded a secondary rate limit.", DOCS.rest), {
@@ -814,7 +828,7 @@ export function createFakeGitHub({
           "retry-after": "60",
         });
       }
-      budget.writes.push(now);
+      budget.writes.push(at);
     }
 
     const reply = answer(request, target, grant, arrivalHead);
@@ -927,10 +941,11 @@ export function createFakeGitHub({
         }
       };
       list(treeSha, "", query.has("recursive"));
-      const truncated = entries.length > treeEntryLimit;
+      const limit = treeCut ?? treeEntryLimit;
+      const truncated = entries.length > limit;
       return {
         status: 200,
-        json: { sha: treeSha, url: `${api}/git/trees/${treeSha}`, tree: truncated ? entries.slice(0, treeEntryLimit) : entries, truncated },
+        json: { sha: treeSha, url: `${api}/git/trees/${treeSha}`, tree: truncated ? entries.slice(0, limit) : entries, truncated },
         etag: `W/"${etag64(`${treeSha}\n${accept}`)}"`,
         cacheControl: byBranch ? CACHE_SHORT : CACHE_LONG,
       };
@@ -1217,6 +1232,20 @@ export function createFakeGitHub({
     },
     staleReads(n) {
       lag = Math.max(0, Math.floor(n));
+    },
+    cutTrees(limit) {
+      treeCut = limit === null ? null : Math.max(0, Math.floor(limit));
+    },
+    versions(repo) {
+      const state = repoState(repo);
+      const out = new Map<string, { path: string; sha: string; text: string }>();
+      for (const commitSha of state.history) {
+        for (const [path, sha] of state.commitObjects.get(commitSha)!.files) {
+          const key = `${path}@${sha}`;
+          if (!out.has(key)) out.set(key, { path, sha, text: new TextDecoder().decode(state.blobs.get(sha)) });
+        }
+      }
+      return [...out.values()];
     },
   };
 }

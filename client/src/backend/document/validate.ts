@@ -234,7 +234,15 @@ export function validateEmiBalance(remaining: number): void {
  * op may set) would move to year 10000, which no stored date can hold: that
  * payment is refused, and editing the EMI re-anchors it at today. */
 export function storableDate(date: Date): string {
-  const text = formatDate(date);
+  return storableDateText(formatDate(date));
+}
+
+/** A date the EMI write path worked out, as text: refused with a 400 when
+ * no stored date can hold it. An EMI's term end (untilTarget) is today plus
+ * its duration, so on a device whose clock is late in 9999 it would fall in
+ * year 10000, and the diff would refuse its own op with a 500 (ADR-0008,
+ * stage 8a). */
+export function storableDateText(text: string): string {
   if (!isRealDate(text)) throw new LedgerError(`Date out of range: ${text}`, 400);
   return text;
 }

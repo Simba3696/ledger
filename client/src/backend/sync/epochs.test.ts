@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
-import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
+import { createGitHubClient } from "../github/contents";
+import { createLedger, damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
-import { genesisState, type Op } from "./state";
-import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
+import { genesisState, type Op, type SyncState } from "./state";
+import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, LEDGER_UPDATED, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
 
@@ -19,9 +20,7 @@ import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit
 // re-apply; AC14; and the new epoch Lamport exhaustion starts. Fictional
 // data only.
 //
-// Old-bug catalogue (section 13): B1 and B20 are named on their tests. B15
-// (a restore needed a `restoredAt` marker) has no test of its own: epochs
-// replace the marker, and every restore here runs without one.
+// Old-bug catalogue (section 13): B1, B15 and B20 are named on their tests.
 
 const running: SyncEngine[] = [];
 let w: World;
@@ -35,6 +34,7 @@ beforeEach(async () => {
 afterEach(() => {
   for (const engine of running.splice(0)) engine.stop();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 async function open(options: DeviceOptions = {}): Promise<Device> {
@@ -413,6 +413,29 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expectConverged(a2, b);
   });
 
+  it("B15: a restore needs no restoredAt marker: the epoch alone brings records back over newer stamps and deletes", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam", now: () => w.clock.wall + 30 * 86_400_000 });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await a.backend.addEntry(entry("Bus", 15));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    // Newer than the backup everywhere: an edit stamped a month ahead, and a
+    // delete. The old design needed a marker to tell the restore apart.
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), edits("Groceries", 99));
+    await b.backend.deleteEntry(2026, 5, await row(b, "Bus"));
+    await quiesce(w, a, b);
+    const result = await a.engine.restore(backup);
+    expect(result.kind).toBe("restored");
+    const epoch = (result as { epoch: string }).epoch;
+    const genesis = (await unseal(w.fake.file(FULL, repoPath({ kind: "genesis", epoch }))!.text, w.key)) as Record<string, unknown>;
+    expect(JSON.stringify(genesis)).not.toContain("restoredAt");
+    const a2 = await reload(a);
+    await quiesce(w, a2, b);
+    for (const d of [a2, b]) expect(docText(d.engine.current())).toBe(docText(backup));
+    expectConverged(a2, b);
+  });
+
   it("B1: a delete the restorer hadn't seen is offered to its device, and the record stays until it is re-applied", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
@@ -427,6 +450,32 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     expect(group.items).toMatchObject([{ kind: "delete", record: { remarks: "Groceries" } }]);
     await b.engine.reapply(group.id);
     expect(remarks(b)).toEqual([]);
+  });
+
+  it("a delete of a record created and deleted above the cut is offered when the backup holds the record (stage 8a, E1)", async () => {
+    const a = await open({ login: "alex" });
+    const r = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, r);
+    // Alex, before syncing, adds Taxi, exports a backup, then deletes Taxi.
+    await a.backend.addEntry(entry("Taxi"));
+    const backup = structuredClone(a.engine.current());
+    await a.backend.deleteEntry(2026, 5, await row(a, "Taxi"));
+    expect(remarks(a)).toEqual(["Groceries"]);
+    // Sam restores Alex's backup before Alex's changes reach GitHub.
+    expect((await r.engine.restore(backup)).kind).toBe("restored");
+    const r2 = await reload(r);
+    await cycle(w, a);
+    await quiesce(w, a, r2);
+    // The restore brought Taxi back; Alex's delete of it is Alex's own
+    // group, never silently undone.
+    expect(remarks(a).sort()).toEqual(["Groceries", "Taxi"]);
+    const [group] = a.engine.leftBehind();
+    expect(group).toMatchObject({ own: true, items: [{ kind: "delete", coll: "e", record: { remarks: "Taxi" } }] });
+    await a.engine.reapply(group.id);
+    await quiesce(w, a, r2);
+    for (const d of [a, r2]) expect(remarks(d)).toEqual(["Groceries"]);
+    expectConverged(a, r2);
   });
 });
 
@@ -579,6 +628,30 @@ describe("re-apply and discard (section 9.4)", () => {
     expect(remarks(a2).sort()).toEqual(["Groceries", "Taxi"]);
     expectConverged(a2, b, c);
     for (const d of [b, c]) expect(d.engine.leftBehind()).toEqual([]);
+  });
+});
+
+describe("re-apply under a view that hasn't rendered the switch (stage 8a, E2)", () => {
+  it("never reports a change applied that it dropped silently: a month lock the restore lacks is kept with a notice", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(b.engine.current());
+    // The view shows everything so far, then renders nothing more.
+    a.engine.attachView(a.engine.getState().revision);
+    await a.backend.setMonthLock(2026, 6, true);
+    expect((await b.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, a);
+    expect(a.engine.current().monthLocks).toEqual({});
+    const [group] = a.engine.leftBehind();
+    expect(group.items).toEqual([{ kind: "unit", key: "lk/2026-06", value: true }]);
+    const result = await a.engine.reapply(group.id);
+    expect(result.applied).toEqual(group.items);
+    // What the view still shows (locked) is the value re-applied, so the
+    // fence keeps the restore's: and says so.
+    expect(a.engine.current().monthLocks).toEqual({});
+    expect(a.engine.notices().map((n) => n.notice)).toMatchObject([{ kind: "kept", registers: [{ key: "lk/2026-06", theirs: false, mine: true }] }]);
   });
 });
 
@@ -759,6 +832,148 @@ describe("racing restores and what a device keeps for them (stage 6 review)", ()
       expect(offered(c, true)).toContain("add:Bus");
     });
   }
+
+  // Stage 8a (the stage 6 final review's tracked item): a device that
+  // skips an epoch takes its exact cut from the skipped epoch's genesis.
+  // c pushed Bus, which a saw, then wrote Taxi offline. a restored an older
+  // backup (E2, its cut holding Bus: replaced on purpose), then restored
+  // again (E3, based on E2). c goes from the first epoch straight to E3:
+  // only Taxi was left out, as if c had passed through E2.
+  it("a device that skips a restore's epoch offers only what that epoch's cut left out, read from the skipped genesis", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Bus"));
+    await cycle(w, c, a);
+    expect(remarks(a)).toContain("Bus");
+    await c.backend.addEntry(entry("Taxi")); // c is away from now on
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    const a3 = await reload(a2);
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe(a3.engine.epochKey);
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    // Re-applied, every device has it; Bus stays replaced, as the restorer chose.
+    await c.engine.reapply(c.engine.leftBehind()[0].id);
+    await quiesce(w, a3, c);
+    for (const d of [a3, c]) expect(remarks(d).sort()).toEqual(["Groceries", "Taxi"]);
+    expectConverged(a3, c);
+  });
+
+  /** The GETs of `epoch`'s genesis blob since request `from`. */
+  const genesisReads = (epoch: string, from: number) => {
+    const sha = w.fake.file(FULL, repoPath({ kind: "genesis", epoch }))!.sha;
+    return w.fake.requests.slice(from).filter((r) => r.method === "GET" && r.path.includes(`/git/blobs/${sha}`)).length;
+  };
+
+  it("the walk down a skipped epoch's line stops at the epoch switched from: no genesis below it is read (stage 8a review, E3)", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    await reload(a2);
+    const from = w.fake.requests.length;
+    await cycle(w, c);
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    // E2's genesis gives E1's cut; E1, the epoch c switched from, is not read.
+    expect(genesisReads(e2, from)).toBe(1);
+    expect(genesisReads(EPOCH, from)).toBe(0);
+  });
+
+  it("the walk stops once the cut it needs is known: the epoch the one switched from was based on is not read (stage 8a review, E3)", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    await cycle(w, c);
+    expect(c.engine.epochKey).toMatch(/^e000002-/);
+    await c.backend.addEntry(entry("Taxi"));
+    // Sam's restore of the same number, based on E1, wins; then E3 based
+    // on it. c skips both and goes from its E2 to E3.
+    await plantRestore("e000002-ffffffff", older);
+    await plantRestore("e000003-0000000c", older, {}, "e000002-ffffffff");
+    const from = w.fake.requests.length;
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe("e000003-0000000c");
+    expect(offered(c)).toEqual(["add:Taxi"]);
+    expect(genesisReads("e000002-ffffffff", from)).toBe(1);
+    expect(genesisReads(EPOCH, from)).toBe(0);
+  });
+
+  it("the walk runs before the switch's write turn: a local write while it reads a genesis is not held up, and is offered after the switch (stage 8a review, E3)", async () => {
+    let held: string | null = null;
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    let waiting = false;
+    const wrap = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (hold && held && url.includes(`/git/blobs/${held}`)) {
+        waiting = true;
+        await hold;
+      }
+      return inner(input, init);
+    };
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam", wrapFetch: wrap });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    await reload(a2);
+    held = w.fake.file(FULL, repoPath({ kind: "genesis", epoch: e2 }))!.sha;
+    hold = new Promise((resolve) => (release = resolve));
+    w.clock.mono += 30_000;
+    const switching = c.engine.sync();
+    for (const until = Date.now() + 10_000; !waiting && Date.now() < until; ) await nextTask();
+    expect(waiting).toBe(true);
+    let saved = false;
+    const write = c.backend.addEntry(entry("Late")).then(() => (saved = true));
+    for (const until = Date.now() + 10_000; !saved && Date.now() < until; ) await nextTask();
+    expect(saved).toBe(true);
+    release();
+    await switching;
+    await write;
+    expect(c.engine.epochKey).toMatch(/^e000003-/);
+    expect(offered(c, true)).toEqual(["add:Late"]);
+  }, 30_000);
+
+  it("a skipped epoch whose genesis can't be read falls back to the cut {}: it offers more, and loses nothing", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, c);
+    const older = structuredClone(a.engine.current());
+    await c.backend.addEntry(entry("Bus"));
+    await cycle(w, c, a);
+    await c.backend.addEntry(entry("Taxi"));
+    expect((await a.engine.restore(older)).kind).toBe("restored");
+    const a2 = await reload(a);
+    const e2 = a2.engine.epochKey!;
+    expect((await a2.engine.restore(older)).kind).toBe("restored");
+    const a3 = await reload(a2);
+    // E2's genesis can't be read by c: a failed blob read, every time.
+    const e2Sha = w.fake.file(FULL, repoPath({ kind: "genesis", epoch: e2 }))!.sha;
+    for (let i = 0; i < 4; i++) w.fake.failNext({ method: "GET", status: 500, path: `/git/blobs/${e2Sha}` });
+    await cycle(w, c);
+    expect(c.engine.epochKey).toBe(a3.engine.epochKey);
+    expect(offered(c).sort()).toEqual(["add:Bus", "add:Taxi"]);
+  });
 });
 
 describe("a cut listing never decides a restore's epoch or outcome (ADR-0008)", () => {
@@ -1181,6 +1396,68 @@ describe("racing creates with two salts (D26)", () => {
     expect(remarks(y)).toEqual(["Bus"]);
   });
 
+  // Stage 8a (the stage 6 design question "racing creates with two salts
+  // still leave a window"): two creates whose genesis PUTs land within one
+  // listing's time of each other are both told `created`, since each one's
+  // listing after its PUT ran before the other's genesis landed. Closing
+  // it needs the engine to move to a newer epoch under another salt, which
+  // is not built. This pins what happens instead: the device whose genesis
+  // lost stops sync safely, names the other ledger, keeps its writes on the
+  // device, and writes nothing to GitHub; the winner syncs on.
+  it("the remaining window: creates landing within one listing's time are both told created; the loser stops safely and loses nothing", async () => {
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    const [keyA, keyB] = [await testKey(), await testKey()];
+    let hold: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => (hold = resolve));
+    let arrived!: () => void;
+    const waiting = new Promise<void>((resolve) => (arrived = resolve));
+    const holdGenesis = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      if (init?.method === "PUT" && String(input).includes(".genesis.enc")) {
+        arrived();
+        await held;
+      }
+      return inner(input, init);
+    };
+    // A's epoch key is the greater (its random hex all f), B's the lesser.
+    let fill = 0xff;
+    vi.spyOn(crypto, "getRandomValues").mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+      if (array) new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(fill);
+      return array;
+    });
+    const remote = (wrap?: (inner: typeof fetch) => typeof fetch) => ({ client: createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_alex", fetch: wrap ? wrap(w.fake.fetch) : w.fake.fetch }), branch: "main" });
+    const doc = structuredClone(w.doc);
+    // A's PUT waits until B has created, listed and been told `created`.
+    const creatingA = createLedger(remote(holdGenesis), keyA, { doc, by: "alex", at: 1 });
+    await waiting;
+    fill = 0x00;
+    const b = await createLedger(remote(), keyB, { doc, by: "sam", at: 2 });
+    vi.restoreAllMocks();
+    hold!();
+    const a = await creatingA;
+    // Each listing after its PUT ran before the other genesis was listed
+    // (B's), or saw only a lesser one (A's): both are told created.
+    expect([a.kind, b.kind]).toEqual(["created", "created"]);
+    const [winner, loser] = (a as { epoch: string }).epoch > (b as { epoch: string }).epoch ? [{ r: a, key: keyA }, { r: b, key: keyB }] : [{ r: b, key: keyB }, { r: a, key: keyA }];
+    const start = async (side: typeof winner, login: string) => {
+      const r = side.r as { epoch: string; state: SyncState };
+      const d = await device({ ...w, key: side.key }, { login, init: { epoch: r.epoch, state: r.state } });
+      running.push(d.engine);
+      return d;
+    };
+    const win = await start(winner, "alex");
+    const lose = await start(loser, "sam");
+    await lose.backend.addEntry(entry("Bus"));
+    await win.backend.addEntry(entry("Groceries"));
+    await cycle(w, win, lose, win, lose);
+    const winnerEpoch = (winner.r as { epoch: string }).epoch;
+    expect(lose.engine.getState()).toMatchObject({ status: "needsPassphrase", pendingCount: 1, damagedFile: { epoch: winnerEpoch, reason: "joined", cause: "foreignKey" } });
+    expect(remarks(lose)).toEqual(["Bus"]);
+    expect(w.fake.commits.filter((c) => c.path.includes(lose.engine.deviceId!))).toEqual([]);
+    expect(win.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    expect(remarks(win)).toEqual(["Groceries"]);
+    expect(w.fake.violations).toEqual([]);
+  });
+
   it("once the other creator has written in its epoch, its genesis is named as joined, never as one to delete", async () => {
     const { a, y } = await racing();
     await y.backend.addEntry(entry("Bus"));
@@ -1343,6 +1620,24 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     const fresh = await reload(await open({ login: "sam" }));
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
+  });
+
+  it("a newer genesis this build is too old to read refuses the write that needs a new epoch with 'update the app', not 'try again' (stage 8a, E4)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    const newer = "e000002-0000000b";
+    await plant(w, { kind: "genesis", epoch: newer }, { fv: 2, kind: "genesis", epoch: newer });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsUpdate", damagedFile: null });
+    // Every try says the same: trying again can't help, updating can.
+    for (let i = 0; i < 2; i++) {
+      await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: LEDGER_UPDATED });
+      await cycle(w, a);
+    }
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
   });
 
   it("a next epoch that would fill the gap below a genesis no device can open is not written: the write is refused, naming the file (D26)", async () => {

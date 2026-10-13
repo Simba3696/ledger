@@ -7,6 +7,7 @@ import { testKey } from "./localTestkit";
 import { clearSyncState, openSyncStore } from "./persist";
 import { unseal, type DeviceKey } from "./records";
 import { applyOp, cloneState, genesisState, opState, type Op } from "./state";
+import { GENESIS_TAG } from "./tags";
 import { SyncEngine } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { Replica, deviceId, emptyDocument } from "./testkit";
@@ -351,6 +352,26 @@ describe("Fence (pure)", () => {
     expect(fence.renderedSeen(restored.seen, before.asOf)).toEqual({});
     // A form still showing it locked, untouched, leaves the restore's value.
     expect(fence.apply({ set: [["lk/2026-05", true]], del: [] }, restored, before.asOf).body).toBeNull();
+    before.release();
+  });
+
+  it("across an epoch switch, a unit the restored ledger lacks is still told: kept or replaced, never dropped silently (stage 8a, E2)", () => {
+    const old = genesisState(emptyDocument());
+    const fence = new Fence();
+    fence.attach(0, {});
+    fence.join(old, opState(X, { L: 2, at: 0, by: "sam", vv: {}, del: [], set: [["lk/2026-05", true], ["fm/2026-05", { salary: "50000.00", otherIncome: null, savings: [] }]] }));
+    fence.rendered(1);
+    const before = fence.pin();
+    // The restored ledger has neither: the month unlocked, no finances.
+    const restored = genesisState(emptyDocument());
+    fence.switchEpoch(old, restored, true);
+    const untouched = fence.apply({ set: [["lk/2026-05", true]], del: [] }, restored, before.asOf);
+    expect(untouched.body).toBeNull();
+    expect(untouched.notices).toEqual([{ kind: "kept", theirs: GENESIS_TAG, registers: [{ key: "lk/2026-05", theirs: false, mine: true }] }]);
+    const typed = { salary: "52000.00", otherIncome: null, savings: [] };
+    const replaced = fence.apply({ set: [["fm/2026-05", typed]], del: [] }, restored, before.asOf);
+    expect(replaced.body).toEqual({ set: [["fm/2026-05", typed]], del: [] });
+    expect(replaced.notices).toEqual([{ kind: "replaced", theirs: GENESIS_TAG, registers: [{ key: "fm/2026-05", theirs: null, mine: typed }] }]);
     before.release();
   });
 

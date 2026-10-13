@@ -17,8 +17,10 @@ import { GENESIS_TAG, isDeviceId, type VersionVector } from "./tags";
 // which a Re-apply or a Discard op carries.
 //
 //   - Display stamps (`_s`) are never left behind: they are not content.
-//   - A record both created and deleted above the cut was never in any
-//     ledger the restore could have held, so nothing of it is.
+//   - A record both created and deleted above the cut leaves only its
+//     deletion, and only when the restored ledger holds the record: a
+//     backup is any document, one exported between the two included
+//     (stage 8a, E1; section 9.3's exclusion of such records is narrowed).
 //   - A record the old epoch deleted keeps only its deletion: its field
 //     writes lost to the delete there (remove-wins, section 4), so they are
 //     not offered on their own.
@@ -134,10 +136,9 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
   }
   for (const [rk, deletion] of old.del) {
     if (!above(deletion.by, deletion.L)) continue;
-    const create = old.rec.get(rk)?.get(CREATE);
-    // Created and deleted above the cut: in no ledger the restore could hold.
-    if (create && above(create.t[1], create.t[0])) continue;
-    // Nothing to delete in the restored ledger.
+    // Nothing to delete in the restored ledger. A record created above the
+    // cut too is no exception: a backup is any document, one exported
+    // between the create and the delete included (stage 8a, E1).
     if (!restored.rec.get(rk)?.has(CREATE)) continue;
     const g = group(deletion.by);
     g.del.add(rk);

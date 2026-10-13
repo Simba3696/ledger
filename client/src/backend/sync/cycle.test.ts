@@ -116,7 +116,7 @@ describe("the sync cycle (section 7)", () => {
     expect(await repoOps(w, a)).toEqual([2, 3]);
   });
 
-  it("a no-op save and a stamp-only change make no op and no PUT (B19)", async () => {
+  it("B19: a no-op save and a stamp-only change make no op and no PUT, so nothing can undo a delete", async () => {
     const a = await open();
     const added = await a.backend.addEntry(ENTRY);
     await cycle(w, a);
@@ -151,7 +151,7 @@ describe("the sync cycle (section 7)", () => {
     expect(a.engine.getState()).toMatchObject({ status: "saving", pendingCount: 1 });
   });
 
-  it("a write made while a cycle is in flight is kept, and the next cycle pushes it (B5, B21)", async () => {
+  it("B21: a write made while a cycle is in flight is kept, the next cycle pushes it, and pending is exactly the unconfirmed own log", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
     await b.backend.addEntry(entry("Bus"));
@@ -361,7 +361,7 @@ describe("triggers and spacing (section 7)", () => {
     }
   });
 
-  it("a failed write is never pushed: only ops on the device go out (B17)", async () => {
+  it("B17: a failed write is never pushed: only ops on the device go out", async () => {
     const store = new MemoryStore();
     const a = await open({ store });
     store.failNext = 1;

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../ApiError";
 import { bytesToBase64 } from "../base64";
-import { newSalt } from "../crypto";
+import { encryptDocument, newSalt } from "../crypto";
+import type { LedgerDocument } from "../document/types";
 import {
   ENTRY,
   EPOCH,
@@ -25,6 +26,7 @@ import {
   type Device,
   type World,
 } from "./cycleTestkit";
+import { readBackup } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { REPO_FILE_MAX_BYTES, REPO_FILE_MAX_PLAIN_BYTES, repoPath } from "./repoFiles";
 import type { Op } from "./state";
@@ -331,7 +333,7 @@ describe("failure handling (section 12)", () => {
   describe("another device's file that can't be joined halts only its stream (B12, B18, B23, AC16, AC17)", () => {
     const cases: [string, (op: Op) => Promise<unknown>][] = [
       ["a bad shape", async () => ({ fv: 1, kind: "log", epoch: EPOCH, device: X })],
-      ["a duplicate record (B23)", async (op) => logFile(X, [op, { ...structuredClone(op), L: op.L + 1 }])],
+      ["B23: a duplicate record", async (op) => logFile(X, [op, { ...structuredClone(op), L: op.L + 1 }])],
       ["a tag at 2^50", async (op) => logFile(X, [{ ...op, L: MAX_L }])],
       ["content that doesn't match its name", async (op) => logFile(deviceId(0xd), [op])],
       ["a create missing a field", async (op) => logFile(X, [{ ...op, set: op.set.filter(([key]) => !key.endsWith("/amount")) }])],
@@ -405,7 +407,7 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
       expect(remarks(a)).toEqual(["Planted"]);
     });
 
-    it("a file encrypted with another key, or with another salt and iterations: needsAttention, never needsPassphrase (B18)", async () => {
+    it("B18: a file encrypted with another key, or with another salt and iterations: needsAttention, never needsPassphrase", async () => {
       const op = await someOp();
       const other = await testKey();
       const a = await open();
@@ -443,6 +445,46 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     });
   });
 
+  describe("B23: a duplicate record in a genesis or a backup never enters state (section 13)", () => {
+    /** This device's document with its one expense listed twice, id and all. */
+    async function duplicated(): Promise<LedgerDocument> {
+      const a = await open();
+      await a.backend.addEntry(entry("Groceries"));
+      const doc = structuredClone(a.engine.current());
+      a.engine.stop();
+      const [month, [record]] = Object.entries(doc.expenses)[0];
+      doc.expenses[month] = [record, { ...record, remarks: "Groceries again" }];
+      return doc;
+    }
+
+    it("B23: a genesis holding a duplicate record is refused: the device stays on its epoch, names the file, joins nothing of it and keeps writing", async () => {
+      const doc = await duplicated();
+      const a = await open();
+      await a.backend.addEntry(entry("Bus"));
+      const bad = "e000002-0000000b";
+      await plant(w, { kind: "genesis", epoch: bad }, { fv: 1, kind: "genesis", epoch: bad, reason: "restore", by: "sam", at: 2, basedOn: null, doc });
+      await cycle(w, a);
+      expect(a.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: bad } });
+      expect(a.engine.epochKey).toBe(EPOCH);
+      expect(a.store.meta().joined).not.toHaveProperty(`${bad}.genesis.enc`);
+      await a.backend.addEntry(entry("Taxi"));
+      expect(remarks(a)).toEqual(["Bus", "Taxi"]);
+    });
+
+    it("B23: a backup holding a duplicate record is refused: restore writes nothing, and the file doesn't open as a backup", async () => {
+      const doc = await duplicated();
+      const a = await open();
+      await a.backend.addEntry(entry("Bus"));
+      await cycle(w, a);
+      const before = puts(w).length;
+      expect(await a.engine.restore(structuredClone(doc))).toEqual({ kind: "invalid" });
+      expect(puts(w).length).toBe(before);
+      expect(a.engine.epochKey).toBe(EPOCH);
+      const file = await encryptDocument(doc, w.key.key, { salt: w.key.salt, iter: w.key.iter });
+      expect(await readBackup(file, w.key.key)).toEqual({ ok: false, problem: "damaged" });
+    });
+  });
+
   describe("the epoch's genesis (section 12, AC5, AC16)", () => {
     it("undecryptable with the stored key: needsPassphrase, and no PUT", async () => {
       const a = await open({ noSettle: true });
@@ -475,7 +517,7 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     });
   });
 
-  it("saved state this build can't read: unreadable, and the engine sends no request (B13)", async () => {
+  it("B13: saved state this build can't read: unreadable, and the engine sends no request", async () => {
     const store = new MemoryStore();
     const a = await open({ store });
     a.engine.stop();
@@ -507,7 +549,7 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     expect(remarks(a).sort()).toEqual(["Bus", "Groceries"]);
   });
 
-  it("an unexpected throw ends the cycle as pending, never stuck at saving, and the next trigger recovers (B12)", async () => {
+  it("B12: an unexpected throw ends the cycle as pending, never stuck at saving, and the next trigger recovers", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
     await b.backend.addEntry(entry("Bus"));
@@ -533,7 +575,7 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     expect(a.engine.getState()).toMatchObject({ pendingCount: 0, leftBehindCount: 1, leftBehindOwnCount: 1 });
   });
 
-  it("idle devices make no PUT over 50 polls under ±30 days of clock skew, and each idle poll is one request (AC9, B3)", async () => {
+  it("B3: idle devices make no PUT over 50 polls under ±30 days of clock skew, and each idle poll is one request (AC9)", async () => {
     const day = 24 * 60 * 60_000;
     const a = await open({ login: "alex", now: () => w.clock.wall + 30 * day });
     const b = await open({ login: "sam", now: () => w.clock.wall - 30 * day });
@@ -750,7 +792,67 @@ describe("more failure points", () => {
 });
 
 describe("old catalogue (section 13)", () => {
-  it("B2, B25: delete wins over a concurrent offline edit on every device; the edit stays recoverable in state", async () => {
+  it("B2: 'Add it back' is a new id, causally after the delete, so the deleter syncing again never deletes it", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await quiesce(w, a, b);
+    const oldId = a.engine.current().expenses["2026-05"][0].id;
+    // Concurrent: a edits it, b deletes it. Delete wins; a is told.
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), edits("Groceries", 45));
+    await b.backend.deleteEntry(2026, 5, await row(b, "Groceries"));
+    await quiesce(w, a, b);
+    expect(remarks(a)).toEqual([]);
+    const [notice] = a.engine.notices();
+    expect(notice.actions.map((x) => x.kind)).toEqual(["addBack"]);
+    await a.engine.noticeAction(notice.key, "addBack");
+    // The deleter syncs again and again: no stamp or stored answer makes it
+    // delete the new entry, and the old id stays deleted.
+    for (let i = 0; i < 3; i++) await quiesce(w, b, a);
+    for (const d of [a, b]) {
+      const [back] = d.engine.current().expenses["2026-05"];
+      expect(back).toMatchObject({ remarks: "Groceries", amount: "45.00" });
+      expect(back.id).not.toBe(oldId);
+    }
+    expectConverged(a, b);
+  });
+
+  it("B5: a write made while a pull is in flight neither overwrites a remote edit nor undoes a delete", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await a.backend.addEntry(entry("Bus", 15));
+    await quiesce(w, a, b);
+    // a shows the ledger as it is now, and its screen doesn't re-render
+    // during what follows (the stale-UI fence, section 3.4).
+    a.engine.attachView(a.engine.getState().revision);
+    // b edits Groceries' amount and deletes Bus.
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), edits("Groceries", 30));
+    await b.backend.deleteEntry(2026, 5, await row(b, "Bus"));
+    await cycle(w, b);
+    // a's rows were read before its pull; it writes while the pull runs.
+    const [groceries, bus] = [await row(a, "Groceries"), await row(a, "Bus")];
+    const pulling = cycle(w, a);
+    const writes = Promise.allSettled([
+      a.backend.updateEntry(2026, 5, groceries, { amount: 40, remarks: "Groceries (veg)", category: "food", isCard: false }),
+      a.backend.updateEntry(2026, 5, bus, edits("Bus", 99)),
+    ]);
+    await pulling;
+    const [, busWrite] = await writes;
+    // The Bus edit was diffed either before the join (a concurrent edit,
+    // which loses to the delete) or after it (a 404: the row is gone).
+    if (busWrite.status === "rejected") expect(busWrite.reason).toMatchObject({ status: 404 });
+    await quiesce(w, a, b);
+    for (const d of [a, b]) {
+      expect(remarks(d)).toEqual(["Groceries (veg)"]);
+      // a's form sent the 40 it showed: before the join that is no change,
+      // after it the fence keeps b's unseen 30. Only the remarks a typed win.
+      expect((await d.backend.getMonth(2026, 5))[0].amount).toBe(30);
+    }
+    expectConverged(a, b);
+  });
+
+  it("B25: delete wins over a concurrent offline edit on every device, a third one included", async () => {
     const a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
     const c = await open({ login: "sam" });
@@ -778,7 +880,7 @@ describe("old catalogue (section 13)", () => {
     for (const d of [a, b]) expect((await d.backend.getMonth(2026, 5))[0].amount).toBe(30);
   });
 
-  it("B10, B19: a save that changes nothing makes no op, and a later stamp from a fast clock doesn't beat a delete", async () => {
+  it("B10: a later stamp from a fast clock is never read as intent: it doesn't beat a delete, and a save that changes nothing makes no op", async () => {
     const a = await open({ login: "alex", now: () => w.clock.wall + 3_600_000 });
     const b = await open({ login: "sam" });
     await b.backend.addEntry(entry("Groceries"));

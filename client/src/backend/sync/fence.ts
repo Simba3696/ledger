@@ -3,7 +3,7 @@ import { vectorOf } from "./codec";
 import type { OpBody } from "./diff";
 import { CREATE, STAMP, TOGETHER, parseRegisterKey } from "./keys";
 import { joinInto, type Changes, type Op, type Register, type SyncState } from "./state";
-import type { Tag, VersionVector } from "./tags";
+import { GENESIS_TAG, type Tag, type VersionVector } from "./tags";
 
 // The stale-UI fence (design section 3.4). A form submits every field, and
 // applyChanges writes the ones that differ from current(). current() already
@@ -24,7 +24,8 @@ import type { Tag, VersionVector } from "./tags";
 //     than the write's revision. If the earliest such pre-image (what the
 //     user saw) equals the op's value, the user didn't touch it: it is
 //     dropped, and the remote value stands. One whose op value differs is
-//     applied. Both cases make a notice.
+//     applied. Both cases make a notice, a register an epoch switch removed
+//     included: its value is then the restore's, told under the genesis tag.
 //   - The op's vv is the seen vector as of the write's revision, so a
 //     remote author whose change this user hadn't seen still gets their
 //     edit/edit notice (section 4.2).
@@ -280,9 +281,12 @@ export class Fence {
       };
       const untouched = group.every((k) => sameValue(values.get(k), saw(k)));
       for (const k of fenced) {
-        const theirs = registerOf(state, k);
+        // A register an epoch switch removed (a month lock, finances or card
+        // bills the restored genesis lacks) reads as the document reads it,
+        // and is the genesis's: what stands is the restore's (stage 8a, E2).
+        const theirs = registerOf(state, k) ?? { v: readValue(k, undefined), t: GENESIS_TAG };
         // Typing the very value the remote wrote replaced nothing.
-        if (!theirs || (!untouched && sameValue(theirs.v, values.get(k)))) continue;
+        if (!untouched && sameValue(theirs.v, values.get(k))) continue;
         const kind = untouched ? "kept" : "replaced";
         const id = `${kind} ${theirs.t[0]} ${theirs.t[1]}`;
         let notice = notices.get(id);

@@ -95,7 +95,7 @@ describe("records and transactions", () => {
     expect(await dumpDatabase()).toBe(before);
   });
 
-  it("a quota error on any one record writes none of the mutation, and the next mutation still reaches IndexedDB", async () => {
+  it("B7: a quota error on any one record writes none of the mutation (no torn records), and the next mutation still reaches IndexedDB", async () => {
     const store = openSyncStore(noWait);
     await store.mutate(first());
     const before = await dumpDatabase();
@@ -146,7 +146,7 @@ describe("loads that fail are never a first start", () => {
     expect(await dumpDatabase()).toBe(before);
   });
 
-  it("retries an open that fails once (B22): the saved records load", async () => {
+  it("B22: an open that fails once is retried, and the saved records load", async () => {
     await openSyncStore(noWait).mutate(first());
     failingOpens(1);
     const store = openSyncStore(noWait);

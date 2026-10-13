@@ -146,7 +146,7 @@ const unlocked: NoticeView = {
 };
 
 describe("labels", () => {
-  it("say whose write won and what was replaced, with exact values", () => {
+  it("B9: say whose write won and what was replaced, and name each action by the exact value it writes", () => {
     expect(noticeText(amountClash)).toBe("sam changed Groceries · amount to 12.00; your 10.00 was replaced.");
     expect(actionLabel(amountClash, amountClash.actions[0])).toBe("Use 10.00");
     expect(noticeText(deleted)).toBe("sam deleted Groceries (May 2026) while you edited it.");
