@@ -3,7 +3,8 @@ import { leftBehindHeading, leftBehindItemText } from "./labels";
 import type { PendingWork } from "./NoticeList";
 
 function Group({ group, work, onReapply, onDiscard }: { group: LeftBehindView; work: PendingWork; onReapply: (id: string) => void; onDiscard: (id: string) => void }) {
-  const busy = work.busy === group.id;
+  // One action at a time: every button waits while any runs (F8).
+  const busy = work.busy !== null;
   const error = work.errors[group.id];
   return (
     <li className={`sync-review-item${group.own ? " sync-review-own" : ""}`}>

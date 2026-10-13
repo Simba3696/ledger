@@ -18,7 +18,8 @@ export function NoticeList({ notices, work, onAction, onDismiss }: { notices: No
   return (
     <ul className="sync-review-list" aria-label="Changes that clashed">
       {notices.map((view) => {
-        const busy = work.busy === view.key;
+        // One action at a time: every button waits while any runs (F8).
+        const busy = work.busy !== null;
         const error = work.errors[view.key];
         return (
           <li key={view.key} className="sync-review-item">

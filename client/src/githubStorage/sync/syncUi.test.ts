@@ -270,6 +270,16 @@ describe("NoticeList", () => {
     expect(renderToString(node)).toContain('role="alert"');
     expect(NoticeList({ notices: [], work: { busy: null, errors: {} }, onAction: () => {}, onDismiss: () => {} })).toBeNull();
   });
+
+  it("F8: while any action runs, every button in the lists is disabled, not just that item's", () => {
+    const work = { busy: deleted.key, errors: {} };
+    const notices = NoticeList({ notices: [amountClash, deleted], work, onAction: () => {}, onDismiss: () => {} });
+    const buttons = elements(notices).filter((el) => el.type === "button");
+    expect(buttons.length).toBeGreaterThan(2);
+    for (const b of buttons) expect((b.props as { disabled?: boolean }).disabled, text(b)).toBe(true);
+    const groups = LeftBehindList({ groups: [group(true, A), group(false, B)], work, onReapply: () => {}, onDiscard: () => {} });
+    for (const b of elements(groups).filter((el) => el.type === "button")) expect((b.props as { disabled?: boolean }).disabled, text(b)).toBe(true);
+  });
 });
 
 /** A left-behind group: this device's own (Taxi) or another's (Bus). */
