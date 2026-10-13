@@ -113,7 +113,9 @@ describe("Lamport values at the top of the range (2^50 - 1)", () => {
     expect(refused).toMatchObject({ status: 503 });
     expect((refused as Error).message).not.toBe(NEEDS_NEW_EPOCH);
     // No trigger from the test: the refusal itself sets the switch going.
-    for (let i = 0; i < 200 && b.engine.epochKey !== next; i++) await nextTask();
+    // Bounded by real time, not turns: the switch waits on real crypto,
+    // which a busy machine (the whole suite in parallel) slows down.
+    for (const until = Date.now() + 10_000; b.engine.epochKey !== next && Date.now() < until; ) await nextTask();
     expect(b.engine.epochKey).toBe(next);
     await expect(b.backend.addEntry(entry("Taxi"))).resolves.toBeDefined();
     await quiesce(w, a, b);
