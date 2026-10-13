@@ -44,10 +44,10 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 //     that holds (section 9.4);
 //   - every change made in an earlier epoch that the winning restore left
 //     out is still offered on the device that made it, or is in effect, or
-//     was held by a restore it switched to, or was re-applied, or was
-//     discarded or skipped (with its reason) by that device in the winner's
-//     line, item by item, or was replaced by its own device's restore (AC6,
-//     AC13, D18);
+//     was held by a restore in the winner's line it switched to, or was
+//     re-applied, or was discarded or skipped (with its reason) by that
+//     device in the winner's line, item by item, or was replaced by its own
+//     device's restore (AC6, AC13, D18);
 //   - nothing invented: every snapshot write is one an op or a genesis
 //     made, and every offered left-behind change is a write by that group's
 //     device in that epoch above the cut the winner's line left it behind
@@ -882,8 +882,10 @@ async function check(h: Harness, where: string): Promise<void> {
       }
       const settled = slots.some((slot) => {
         if (holdsIn(finalFold, ob)) return true;
+        // Held by a genesis in the winner's line it switched to (a losing
+        // restore's genesis holds nothing for the winner).
         const after = slot.epochs.slice(slot.epochs.indexOf(epoch) + 1);
-        if (after.some((e) => history.geneses.has(e) && holds(history.geneses.get(e)!.doc, ob))) return true;
+        if (after.some((e) => line.has(e) && history.geneses.has(e) && holds(history.geneses.get(e)!.doc, ob))) return true;
         // Skipped (it said why) or discarded on its own device, item by
         // item, in the winner's line (in a losing epoch neither is an
         // answer: the group is offered again, D18).
