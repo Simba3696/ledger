@@ -9,6 +9,7 @@ import { createFakeGitHub, type FakeGitHub } from "../github/fakeGitHub";
 import { FORMAT_VERSION } from "./codec";
 import { MemoryStore, nextTask } from "./cycleTestkit";
 import { findLedger, openGenesis } from "./ledgerRepo";
+import type { LeftBehindItem, ReapplyResult } from "./leftBehind";
 import { documentOf, documentText, fold, holds, holdsIn, obligations, plainText, readHistory, snapshotWrites, winnerOf, writesOf, type Obligation, type OracleOp, type RepoHistory } from "./oracle";
 import { WriterTokenMismatch, type SyncStore } from "./persist";
 import { seal, unseal, type DeviceKey, type SyncMeta } from "./records";
@@ -38,10 +39,15 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 //     invented: AC5, AC6);
 //   - every op a device committed in the winning epoch reached the repo
 //     (exactly, or, for a cloned id, re-issued by its rehome);
+//   - a re-apply puts in effect at once every item it says it applied, or
+//     the fence's notice tells why not, and skips an item only for a reason
+//     that holds (section 9.4);
 //   - every change made in an earlier epoch that the winning restore left
 //     out is still offered on the device that made it, or is in effect, or
-//     was held by a restore it switched to, or was re-applied or discarded
-//     there, or was replaced by its own device's restore (AC6, AC13, D18);
+//     was held by a restore it switched to, or was re-applied, or was
+//     discarded or skipped (with its reason) by that device in the winner's
+//     line, item by item, or was replaced by its own device's restore (AC6,
+//     AC13, D18);
 //   - nothing invented: every snapshot write and every offered left-behind
 //     change is one an op or a genesis made;
 //   - no file written but a device's own (AC10), nothing in plaintext
@@ -129,8 +135,16 @@ interface Slot {
   compaction: { logOps: number; tailEntries: number } | undefined;
   /** The fence's view lags (rendered() not called). */
   lag: boolean;
-  /** Left-behind markers this device re-applied or discarded. */
+  /** Left-behind markers this device re-applied or discarded (for the
+   * failure story). */
   resolved: Set<string>;
+  /** What this device did with each change a group showed, by
+   * "<marker>|<change text>": re-applied (an item the re-apply result
+   * lists as applied, checked in effect or told at once), skipped (an item
+   * it lists as skipped, its reason checked true then: the person was
+   * told why, section 9.4) or discarded (an item the group showed when
+   * discarded), and the epoch it did it in. */
+  settled: Map<string, { how: "applied" | "skipped" | "discarded"; epoch: string }>;
   /** Restores this device made: the new epoch, and the epoch and id it
    * restored from. */
   restored: { epoch: string; from: string; device: string }[];
@@ -270,6 +284,7 @@ function newSlot(name: string, login: string, rng: Rng): Slot {
     compaction: rng.chance(0.6) ? { logOps: 3 + rng.int(5), tailEntries: 4 + rng.int(8) } : undefined,
     lag: false,
     resolved: new Set(),
+    settled: new Map(),
     restored: [],
     discardedAt: [],
     epochs: [],
@@ -429,7 +444,11 @@ async function noticeStep(h: Harness, slot: Slot, rng: Rng): Promise<void> {
   }
 }
 
-/** Re-apply or discard one group a restore left behind (section 9.4). */
+/** Re-apply or discard one group a restore left behind (section 9.4). A
+ * re-apply must have put in effect every item it says it applied, or told
+ * the fence's notice for it, at once, and skipped each other item for a
+ * reason that held; it settles those items alone. A discard settles the
+ * items the group showed. */
 async function leftBehindStep(h: Harness, slot: Slot, rng: Rng): Promise<void> {
   const groups = slot.engine.leftBehind();
   if (groups.length === 0) return;
@@ -437,15 +456,84 @@ async function leftBehindStep(h: Harness, slot: Slot, rng: Rng): Promise<void> {
   try {
     if (rng.chance(0.7)) {
       slot.engine.previewReapply(group.id);
-      await slot.engine.reapply(group.id);
+      // The person presses Re-apply on the list they see.
+      render(slot);
+      const before = new Set(slot.engine.notices().map((n) => n.key));
+      const was = structuredClone(slot.engine.current());
+      const result = await slot.engine.reapply(group.id);
       counts.reapplied++;
+      expectInEffect(slot, group.id, result, before);
+      expectSkippedRightly(slot, group.id, result, was);
+      const epoch = slot.engine.epochKey!;
+      for (const item of result.applied) for (const text of itemTexts(item)) slot.settled.set(`${group.id}|${text}`, { how: "applied", epoch });
+      for (const { item } of result.skipped) for (const text of itemTexts(item)) slot.settled.set(`${group.id}|${text}`, { how: "skipped", epoch });
     } else {
+      const shown = group.items.flatMap(itemTexts);
       await slot.engine.discard(group.id);
       counts.discarded++;
+      for (const text of shown) slot.settled.set(`${group.id}|${text}`, { how: "discarded", epoch: slot.engine.epochKey! });
     }
     slot.resolved.add(group.id);
   } catch (err) {
     expectedRefusal(h, err);
+  }
+}
+
+/** A record in `doc`, by collection and id. */
+function recordIn(doc: LedgerDocument, coll: string, id: string): Record<string, unknown> | undefined {
+  const records = (coll === "e" ? Object.values(doc.expenses).flat() : doc[({ debt: "debts", emi: "emis", sub: "subscriptions" } as const)[coll as "debt" | "emi" | "sub"]]) as unknown as ({ id: string } & Record<string, unknown>)[];
+  return records.find((r) => r.id === id);
+}
+
+const MODULE_OF: Record<string, string> = { e: "expenses", debt: "debts", emi: "emi", sub: "subscriptions", fm: "finances", cb: "credit-cards", lk: "expenses" };
+
+/** Each item a re-apply skipped, for a reason that held in `was`, the
+ * document it ran against: its module off, its month locked, or its record
+ * not there. */
+function expectSkippedRightly(slot: Slot, marker: string, result: ReapplyResult, was: LedgerDocument): void {
+  for (const { item, reason } of result.skipped) {
+    const coll = item.kind === "unit" ? item.key.slice(0, item.key.indexOf("/")) : item.coll;
+    const record = item.kind === "unit" ? undefined : recordIn(was, item.coll, item.id);
+    const month = item.kind === "add" ? item.month : item.kind !== "unit" && item.coll === "e" ? Object.entries(was.expenses).find(([, rs]) => rs.some((r) => r.id === item.id))?.[0] : undefined;
+    const holds =
+      reason === "moduleOff" ? !(was.settings.modules as string[]).includes(MODULE_OF[coll]) : reason === "monthLocked" ? month !== undefined && was.monthLocks[month] === true : item.kind !== "unit" && record === undefined;
+    if (!holds) throw new Error(`re-apply of ${marker} on ${slot.name} skipped ${itemTexts(item).join(", ")} as ${reason}, which isn't so`);
+  }
+}
+
+/** A unit's value as the document reads it. */
+function unitIn(doc: LedgerDocument, key: string): unknown {
+  const [family, month] = key.split("/");
+  if (family === "lk") return doc.monthLocks[month] === true;
+  if (family === "fm") return doc.financeMonths[month] ?? null;
+  if (family === "cb") return doc.cardBills[month] ?? null;
+  if (key === "st/modules") return doc.settings.modules;
+  if (key === "st/timeZone") return doc.settings.timeZone;
+  throw new Error(`no unit ${key}`);
+}
+
+/** Right after a re-apply: each item it says it applied is in effect in
+ * the document, or each register of it not in effect is named in a notice
+ * the re-apply raised (the fence kept the value the view showed, section
+ * 3.4). A delete is never fenced. */
+function expectInEffect(slot: Slot, marker: string, result: ReapplyResult, before: Set<string>): void {
+  const doc = slot.engine.current();
+  const told = new Set(
+    slot.engine
+      .notices()
+      .filter((n) => !before.has(n.key))
+      .flatMap((n) => ("registers" in n.notice ? n.notice.registers.map((r) => r.key) : [])),
+  );
+  for (const item of result.applied) {
+    let missing: string[];
+    if (item.kind === "unit") missing = plainText(unitIn(doc, item.key)) === plainText(item.key.startsWith("lk/") ? item.value === true : item.value) || told.has(item.key) ? [] : [item.key];
+    else {
+      const record = recordIn(doc, item.coll, item.id);
+      if (item.kind === "delete") missing = record === undefined ? [] : [`${item.coll}/${item.id}`];
+      else if (record === undefined) missing = [`${item.coll}/${item.id}`];
+      else missing = Object.entries(item.fields).filter(([field, value]) => plainText(record[field]) !== plainText(value) && !told.has(`${item.coll}/${item.id}/${field}`)).map(([field]) => `${item.coll}/${item.id}/${field}`);
+    }
+    if (missing.length > 0) throw new Error(`re-apply of ${marker} on ${slot.name} says ${itemTexts(item).join(", ")} applied, but ${missing.join(", ")} is neither in effect nor told`);
   }
 }
 
@@ -642,18 +730,18 @@ function idsOf(slot: Slot): Map<string, string[]> {
   return ids;
 }
 
+/** One left-behind item as register and deletion texts. */
+function itemTexts(item: LeftBehindItem): string[] {
+  if (item.kind === "unit") return [`set ${item.key} ${plainText(item.value)}`];
+  if (item.kind === "delete") return [`del ${item.coll}/${item.id}`];
+  const out = item.kind === "add" ? [`set ${item.coll}/${item.id}/_c`] : [];
+  for (const [field, value] of Object.entries(item.fields)) out.push(`set ${item.coll}/${item.id}/${field} ${plainText(value)}`);
+  return out;
+}
+
 /** What a left-behind group offers, as register and deletion texts. */
 function offered(view: LeftBehindView): Set<string> {
-  const out = new Set<string>();
-  for (const item of view.items) {
-    if (item.kind === "unit") out.add(`set ${item.key} ${plainText(item.value)}`);
-    else if (item.kind === "delete") out.add(`del ${item.coll}/${item.id}`);
-    else {
-      if (item.kind === "add") out.add(`set ${item.coll}/${item.id}/_c`);
-      for (const [field, value] of Object.entries(item.fields)) out.add(`set ${item.coll}/${item.id}/${field} ${plainText(value)}`);
-    }
-  }
-  return out;
+  return new Set(view.items.flatMap(itemTexts));
 }
 
 function obligationText(ob: Obligation): string {
@@ -750,6 +838,10 @@ async function check(h: Harness, where: string): Promise<void> {
     }
   }
 
+  // The winner's line: it, the epoch its genesis is based on, and so on.
+  const line = new Set<string>([W]);
+  for (let g = history.geneses.get(W); g?.basedOn && !line.has(g.basedOn.epoch); g = history.geneses.get(g.basedOn.epoch)) line.add(g.basedOn.epoch);
+
   // Every change a restore left out is accounted for (AC6, AC13, D18).
   for (const [epoch, genesis] of history.geneses) {
     if (epoch === W) continue;
@@ -759,6 +851,9 @@ async function check(h: Harness, where: string): Promise<void> {
     for (const c of mine) if (!inRepo.has(`${c.device}/${c.op.L}/${plainText(c.op)}`)) ops.push({ device: c.device, op: c.op });
     const writes = writesOf(genesis.doc, [...ops, ...committed.filter((c) => c.epoch === epoch).map((c) => ({ device: c.device, op: c.op }))]);
     const cut = cutFor(history, W, epoch);
+    /** The markers `ob`'s group may carry there: its device's, or an id
+     * its device's slot rehomed to in that epoch. */
+    const markersOf = (ob: Obligation) => new Set([ob.device, ...(owners.get(`${epoch}/${ob.device}`) ?? []).flatMap((o) => slotIds.get(o)?.get(epoch) ?? [])].map((d) => `${epoch}/${d}`));
     const reapplied = (ob: Obligation): boolean =>
       wOps.some(({ op }) => (ob.kind === "del" ? op.del.includes(ob.key) : op.set.some(([key, value]) => key === ob.key && (key.endsWith("/_c") || plainText(value) === plainText(ob.value)))));
     for (const ob of obligations(epoch, genesis.doc, ops, cut)) {
@@ -780,7 +875,10 @@ async function check(h: Harness, where: string): Promise<void> {
         if (holdsIn(finalFold, ob)) return true;
         const after = slot.epochs.slice(slot.epochs.indexOf(epoch) + 1);
         if (after.some((e) => history.geneses.has(e) && holds(history.geneses.get(e)!.doc, ob))) return true;
-        if (slot.resolved.has(`${epoch}/${ob.device}`)) return true;
+        // Re-applied, skipped (it said why) or discarded on its own device,
+        // item by item, in the winner's line (in a losing epoch none is an
+        // answer: the group is offered again, D18).
+        if ([...markersOf(ob)].some((m) => { const done = slot.settled.get(`${m}|${text}`); return done !== undefined && line.has(done.epoch); })) return true;
         if (slot.discardedAt.some((at) => slot.epochs.indexOf(epoch) <= slot.epochs.indexOf(at))) return true;
         const own = slot.restored.find((r) => r.from === epoch && r.device === ob.device);
         if (own && ob.L <= (history.geneses.get(own.epoch)?.basedOn?.seen[ob.device] ?? 0)) return true;
