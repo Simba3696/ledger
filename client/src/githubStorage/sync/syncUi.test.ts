@@ -143,6 +143,22 @@ describe("labels", () => {
     expect(actionLabel(relock, relock.actions[0])).toBe("Lock it again");
   });
 
+  it("D30: a value changed again since the notice is named as it is now", () => {
+    const changed: ActionPreview = { kind: "useMine", writes: [], refused: { reason: "changedSince" }, current: [{ key: `e/${ID}/amount`, value: "33.00" }] };
+    expect(actionLabel(amountClash, changed)).toBe("Use mine");
+    expect(refusalText(changed, amountClash)).toBe("It changed again since: now Groceries · amount is 33.00. Yours isn't put back over it.");
+    const balance: ActionPreview = {
+      kind: "useMine",
+      writes: [],
+      refused: { reason: "changedSince" },
+      current: [
+        { key: `emi/${EMI}/remainingAsOf`, value: "7000.00" },
+        { key: `emi/${EMI}/asOfDate`, value: "2026-07-05" },
+      ],
+    };
+    expect(refusalText(balance, payment)).toBe("It changed again since: now 7000.00 remaining as of 2026-07-05. Yours isn't put back over it.");
+  });
+
   it("whole units, settings, fence and rehome notices", () => {
     const income: NoticeView = {
       key: "k",

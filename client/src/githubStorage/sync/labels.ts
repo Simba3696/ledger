@@ -143,10 +143,17 @@ export function actionLabel(view: NoticeView, action: ActionPreview): string {
   }
 }
 
-/** Why a button can't be used now. */
-export function refusalText(action: ActionPreview): string | null {
+/** Why a button can't be used now. A value that changed again since the
+ * notice (D30) is named as it is now, so the person sees why. */
+export function refusalText(action: ActionPreview, view?: NoticeView): string | null {
   if (action.refused === null) return null;
-  return action.refused.detail ?? REFUSALS[action.refused.reason].message;
+  if (action.refused.detail !== undefined) return action.refused.detail;
+  const current = action.current ?? [];
+  if (action.refused.reason === "changedSince" && current.length > 0) {
+    const now = current.every((c) => isBalance(c.key)) ? balanceText(current) : current.map((c) => `${registerLabel(c.key, view?.names ?? {})} is ${valueText(c.key, c.value)}`).join("; ");
+    return `It changed again since: now ${now}. Yours isn't put back over it.`;
+  }
+  return REFUSALS[action.refused.reason].message;
 }
 
 /** One change a restore left behind, in words. */

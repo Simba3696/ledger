@@ -14,7 +14,7 @@ import { Replica, deviceId, docText, emptyDocument } from "./testkit";
 
 const A = deviceId(0xa);
 const B = deviceId(0xb);
-const ENV: ActionEnv = { now: Date.UTC(2026, 4, 12, 9), actor: "alex", newId: () => "00000000-0000-4000-8000-0000000000aa" };
+const ENV: ActionEnv = { now: Date.UTC(2026, 4, 12, 9), actor: "alex", newId: () => "00000000-0000-4000-8000-0000000000aa", device: A };
 
 async function genesisDocument(): Promise<LedgerDocument> {
   const g = new Replica(deviceId(0xf), emptyDocument(), { actor: "alex" });
@@ -108,14 +108,43 @@ describe("Use mine (section 4.1)", () => {
     expect(refusal(same.a, same.notice, "useMine").status).toBe(409);
   });
 
-  it("is computed when it runs, not stored: a later remote value is replaced by mine, never by the value told", async () => {
+  it("D30: a value changed again after the notice is never overwritten; the preview shows it as it is now", async () => {
     const { a, notice } = await lostEdit();
     const c = new Replica(deviceId(0xc), a.doc, { actor: "kai" });
     await c.backend.updateEntry(2026, 5, await rowOf(c, "Groceries"), edit(33));
     a.receive(c.device, c.ops[0]);
     expect(groceries(a)?.amount).toBe("33.00");
+    const [preview] = previewActions(notice, a.doc, a.state, ENV);
+    expect(preview).toEqual({ kind: "useMine", writes: [], refused: { reason: "changedSince" }, current: [{ key: expect.stringMatching(/\/amount$/), value: "33.00" }] });
+    expect(refusal(a, notice, "useMine").status).toBe(409);
+    expect(groceries(a)?.amount).toBe("33.00");
+  });
+
+  it("D30: a later write of this device's own doesn't refuse it: only another device's change since does", async () => {
+    const { a, notice } = await lostEdit();
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), edit(20));
+    expect(previewActions(notice, a.doc, a.state, ENV)[0].refused).toBeNull();
     act(a, notice, "useMine");
     expect(groceries(a)?.amount).toBe("10.00");
+  });
+
+  it("several registers: allowed and writes them all when one is already in effect and another isn't (never 'some')", async () => {
+    const { a, b } = await pair();
+    const both = (amount: number, category: string) => ({ amount, remarks: "Groceries", category, isCard: false });
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), both(10, "rent"));
+    await b.backend.updateEntry(2026, 5, await rowOf(b, "Groceries"), both(12, "other"));
+    const notice = noticeOn(a, b);
+    expect(notice.kind === "overwrite" && notice.registers.map((r) => r.key.split("/")[2]).sort()).toEqual(["amount", "category"]);
+    // The category is set back by this device itself: in effect, and its own.
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), both(12, "rent"));
+    const [preview] = previewActions(notice, a.doc, a.state, ENV);
+    expect(preview.refused).toBeNull();
+    expect(preview.writes.map((w) => [w.key.split("/")[2], w.value]).sort()).toEqual([
+      ["amount", "10.00"],
+      ["category", "rent"],
+    ]);
+    act(a, notice, "useMine");
+    expect(groceries(a)).toMatchObject({ amount: "10.00", category: "rent" });
   });
 
   it("lock / unlock: a locked month doesn't refuse it, since the lock is what it sets", async () => {
@@ -239,6 +268,20 @@ describe("Record again (section 4.1, D20)", () => {
     act(a, notice, "recordAgain");
     expect(a.doc.emis[0].remainingAsOf).toBe(again.writes.find((w) => w.key.endsWith("/remainingAsOf"))!.value);
     expect(Number(a.doc.emis[0].remainingAsOf)).toBeLessThan(Number(before));
+  });
+
+  it("D30 (F4): once the winner records the next payment, Use mine is refused as changed since and never writes the old balance", async () => {
+    const { a, b, notice } = await lostPayment();
+    expect(previewActions(notice, a.doc, a.state, ENV)[1].refused).toEqual({ reason: "inEffect" });
+    expect(a.doc.emis[0].remainingAsOf).toBe("8000.00");
+    await b.backend.payEmi((await b.backend.getEmis())[0].row, 1000);
+    a.receive(B, b.ops.at(-1)!);
+    expect(a.doc.emis[0].remainingAsOf).toBe("7000.00");
+    const mine = previewActions(notice, a.doc, a.state, ENV)[1];
+    expect(mine.refused).toEqual({ reason: "changedSince" });
+    expect(mine.current?.find((c) => c.key.endsWith("/remainingAsOf"))?.value).toBe("7000.00");
+    expect(refusal(a, notice, "useMine").status).toBe(409);
+    expect(a.doc.emis[0].remainingAsOf).toBe("7000.00");
   });
 
   it("refuses a deleted EMI, or with EMI off", async () => {

@@ -25,7 +25,7 @@ export function NoticeList({ notices, work, onAction, onDismiss }: { notices: No
             <p className="sync-review-text">{noticeText(view)}</p>
             <div className="sync-review-actions">
               {view.actions.map((action) => {
-                const reason = refusalText(action);
+                const reason = refusalText(action, view);
                 const reasonId = `${view.key}-${action.kind}-why`;
                 return (
                   <span key={action.kind} className="sync-review-action">

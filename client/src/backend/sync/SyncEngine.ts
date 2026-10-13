@@ -2619,7 +2619,7 @@ export class SyncEngine {
   }
 
   #actionEnv() {
-    return { now: this.#now(), actor: this.#actor, newId: () => crypto.randomUUID() };
+    return { now: this.#now(), actor: this.#actor, newId: () => crypto.randomUUID(), device: this.#meta!.deviceId };
   }
 
   /** The notice writes that store `added` (by key) and remove `drop` in a

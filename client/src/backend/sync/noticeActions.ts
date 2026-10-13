@@ -10,6 +10,7 @@ import { sameValue } from "./canonical";
 import { COLLECTIONS, CREATE, FIELDS, parseRecordKey, parseRegisterKey, type Coll } from "./keys";
 import type { StoredNotice } from "./notices";
 import type { SyncState } from "./state";
+import type { Tag } from "./tags";
 
 // What a notice offers (design section 4.1). Each action is a new write,
 // worked out from the current document when it is clicked, never an answer
@@ -21,7 +22,11 @@ import type { SyncState } from "./state";
 //
 //   - Use mine: sets each register the notice names back to this device's
 //     value (section 4.1). A month lock is the one register a locked month
-//     doesn't refuse: it is the lock.
+//     doesn't refuse: it is the lock. It never overwrites a value that
+//     changed again after the notice (owner decision D30): when a register
+//     it names is now tagged neither with the notice's winning write nor
+//     with one of this device's own, it refuses ("changedSince") and the
+//     preview carries the values as they are now.
 //   - Add it back as a new entry: a new record, with a new id, in the same
 //     month (or list), from the dead record's registers as they are now; an
 //     expense gets a fresh sortKey at the end of its month, and a list
@@ -44,6 +49,9 @@ export type Refusal =
   | "moduleOff"
   /** The ledger already holds what it would write. */
   | "inEffect"
+  /** What it would overwrite changed again since the notice (D30), or no
+   * longer matches what the button showed. */
+  | "changedSince"
   /** "Add it back": the record is in the ledger, not deleted. */
   | "notDeleted"
   /** The ledger's checks refuse it (`detail` says why). */
@@ -58,13 +66,18 @@ export interface ActionPreview {
   /** "Record again": the amount it pays. */
   paid?: string;
   refused: { reason: Refusal; detail?: string } | null;
+  /** Refused "changedSince" (D30): each register that changed again, with
+   * its value now, so the list can say why. */
+  current?: { key: string; value: unknown }[];
 }
 
-/** The clock, login and id source a write uses. */
+/** The clock, login and id source a write uses, and this device's id
+ * (whose own writes Use mine may replace, D30). */
 export interface ActionEnv {
   now: number;
   actor: string;
   newId: () => string;
+  device: string;
 }
 
 const MODULE_OF: Record<Coll | "fm" | "cb" | "lk", ModuleName> = {
@@ -91,7 +104,7 @@ export function actionsFor(notice: StoredNotice): NoticeActionKind[] {
 
 type AnyRecord = { id: string; updatedAt: number; updatedBy: string } & Record<string, unknown>;
 
-type Plan = { refused: { reason: Refusal; detail?: string } } | { refused: null; writes: { key: string; value: unknown }[]; paid?: string; apply: (doc: LedgerDocument) => void };
+type Plan = { refused: { reason: Refusal; detail?: string }; current?: { key: string; value: unknown }[] } | { refused: null; writes: { key: string; value: unknown }[]; paid?: string; apply: (doc: LedgerDocument) => void };
 
 const refuse = (reason: Refusal, detail?: string): Plan => ({ refused: detail === undefined ? { reason } : { reason, detail } });
 
@@ -113,16 +126,17 @@ function monthOf(state: SyncState, rk: string): string | null {
 }
 
 /** The record `rk` names in `doc` (and its month, for an expense), if it is
- * visible there. */
-function findRecord(doc: LedgerDocument, state: SyncState, rk: string): { record: AnyRecord; month: string | null } | null {
+ * visible there; `tag` reads each of its registers' tags from `state`. */
+function findRecord(doc: LedgerDocument, state: SyncState, rk: string): { record: AnyRecord; month: string | null; tag: (field: string) => Tag | undefined } | null {
   const { coll, id } = parseRecordKey(rk)!;
+  const tag = (field: string) => state.rec.get(rk)?.get(field)?.t;
   if (coll === "e") {
     const month = monthOf(state, rk);
     const record = month === null ? undefined : doc.expenses[month]?.find((r) => r.id === id);
-    return record ? { record: record as unknown as AnyRecord, month } : null;
+    return record ? { record: record as unknown as AnyRecord, month, tag } : null;
   }
   const record = (doc[COLLECTIONS[coll]] as unknown as AnyRecord[]).find((r) => r.id === id);
-  return record ? { record, month: null } : null;
+  return record ? { record, month: null, tag } : null;
 }
 
 /** Why `rk` can't be written now, if it can't: deleted, not in the ledger,
@@ -137,13 +151,15 @@ function recordRefusal(doc: LedgerDocument, state: SyncState, rk: string): Plan 
   return null;
 }
 
-/** A month unit's or setting's value as the document holds it. */
-function unitValue(doc: LedgerDocument, key: string): unknown {
+/** A month unit's or setting's value as the document holds it, and its
+ * register's tag in `state`. */
+function unitValue(doc: LedgerDocument, state: SyncState, key: string): { value: unknown; tag: Tag | undefined } {
   const parsed = parseRegisterKey(key);
-  if (parsed?.kind === "setting") return doc.settings[parsed.name];
-  if (parsed?.kind !== "month") return undefined;
-  if (parsed.family === "lk") return doc.monthLocks[parsed.month] === true;
-  return (parsed.family === "fm" ? doc.financeMonths : doc.cardBills)[parsed.month] ?? null;
+  const tag = state.unit.get(key)?.t;
+  if (parsed?.kind === "setting") return { value: doc.settings[parsed.name], tag };
+  if (parsed?.kind !== "month") return { value: undefined, tag };
+  if (parsed.family === "lk") return { value: doc.monthLocks[parsed.month] === true, tag };
+  return { value: (parsed.family === "fm" ? doc.financeMonths : doc.cardBills)[parsed.month] ?? null, tag };
 }
 
 function setUnit(doc: LedgerDocument, key: string, value: unknown): void {
@@ -174,12 +190,22 @@ function planUseMine(notice: Extract<StoredNotice, { kind: "overwrite" }>, doc: 
     const refused = recordRefusal(doc, state, rk);
     if (refused) return refused;
   }
-  const current = (key: string): unknown => {
+  const current = (key: string): { value: unknown; tag: Tag | undefined } => {
     const parsed = parseRegisterKey(key)!;
-    if (parsed.kind !== "field") return unitValue(doc, key);
-    return findRecord(doc, state, `${parsed.coll}/${parsed.id}`)!.record[parsed.field];
+    if (parsed.kind !== "field") return unitValue(doc, state, key);
+    const found = findRecord(doc, state, `${parsed.coll}/${parsed.id}`)!;
+    return { value: found.record[parsed.field], tag: found.tag(parsed.field) };
   };
-  if (notice.registers.every(({ key, mine }) => sameValue(current(key), mine))) return refuse("inEffect");
+  if (notice.registers.every(({ key, mine }) => sameValue(current(key).value, mine))) return refuse("inEffect");
+  // D30: a register another write set after the notice (neither the winner
+  // the notice names nor this device's own) is never overwritten with the
+  // value the notice kept; the preview shows it as it is now.
+  const own = (t: Tag) => t[1] === env.device || t[1] === notice.loser.device;
+  const changed = notice.registers.filter(({ key }) => {
+    const { tag } = current(key);
+    return tag === undefined || !((tag[0] === notice.winner.L && tag[1] === notice.winner.device) || own(tag));
+  });
+  if (changed.length > 0) return { refused: { reason: "changedSince" }, current: changed.map(({ key }) => ({ key, value: structuredClone(current(key).value) })) };
   return {
     refused: null,
     writes: notice.registers.map(({ key, mine }) => ({ key, value: mine })),
@@ -279,7 +305,7 @@ function plan(notice: StoredNotice, kind: NoticeActionKind, doc: LedgerDocument,
 export function previewActions(notice: StoredNotice, doc: LedgerDocument, state: SyncState, env: ActionEnv): ActionPreview[] {
   return actionsFor(notice).map((kind) => {
     const p = plan(notice, kind, doc, state, env);
-    if (p.refused !== null) return { kind, writes: [], refused: p.refused };
+    if (p.refused !== null) return { kind, writes: [], refused: p.refused, ...(p.current ? { current: p.current } : {}) };
     return { kind, writes: p.writes, ...(p.paid !== undefined ? { paid: p.paid } : {}), refused: null };
   });
 }
@@ -327,6 +353,7 @@ export const REFUSALS: Record<Refusal, { status: number; message: string }> = {
   locked: { status: 403, message: "That month is locked. Unlock it first." },
   moduleOff: { status: 404, message: "That section is turned off." },
   inEffect: { status: 409, message: "The ledger already has that." },
+  changedSince: { status: 409, message: "That changed again since, so it isn't set back." },
   notDeleted: { status: 409, message: "That record is in the ledger, so there's nothing to add back." },
   invalid: { status: 400, message: "That can't be saved." },
 };
