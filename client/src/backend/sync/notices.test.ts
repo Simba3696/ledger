@@ -192,6 +192,17 @@ describe("rule 1: a register overwrite (section 4.2)", () => {
     expect(fieldsOf(found[0]).sort()).toEqual(["asOfDate", "remainingAsOf"]);
   });
 
+  it("payEmi / payEmi with the same result: still told (D20), since two payments became one", async () => {
+    const { a, b } = await pair();
+    const row = (r: Replica) => r.backend.getEmis().then((list) => list[0].row);
+    await a.backend.payEmi(await row(a), 1000);
+    await b.backend.payEmi(await row(b), 1000);
+    const found = deliver(a, b);
+    expect(found).toHaveLength(1);
+    expect(found[0].kind === "overwrite" && found[0].registers.every((r) => r.theirs === r.mine)).toBe(true);
+    expect(deliver(b, a)).toEqual([]);
+  });
+
   it("a settings clash: the loser is told", async () => {
     const { a, b } = await pair();
     a.amend((doc) => void (doc.settings.timeZone = "Asia/Kolkata"));

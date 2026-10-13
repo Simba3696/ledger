@@ -17,7 +17,10 @@ import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 //      sortKey and create markers (`_c`) never notify, and neither does a
 //      register of a record the join leaves deleted (rule 2 tells that).
 //      An EMI's balance pair is one unit (keys.ts TOGETHER): one notice
-//      holds the whole pair when either value differs.
+//      holds the whole pair. It notifies even when both pairs are equal:
+//      two payments recorded from the same state give the same pair, and
+//      only one is kept (payments are state, not increments; owner decision
+//      D20 tells the loser, with "Record again").
 //   2. A concurrent delete. A remote delete of a record on which I have a
 //      content op M (not `_c`, `_s` or sortKey) that the deleter had not
 //      seen (L_M > the deletion's vv[me]).
@@ -32,6 +35,9 @@ import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 
 /** Registers that never notify: not content. */
 const QUIET_FIELDS = new Set([CREATE, STAMP, "sortKey"]);
+
+/** An EMI's balance pair: a payment, which notifies even at equal values. */
+const BALANCE = new Set(["emi/remainingAsOf", "emi/asOfDate"]);
 
 /** A record's name, as a list shows it. */
 const NAME_FIELD: Record<Coll, string> = { e: "remarks", debt: "name", emi: "cardOrBank", sub: "service" };
@@ -152,9 +158,10 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
       for (const f of group) done.add(f);
       const now = after.get(field)!;
       if (now === reg || !isRemote(now.t)) continue;
-      // Whether any value of the unit differs from mine.
+      // Whether any value of the unit differs from mine; a balance pair
+      // notifies regardless (D20).
       const differs = group.some((f) => !sameValue(after.get(f)?.v, mine.get(f)?.v));
-      if (!differs) continue;
+      if (!differs && !BALANCE.has(`${coll}/${field}`)) continue;
       const view = writerView(now.t, arrivals, (state) => {
         const held = state.rec.get(rk)?.get(field);
         return held !== undefined && sameTag(held.t, now.t);
