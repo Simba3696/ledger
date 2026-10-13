@@ -471,8 +471,10 @@ async function restoreBy(h: Harness, slots: Slot[], rng: Rng): Promise<void> {
       return;
     }
     if (result.kind === "unsynced" || result.kind === "invalid" || result.kind === "tooLarge") return;
-    if (discard) slot.discardedAt.push(from.epoch);
     if (result.kind === "failed") return;
+    // "Restore anyway" dropped this device's unsynced changes and every own
+    // group still shown, from this epoch and every earlier one.
+    if (discard) slot.discardedAt.push(from.epoch);
     slot.restored.push({ epoch: result.epoch, from: from.epoch, device: from.device });
     // "unknown": writes stay refused until a listing settles it; a cycle
     // that finds it landed rejoins (cycle()).
@@ -663,18 +665,24 @@ async function check(h: Harness, where: string): Promise<void> {
   }
 
   // Ids: which slot wrote under which id, and which ids a fork shared.
+  // An id a slot left by rehoming is abandoned by that slot only: its
+  // twin may still write under it.
   const owners = new Map<string, Slot[]>();
   const abandoned = new Set<string>();
+  const slotIds = new Map<Slot, Map<string, string[]>>();
   for (const slot of h.slots) {
-    for (const [epoch, ids] of idsOf(slot)) {
-      ids.forEach((id, i) => {
+    const ids = idsOf(slot);
+    slotIds.set(slot, ids);
+    for (const [epoch, list] of ids) {
+      list.forEach((id, i) => {
         const key = `${epoch}/${id}`;
         owners.set(key, [...(owners.get(key) ?? []), slot]);
-        if (i < ids.length - 1) abandoned.add(key);
+        if (i < list.length - 1) abandoned.add(`${slot.name}|${key}`);
       });
     }
   }
-  const shared = (epoch: string, id: string) => (owners.get(`${epoch}/${id}`)?.length ?? 0) > 1 || abandoned.has(`${epoch}/${id}`);
+  const abandonedBy = (slot: Slot, epoch: string, id: string) => abandoned.has(`${slot.name}|${epoch}/${id}`);
+  const shared = (epoch: string, id: string) => (owners.get(`${epoch}/${id}`)?.length ?? 0) > 1 || h.slots.some((slot) => abandonedBy(slot, epoch, id));
   counts.rehomes += abandoned.size;
 
   // No (device, L) published with two contents, but by a cloned id.
@@ -720,7 +728,7 @@ async function check(h: Harness, where: string): Promise<void> {
   // Every change a restore left out is accounted for (AC6, AC13, D18).
   for (const [epoch, genesis] of history.geneses) {
     if (epoch === W) continue;
-    const mine = committed.filter((c) => c.epoch === epoch && !abandoned.has(`${epoch}/${c.device}`));
+    const mine = committed.filter((c) => c.epoch === epoch && !abandonedBy(c.slot, epoch, c.device));
     const ops: OracleOp[] = [...(history.ops.get(epoch) ?? [])];
     const inRepo = new Set(ops.map(({ device, op }) => `${device}/${op.L}/${plainText(op)}`));
     for (const c of mine) if (!inRepo.has(`${c.device}/${c.op.L}/${plainText(c.op)}`)) ops.push({ device: c.device, op: c.op });
@@ -736,17 +744,20 @@ async function check(h: Harness, where: string): Promise<void> {
         const after = slot.epochs.slice(slot.epochs.indexOf(epoch) + 1);
         if (after.some((e) => history.geneses.has(e) && holds(history.geneses.get(e)!.doc, ob))) return true;
         if (slot.resolved.has(`${epoch}/${ob.device}`)) return true;
-        if (slot.discardedAt.includes(epoch)) return true;
+        if (slot.discardedAt.some((at) => slot.epochs.indexOf(epoch) <= slot.epochs.indexOf(at))) return true;
         const own = slot.restored.find((r) => r.from === epoch && r.device === ob.device);
         if (own && ob.L <= (history.geneses.get(own.epoch)?.basedOn?.seen[ob.device] ?? 0)) return true;
-        const groups = slot.engine.leftBehind().filter((g) => g.epoch === epoch && g.device === ob.device);
+        // A rehome re-issued the change under the slot's next id there.
+        const ids = slotIds.get(slot)!.get(epoch) ?? [];
+        const groups = slot.engine.leftBehind().filter((g) => g.epoch === epoch && ids.includes(g.device));
         if (groups.some((g) => offered(g).has(text))) {
           counts.offered++;
           return true;
         }
         return false;
       });
-      expect(settled, `${where}: ${ob.device}'s ${text} in ${epoch} (L ${ob.L}, cut ${cut[ob.device] ?? 0}) was left behind and is offered nowhere`).toBe(true);
+      const story = slots.map((s) => `${s.name}: epochs ${s.epochs.join(">")}, restored ${JSON.stringify(s.restored)}, resolved [${[...s.resolved].join(",")}], discardedAt [${s.discardedAt.join(",")}], groups ${JSON.stringify(s.engine.leftBehind().map((g) => ({ id: g.id, own: g.own, items: [...offered(g)] })))}`).join("; ");
+      expect(settled, `${where}: ${ob.device}'s ${text} in ${epoch} (L ${ob.L}, cut ${cut[ob.device] ?? 0}) was left behind and is offered nowhere. ${story}. Geneses: ${[...history.geneses.values()].map((g) => `${g.epoch} based on ${JSON.stringify(g.basedOn)}`).join("; ")}`).toBe(true);
     }
     // Nothing invented in what is offered.
     for (const slot of h.slots) {
