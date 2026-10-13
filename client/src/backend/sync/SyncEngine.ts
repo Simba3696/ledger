@@ -606,7 +606,7 @@ interface Loaded {
 type RestoreWrite =
   | { kind: "written"; genesis: NewEpoch }
   | { kind: "tooLarge"; detail: string }
-  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone }
+  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone; newer?: string }
   | { kind: "unknown"; epoch: string; detail: string };
 
 /** A new epoch's genesis, read or written, to switch to (section 9.3). */
@@ -2497,6 +2497,12 @@ export class SyncEngine {
         rememberRestore(written.epoch);
         return { kind: "unknown", epoch: written.epoch };
       }
+      if (written.kind === "failed") {
+        // A newer epoch listed is the caller's "failed"; which one is the
+        // engine's own business.
+        const { newer: _newer, ...failed } = written;
+        return failed;
+      }
       if (written.kind !== "written") return written;
       this.#restore = "written";
       const epoch = written.genesis.epoch;
@@ -2753,7 +2759,7 @@ export class SyncEngine {
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
       const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.files.keys());
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
-      return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then` };
+      return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then`, newer: listed };
     }
     const epoch = nextEpochKey(meta.epochKey);
     // The new genesis may fill the gap below a genesis numbered past it,
@@ -2826,6 +2832,14 @@ export class SyncEngine {
           // (D26): the write waits until the file is deleted.
           if (written.kind === "failed" && written.damagedFile) throw new ApiError(503, needsNewEpochPast(written.damagedFile));
           if (written.kind === "failed" && written.epochGone) throw new ApiError(503, epochGoneMessage(written.epochGone));
+          // Another device already started a newer epoch (it ran out of L
+          // too, or restored): the device is online, and switching is what
+          // it needs. The switch takes a write turn, so it runs once this
+          // write has ended; the next try commits there (stage 8a).
+          if (written.kind === "failed" && written.newer !== undefined) {
+            void this.sync();
+            throw new ApiError(503, CHANGED_WHILE_SAVING);
+          }
           throw new ApiError(503, NEEDS_NEW_EPOCH);
         }
         if (!(await this.#switchEpoch(from, written.genesis))) throw new ApiError(503, CHANGED_WHILE_SAVING);
