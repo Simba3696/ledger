@@ -43,7 +43,7 @@ const BALANCE = new Set(["emi/remainingAsOf", "emi/asOfDate"]);
 const NAME_FIELD: Record<Coll, string> = { e: "remarks", debt: "name", emi: "cardOrBank", sub: "service" };
 
 /** An op, as a notice names it: its tag, and who made it when known. */
-export interface NoticeOp {
+interface NoticeOp {
   L: number;
   device: string;
   /** The login on the op (display only); null when the write arrived in a
@@ -54,18 +54,18 @@ export interface NoticeOp {
 /** What a notice is about: a record (its collection and id, its month for
  * an expense, and its name when it was told), or a month unit or setting
  * (its register key). */
-export type NoticeTarget = { kind: "record"; coll: Coll; id: string; month: string | null; name: string | null } | { kind: "unit"; key: string };
+type NoticeTarget = { kind: "record"; coll: Coll; id: string; month: string | null; name: string | null } | { kind: "unit"; key: string };
 
 /** A register of mine that a concurrent write replaced: its key, the value
  * that won and mine. */
-export interface ReplacedRegister {
+interface ReplacedRegister {
   key: string;
   theirs: unknown;
   mine: unknown;
 }
 
 /** Rule 1: my write to `target` lost to a concurrent one. */
-export interface OverwriteNotice {
+interface OverwriteNotice {
   kind: "overwrite";
   winner: NoticeOp;
   loser: { L: number; device: string };
@@ -74,7 +74,7 @@ export interface OverwriteNotice {
 }
 
 /** Rule 2: a record I edited was deleted by someone who hadn't seen it. */
-export interface DeleteNotice {
+interface DeleteNotice {
   kind: "deleted";
   winner: NoticeOp;
   loser: { L: number; device: string };
