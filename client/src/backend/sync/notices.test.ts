@@ -43,8 +43,8 @@ function deliver(to: Replica, from: Replica, ops: Op[] = from.ops): Detected[] {
 }
 
 /** Delivers `snapshot` (a whole state another device published) to `to`. */
-function deliverState(to: Replica, snapshot: SyncState): Detected[] {
-  const found = detectNotices(to.state, snapshot, { ops: [], states: [snapshot] }, to.device);
+function deliverState(to: Replica, snapshot: SyncState, device: string): Detected[] {
+  const found = detectNotices(to.state, snapshot, { ops: [], states: [{ device, state: snapshot }] }, to.device);
   to.receiveState(snapshot);
   return found;
 }
@@ -278,7 +278,7 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     const { a, b } = await pair();
     await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), edit(10));
     await b.backend.updateEntry(2026, 5, await rowOf(b, "Groceries"), edit(12));
-    const [notice] = deliverState(a, cloneState(b.state));
+    const [notice] = deliverState(a, cloneState(b.state), B);
     expect(notice).toMatchObject({ kind: "overwrite", winner: { L: 2, device: B, by: null }, registers: [{ theirs: "12.00", mine: "10.00" }] });
   });
 
@@ -286,7 +286,7 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     const { a, b } = await pair();
     await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), edit(10));
     await b.backend.deleteEntry(2026, 5, await rowOf(b, "Groceries"));
-    expect(deliverState(a, cloneState(b.state)).map((n) => n.kind)).toEqual(["deleted"]);
+    expect(deliverState(a, cloneState(b.state), B).map((n) => n.kind)).toEqual(["deleted"]);
   });
 
   it("residual (section 12.2 item 6): a snapshot taken after its device saw my write hides the overwrite", async () => {
@@ -295,7 +295,20 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     await b.backend.updateEntry(2026, 5, await rowOf(b, "Groceries"), edit(12));
     // b saw a's write (and kept its own, the greater tag) before compacting.
     deliver(b, a);
-    expect(deliverState(a, cloneState(b.state))).toEqual([]);
+    expect(deliverState(a, cloneState(b.state), B)).toEqual([]);
+  });
+
+  it("another device's snapshot never stands in for the writer's vv: it can't tell a causally later write", async () => {
+    const { a, b, doc } = await pair();
+    const c = new Replica(deviceId(0xc), doc, { actor: "kai" });
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), edit(10));
+    // b saw a's write and then changed the amount: causally later.
+    deliver(b, a);
+    await b.backend.updateEntry(2026, 5, await rowOf(b, "Groceries"), edit(12));
+    // c joined b's write without ever seeing a's: its seen[a] is 0.
+    for (const op of b.ops) c.receive(B, op);
+    expect(c.state.seen.get(A) ?? 0).toBe(0);
+    expect(deliverState(a, cloneState(c.state), c.device)).toEqual([]);
   });
 
   it("an op and a snapshot holding the same write: one notice, from the op's exact vv", async () => {
@@ -305,7 +318,7 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     const snapshot = cloneState(b.state);
     const source = cloneState(snapshot);
     joinInto(source, opState(B, b.ops[0]));
-    const found = detectNotices(a.state, source, { ops: [[B, b.ops[0]]], states: [snapshot] }, A);
+    const found = detectNotices(a.state, source, { ops: [[B, b.ops[0]]], states: [{ device: B, state: snapshot }] }, A);
     expect(found).toHaveLength(1);
     expect(found[0].winner.by).toBe("sam");
   });

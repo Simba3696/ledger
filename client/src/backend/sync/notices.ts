@@ -25,10 +25,15 @@ import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 //      content op M (not `_c`, `_s` or sortKey) that the deleter had not
 //      seen (L_M > the deletion's vv[me]).
 // For data that arrives in a snapshot rather than a log, the snapshot's
-// `seen` stands in for R.vv: the least `seen[me]` of the snapshots holding
-// that write, the closest bound on what R had seen (section 12.2 item 6 is
-// the case this can miss). A deletion carries its deleter's vv wherever it
-// arrives from, so rule 2 is exact.
+// `seen` stands in for R.vv, but only the snapshot of R's own device: its
+// `seen[me]` is at least R.vv[me] (seen only grows, and R's vv was its
+// device's seen when R was made), so it can only miss a notice (section
+// 12.2 item 6), never tell of a causally later change. Another device's
+// snapshot that carries R says nothing about what R's writer had seen, and
+// R always reaches a reader through its own device's log or snapshot too
+// (every listed log and snapshot is read, ADR-0008 D24), so such a write
+// raises nothing on that snapshot's word. A deletion carries its deleter's
+// vv wherever it arrives from, so rule 2 is exact.
 //
 // A notice is keyed by (winner op, loser op), "<L>.<device>/<L>.<device>",
 // so one pair is told at most once.
@@ -84,11 +89,11 @@ interface DeleteNotice {
 /** A notice the join raises, with its key. */
 export type Detected = (OverwriteNotice | DeleteNotice) & { key: string };
 
-/** What arrived in one join: other devices' ops, and whole states
- * (snapshots, and a genesis). */
+/** What arrived in one join: other devices' ops, and whole states, each
+ * with the device whose snapshot it is (null for a genesis). */
 export interface Arrivals {
   ops: readonly (readonly [device: string, op: Op])[];
-  states: readonly SyncState[];
+  states: readonly { device: string | null; state: SyncState }[];
 }
 
 const opId = (L: number, device: string) => `${L}.${device}`;
@@ -99,15 +104,15 @@ export function noticeKeyOf(winner: { L: number; device: string }, loser: { L: n
 }
 
 /** What the writer of `t` had seen of `me`, and who it was, as far as the
- * arrivals tell: the op's vv, or the least `seen` of the states holding the
- * write. Null when nothing that arrived holds it. */
+ * arrivals tell: the op's vv, or the least `seen` of its own device's
+ * snapshots holding the write. Null when neither holds it. */
 function writerView(t: Tag, arrivals: Arrivals, holds: (state: SyncState) => boolean, me: string): { seenMe: number; by: string | null } | null {
   for (const [device, op] of arrivals.ops) {
     if (device === t[1] && op.L === t[0]) return { seenMe: op.vv[me] ?? 0, by: op.by };
   }
   let least: number | null = null;
-  for (const state of arrivals.states) {
-    if (!holds(state)) continue;
+  for (const { device, state } of arrivals.states) {
+    if (device !== t[1] || !holds(state)) continue;
     const seen = state.seen.get(me) ?? 0;
     if (least === null || seen < least) least = seen;
   }

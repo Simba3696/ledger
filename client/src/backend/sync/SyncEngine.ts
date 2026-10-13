@@ -26,7 +26,7 @@ import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHe
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { applyAction, noticeView, type NoticeActionKind, type NoticeView } from "./noticeActions";
-import { checkNotice, detectNotices, overCap, type StoredNotice } from "./notices";
+import { checkNotice, detectNotices, overCap, type Arrivals, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
   LOCAL_FORMAT_VERSION,
@@ -527,7 +527,8 @@ interface StreamSource {
 /** What #readStreams found: snapshots (as states) and ops to join, the file
  * versions they hold, and each stream's health. */
 interface Streams {
-  states: SyncState[];
+  /** Each snapshot joined, with the device whose snapshot it is. */
+  states: { device: string; state: SyncState }[];
   ops: [device: string, op: Op][];
   /** Files newly joined (each read here), name to blob sha. */
   joined: Record<string, string>;
@@ -1098,17 +1099,18 @@ export class SyncEngine {
   // --- Remote joins ---------------------------------------------------------
 
   /** Joins other devices' validated ops and/or validated states (snapshots,
-   * and an epoch's genesis): one transaction appends the delta to tail,
+   * each with the device whose snapshot it is, and an epoch's genesis, with
+   * none): one transaction appends the delta to tail,
    * records `bookkeeping` in meta and stores the notices the join raises
    * (section 4.2), then the delta is joined through the fence. */
-  join(delta: { ops?: [device: string, op: Op][]; states?: SyncState[] }, bookkeeping: MetaPatch = {}): Promise<void> {
+  join(delta: { ops?: [device: string, op: Op][]; states?: Arrivals["states"] }, bookkeeping: MetaPatch = {}): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
       this.#assertCycleCurrent();
       const ops = delta.ops ?? [];
       const states = delta.states ?? [];
       let whole: SyncState | null = null;
-      for (const part of states) joinInto((whole ??= emptyState()), part);
+      for (const part of states) joinInto((whole ??= emptyState()), part.state);
       const source = emptyState();
       if (whole) joinInto(source, whole);
       for (const [device, op] of ops) joinInto(source, opState(device, op));
@@ -1457,7 +1459,7 @@ export class SyncEngine {
     // The genesis and every snapshot read join as one state; each is passed
     // on its own, since a snapshot's `seen` stands in for the vv of the
     // writes it holds when notices are worked out (section 4.2).
-    const states = genesis.state ? [genesis.state, ...others.states] : others.states;
+    const states = genesis.state ? [{ device: null, state: genesis.state }, ...others.states] : others.states;
     if (others.ops.length > 0 || states.length > 0) await this.join({ ops: others.ops, states }, patch);
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
@@ -1701,7 +1703,7 @@ export class SyncEngine {
         return refused;
       }
       this.#unlistedSeen.delete(at);
-      out.states.push(state);
+      out.states.push({ device: file.device, state });
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
       // Every version joined in this read is in the state, so the greatest
@@ -2392,7 +2394,7 @@ export class SyncEngine {
       snaps: [...versions.keys()].filter((name) => parseRepoFileName(name)?.kind === "snap"),
       versions: (name) => versions.get(name) ?? [],
     });
-    for (const part of streams.states) joinInto(state, part);
+    for (const part of streams.states) joinInto(state, part.state);
     for (const [device, op] of streams.ops) applyOp(state, device, op);
     return {
       state,
