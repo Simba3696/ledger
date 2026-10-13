@@ -152,7 +152,7 @@ function recordsOf(f: Fold): Map<string, Map<string, Cell>> {
 }
 
 /** Whether a record is shown: created, and not deleted. */
-export function shown(f: Fold, rk: string): boolean {
+function shown(f: Fold, rk: string): boolean {
   return f.cells.has(`${rk}/_c`) && !f.dels.has(rk);
 }
 
@@ -242,7 +242,7 @@ export function winnerOf(geneses: readonly string[]): string | null {
 
 // --- The repo, every version of every file --------------------------------------------
 
-export interface Genesis {
+interface Genesis {
   epoch: string;
   reason: string;
   by: string;
@@ -325,7 +325,7 @@ export function snapshotWrites(state: unknown): string[] {
 }
 
 /** One write as text. */
-export function writeText(key: string, L: number, d: string, v: unknown): string {
+function writeText(key: string, L: number, d: string, v: unknown): string {
   return `${key} ${L} ${d} ${plainText(v)}`;
 }
 
