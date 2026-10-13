@@ -172,4 +172,24 @@ describe("cold start (section 8.3)", () => {
     expect(handed).toEqual(without);
     expect(handed.joined).toHaveProperty(`${EPOCH}.genesis.enc`, genesisSha);
   }, 30_000);
+
+  it("reads the other devices' files 4 at a time, each once, with no request it didn't need before", async () => {
+    await ledgerOfThree();
+    const net = new Network((kind) => (kind === "blob" ? 20 : 1));
+    const d = await coldStart(net);
+    // #8: the repo, the ref, the tree and the genesis. The first cycle: the
+    // ref, the tree, and three snapshots and five logs (two of them refused
+    // once read); then the settling cycle's ref and tree (a halted stream
+    // keeps the head unhandled, so each poll lists again), and no blob: a
+    // refused version is never downloaded again.
+    expect({ repo: net.count("repo"), ref: net.count("ref"), listing: net.count("listing"), blob: net.count("blob") }).toEqual({ repo: 1, ref: 3, listing: 3, blob: 9 });
+    const blobs = net.sent.filter((s) => s.kind === "blob").map((s) => s.path);
+    expect(new Set(blobs).size).toBe(blobs.length);
+    expect(net.peak).toBe(4);
+    expect(d.engine.current()).toEqual(outcome(d).doc);
+    // A cycle with nothing new downloads nothing.
+    const before = net.sent.length;
+    await cycle(w, d);
+    expect(net.sent.slice(before).map((s) => s.kind)).toEqual(["ref", "listing"]);
+  }, 30_000);
 });
