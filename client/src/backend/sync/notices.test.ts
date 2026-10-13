@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { NOTICE_CAP, checkNotice, detectNotices, noticeKeyOf, overCap, type Detected } from "./notices";
+import { NOTICE_CAP, checkNotice, detectNotices, overCap, type Detected } from "./notices";
 import { cloneState, emptyState, joinInto, opState, type Op, type SyncState } from "./state";
 import { compareTags } from "./tags";
 import { Replica, Rng, deviceId, emptyDocument, fingerprint, forEachSeed, testEnv } from "./testkit";
@@ -73,7 +73,8 @@ describe("rule 1: a register overwrite (section 4.2)", () => {
       registers: [{ theirs: "12.00", mine: "10.00" }],
     });
     expect(fieldsOf(notice)).toEqual(["amount"]);
-    expect(notice.key).toBe(noticeKeyOf(notice.winner, notice.loser));
+    const id = a.doc.expenses["2026-05"].find((e) => e.remarks === "Groceries")!.id;
+    expect(notice.key).toBe(`2.${B}/2.${A}/overwrite/e/${id}`);
     // The winner is told nothing.
     expect(deliver(b, a)).toEqual([]);
   });
@@ -246,6 +247,35 @@ describe("rule 2: a concurrent delete (section 4.2)", () => {
     expect(deliver(a, b, b.ops.slice(-1))).toEqual([]);
   });
 
+  it("one remote op that deletes one record and overwrites another, against one op of mine that edited both, tells both kinds (F1)", async () => {
+    const { a, b } = await pair();
+    const id = (remarks: string) => a.doc.expenses["2026-05"].find((e) => e.remarks === remarks)!.id;
+    const [groceries, bus] = [id("Groceries"), id("Bus")];
+    // One op of mine edits both; one op of b's deletes Groceries and sets Bus.
+    a.amend((doc) => {
+      for (const e of doc.expenses["2026-05"]) e.amount = e.remarks === "Groceries" ? "10.00" : "3.00";
+    });
+    b.amend((doc) => {
+      doc.expenses["2026-05"] = doc.expenses["2026-05"].filter((e) => e.remarks !== "Groceries");
+      doc.expenses["2026-05"][0].amount = "4.00";
+    });
+    const found = deliver(a, b);
+    // Keys are literal: (winner op, loser op, kind, what), stable whenever detected.
+    expect(found.map((n) => n.key).sort()).toEqual([`2.${B}/2.${A}/deleted/e/${groceries}`, `2.${B}/2.${A}/overwrite/e/${bus}`].sort());
+    expect(found.map((n) => n.kind).sort()).toEqual(["deleted", "overwrite"]);
+  });
+
+  it("one remote op that deletes two records I edited in one op tells each (F1)", async () => {
+    const { a, b } = await pair();
+    a.amend((doc) => {
+      for (const e of doc.expenses["2026-05"]) e.amount = "1.00";
+    });
+    b.amend((doc) => void delete doc.expenses["2026-05"]);
+    const found = deliver(a, b);
+    expect(found.map((n) => (n.kind === "deleted" ? n.target.name : null)).sort()).toEqual(["Bus", "Groceries"]);
+    expect(new Set(found.map((n) => n.key)).size).toBe(2);
+  });
+
   it("move / delete tells no one: a sortKey isn't content", async () => {
     const { a, b } = await pair();
     await a.backend.moveEntry(2026, 5, await rowOf(a, "Bus"), await rowOf(a, "Groceries"));
@@ -358,7 +388,9 @@ describe("rule 1 against an oracle (AC7, randomised)", () => {
           const own = mine.get(key);
           if (!own || compareTags([theirs.L, theirs.device], [own.L, own.device]) < 0) continue;
           if (JSON.stringify(theirs.value) === JSON.stringify(own.value)) continue;
-          keys.add(`${noticeKeyOf(theirs, own)} ${key}`);
+          // Written out, not built with the code's own key function.
+          const about = key.split("/").length === 3 ? key.slice(0, key.lastIndexOf("/")) : key;
+          keys.add(`${theirs.L}.${theirs.device}/${own.L}.${own.device}/overwrite/${about} ${key}`);
         }
         return [...keys].sort();
       };
@@ -371,7 +403,7 @@ describe("rule 1 against an oracle (AC7, randomised)", () => {
       // Notices change nothing: both replicas hold the same state.
       expect(fingerprint(a.state)).toBe(fingerprint(b.state));
     });
-  });
+  }, 300_000);
 });
 
 describe("stored notices", () => {

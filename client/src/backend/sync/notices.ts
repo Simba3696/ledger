@@ -35,8 +35,12 @@ import { GENESIS_TAG, isDeviceId, isLamport, isTag, type Tag } from "./tags";
 // raises nothing on that snapshot's word. A deletion carries its deleter's
 // vv wherever it arrives from, so rule 2 is exact.
 //
-// A notice is keyed by (winner op, loser op), "<L>.<device>/<L>.<device>",
-// so one pair is told at most once.
+// A notice is keyed by (winner op, loser op, kind, what it is about):
+// "<L>.<device>/<L>.<device>/<overwrite|deleted>/<record or register key>",
+// so each kind on each record or unit is told at most once per pair, and
+// the same notice gets the same key whenever it is detected (the engine
+// stores a key once). One remote op can delete one record and overwrite
+// another that one op of mine edited, or delete two of them: each is told.
 
 /** Registers that never notify: not content. */
 const QUIET_FIELDS = new Set([CREATE, STAMP, "sortKey"]);
@@ -98,9 +102,10 @@ export interface Arrivals {
 
 const opId = (L: number, device: string) => `${L}.${device}`;
 
-/** A notice's key: (winner op, loser op). */
-export function noticeKeyOf(winner: { L: number; device: string }, loser: { L: number; device: string }): string {
-  return `${opId(winner.L, winner.device)}/${opId(loser.L, loser.device)}`;
+/** A notice's key: (winner op, loser op, kind, the record or register key
+ * it is about). */
+function noticeKeyOf(kind: "overwrite" | "deleted", winner: { L: number; device: string }, loser: { L: number; device: string }, about: string): string {
+  return `${opId(winner.L, winner.device)}/${opId(loser.L, loser.device)}/${kind}/${about}`;
 }
 
 /** What the writer of `t` had seen of `me`, and who it was, as far as the
@@ -174,7 +179,7 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
       if (view === null || view.seenMe >= reg.t[0]) continue;
       const winner: NoticeOp = { L: now.t[0], device: now.t[1], by: view.by };
       const loser = { L: reg.t[0], device: me };
-      const key = noticeKeyOf(winner, loser);
+      const key = noticeKeyOf("overwrite", winner, loser, rk);
       let notice = found.get(key);
       if (!notice) found.set(key, (notice = { key, kind: "overwrite", winner, loser, target: recordTarget(rk, after), registers: [] }));
       if (notice.kind !== "overwrite") continue;
@@ -194,11 +199,8 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
     if (view === null || view.seenMe >= reg.t[0]) continue;
     const winner: NoticeOp = { L: incoming.t[0], device: incoming.t[1], by: view.by };
     const loser = { L: reg.t[0], device: me };
-    const id = noticeKeyOf(winner, loser);
-    const notice = found.get(id);
-    const register = { key, theirs: structuredClone(incoming.v), mine: structuredClone(reg.v) };
-    if (notice?.kind === "overwrite") notice.registers.push(register);
-    else if (!notice) found.set(id, { key: id, kind: "overwrite", winner, loser, target: { kind: "unit", key }, registers: [register] });
+    const id = noticeKeyOf("overwrite", winner, loser, key);
+    found.set(id, { key: id, kind: "overwrite", winner, loser, target: { kind: "unit", key }, registers: [{ key, theirs: structuredClone(incoming.v), mine: structuredClone(reg.v) }] });
   }
 
   // Rule 2.
@@ -213,8 +215,8 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
     const by = arrivals.ops.find(([device, op]) => device === deletion.by && op.L === deletion.L)?.[1].by ?? null;
     const winner: NoticeOp = { L: deletion.L, device: deletion.by, by };
     const loser = { L: latest, device: me };
-    const key = noticeKeyOf(winner, loser);
-    if (!found.has(key)) found.set(key, { key, kind: "deleted", winner, loser, target: recordTarget(rk, regs) });
+    const key = noticeKeyOf("deleted", winner, loser, rk);
+    found.set(key, { key, kind: "deleted", winner, loser, target: recordTarget(rk, regs) });
   }
   return [...found.values()];
 }

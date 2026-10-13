@@ -632,7 +632,8 @@ interface CommitExtras {
 type NoticeBody = StoredNotice extends infer N ? (N extends StoredNotice ? Omit<N, "seq" | "at"> : never) : never;
 
 /** A fence notice's key: (winner op, loser op), so each pair is stored
- * once (notices.ts noticeKeyOf, for the notices a join raises). */
+ * once. A join's notices add their kind and target (notices.ts), so no
+ * fence key equals one of theirs. */
 function fenceNoticeKey(notice: FenceNotice, mine: Tag): string {
   const id = (t: Tag) => `${t[0]}.${t[1]}`;
   return notice.kind === "kept" ? `${id(notice.theirs)}/${id(mine)}` : `${id(mine)}/${id(notice.theirs)}`;
