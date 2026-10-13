@@ -606,7 +606,7 @@ interface Loaded {
 type RestoreWrite =
   | { kind: "written"; genesis: NewEpoch }
   | { kind: "tooLarge"; detail: string }
-  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone; newer?: string }
+  | { kind: "failed"; detail: string; damagedFile?: DamagedFile; epochGone?: EpochGone; newer?: string; newerTooNew?: true }
   | { kind: "unknown"; epoch: string; detail: string };
 
 /** A new epoch's genesis, read or written, to switch to (section 9.3). */
@@ -2500,7 +2500,7 @@ export class SyncEngine {
       if (written.kind === "failed") {
         // A newer epoch listed is the caller's "failed"; which one is the
         // engine's own business.
-        const { newer: _newer, ...failed } = written;
+        const { newer: _newer, newerTooNew: _newerTooNew, ...failed } = written;
         return failed;
       }
       if (written.kind !== "written") return written;
@@ -2757,7 +2757,8 @@ export class SyncEngine {
       return { kind: "failed", detail: epochGoneMessage(epochGone), epochGone };
     }
     if (listed !== null && compareEpochKeys(listed, meta.epochKey) > 0) {
-      const damaged = await this.#damagedWinner(listed, now.sha!, now.size!, now.files.keys());
+      const damaged = await this.#winnerProblem(listed, now.sha!, now.size!, now.files.keys());
+      if (damaged === "needsUpdate") return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch, and this version of Ledger is too old to read it; update the app`, newer: listed, newerTooNew: true };
       if (damaged !== null) return { kind: "failed", detail: damagedFileMessage(damaged), damagedFile: damaged };
       return { kind: "failed", detail: `another restore (${listed}) replaced this device's epoch; it switches on its next sync, and the restore can be tried again then`, newer: listed };
     }
@@ -2792,10 +2793,17 @@ export class SyncEngine {
    * remembered by name and sha (#read), so the cycle's read is not
    * repeated. */
   async #damagedWinner(epoch: string, sha: string, size: number, names: Iterable<string>): Promise<DamagedFile | null> {
+    const problem = await this.#winnerProblem(epoch, sha, size, names);
+    return problem === "needsUpdate" ? null : problem;
+  }
+
+  /** #damagedWinner, telling a genesis too new for this build apart
+   * ("needsUpdate") from one that opens or couldn't be read now (null). */
+  async #winnerProblem(epoch: string, sha: string, size: number, names: Iterable<string>): Promise<DamagedFile | "needsUpdate" | null> {
     try {
       const read = await this.#read(repoFileName({ kind: "genesis", epoch }), { file: { kind: "genesis", epoch }, sha, size });
       if (read.ok) return read.read.file.kind === "genesis" ? null : damagedGenesis(epoch, "malformed", epochJoined(names, epoch));
-      return read.problem === "needsUpdate" ? null : damagedGenesis(epoch, read.problem, epochJoined(names, epoch));
+      return read.problem === "needsUpdate" ? "needsUpdate" : damagedGenesis(epoch, read.problem, epochJoined(names, epoch));
     } catch (err) {
       this.#log(`the winning genesis ${epoch} couldn't be read`, err);
       return null;
@@ -2835,7 +2843,10 @@ export class SyncEngine {
           // Another device already started a newer epoch (it ran out of L
           // too, or restored): the device is online, and switching is what
           // it needs. The switch takes a write turn, so it runs once this
-          // write has ended; the next try commits there (stage 8a).
+          // write has ended; the next try commits there (stage 8a). Unless
+          // this build is too old to read that epoch: it can't switch, and
+          // updating the app is the way on (stage 8a review, E4).
+          if (written.kind === "failed" && written.newerTooNew) throw new ApiError(503, LEDGER_UPDATED);
           if (written.kind === "failed" && written.newer !== undefined) {
             void this.sync();
             throw new ApiError(503, CHANGED_WHILE_SAVING);
