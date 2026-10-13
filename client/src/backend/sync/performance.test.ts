@@ -45,9 +45,25 @@ import { Replica, deviceId, docText, testEnv } from "./testkit";
 // Fictional data only.
 
 const TARGET_MS = { diff: 30, join: 100, materialize: 150 };
+/** A phone's round trip to GitHub, for the cold start's wall time. */
+const LATENCY_MS = 200;
+/** The real timer: the performance run fakes setTimeout for the engines'
+ * own timers. Taken before it does. */
+const realSetTimeout = globalThis.setTimeout;
 const GUARD_FACTOR = 4;
 /** The plan's last month, where the timed writes land. */
 const LAST_MONTH = "2027-12";
+
+/** Sends each request `ms` after it is made (nothing when 0). */
+function delayed(ms: number): (inner: typeof fetch) => typeof fetch {
+  return (inner) =>
+    ms === 0
+      ? inner
+      : async (input, init) => {
+          await new Promise((resolve) => realSetTimeout(resolve, ms));
+          return inner(input, init);
+        };
+}
 
 function report(label: string, value: unknown): void {
   (globalThis as { process?: { stderr: { write(text: string): void } } }).process?.stderr.write(`AC7 ${label} ${JSON.stringify(value)}\n`);
@@ -284,33 +300,40 @@ describe.runIf(testEnv("LEDGER_PERF") !== undefined)("AC7 performance run (LEDGE
 
       // A cold start: a fourth device (Sam's laptop) joins as #8 does
       // (check the repo, find the ledger, open its genesis), then its
-      // first cycle joins every file of the epoch.
-      meter.peak = 0;
-      const from = meter.records.length;
-      const t0 = performance.now();
-      const tagged = meter.wrap(() => "cold")(w.fake.fetchAs("dnone"));
-      const client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_sam", fetch: tagged });
-      await client.verifyRepo();
-      const found = await findLedger({ client, branch: "main" });
-      if (found.kind !== "ledger") throw new Error(`no ledger found: ${found.kind}`);
-      const opened = await openGenesis(found, w.key);
-      if (!opened.ok) throw new Error(`the genesis can't be opened: ${opened.problem}`);
-      const join8 = meter.countsSince(from);
-      const coldFrom = meter.records.length;
-      const cold = await device(w, { login: "sam", init: { epoch: opened.epoch, state: opened.state, sha: opened.sha }, wrapFetch: meter.wrap(() => "cold") });
-      const coldMs = performance.now() - t0;
-      expectConverged(cold, ...devices);
-      const engineCounts = meter.countsSince(coldFrom);
-      const coldRequests = meter.records.slice(from);
-      report("coldStart", {
-        wallMs: Math.round(coldMs),
-        joinFlow: join8,
-        firstCycle: engineCounts,
-        requests: coldRequests.length,
-        gets: coldRequests.filter((r) => r.method === "GET").length,
-        peakConcurrency: meter.peak,
-      });
-      cold.engine.stop();
+      // first cycle joins every file of the epoch. Once on the fake as it
+      // answers, and once with each request sent after a phone's round trip
+      // (LATENCY_MS), where waiting, not the CPU, sets the time.
+      const coldStart = async (latencyMs: number) => {
+        meter.peak = 0;
+        const from = meter.records.length;
+        const t0 = performance.now();
+        const wrap = (inner: typeof fetch) => meter.wrap(() => "cold")(delayed(latencyMs)(inner));
+        const client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_sam", fetch: wrap(w.fake.fetchAs("dnone")) });
+        await client.verifyRepo();
+        const found = await findLedger({ client, branch: "main" });
+        if (found.kind !== "ledger") throw new Error(`no ledger found: ${found.kind}`);
+        const opened = await openGenesis(found, w.key);
+        if (!opened.ok) throw new Error(`the genesis can't be opened: ${opened.problem}`);
+        const join8 = meter.countsSince(from);
+        const coldFrom = meter.records.length;
+        const cold = await device(w, { login: "sam", init: { epoch: opened.epoch, state: opened.state, sha: opened.sha }, wrapFetch: wrap });
+        const coldMs = performance.now() - t0;
+        expectConverged(cold, ...devices);
+        const engineCounts = meter.countsSince(coldFrom);
+        const coldRequests = meter.records.slice(from);
+        cold.engine.stop();
+        return {
+          latencyMs,
+          wallMs: Math.round(coldMs),
+          joinFlow: join8,
+          firstCycle: engineCounts,
+          requests: coldRequests.length,
+          gets: coldRequests.filter((r) => r.method === "GET").length,
+          peakConcurrency: meter.peak,
+        };
+      };
+      report("coldStart", await coldStart(0));
+      report("coldStartAtLatency", await coldStart(LATENCY_MS));
 
       // 100 remote ops: Sam's phone spends December offline, then syncs.
       const phone = devices[PHONE_S];
