@@ -150,6 +150,21 @@ describe("rehome re-issue (section 10.3 step 4)", () => {
     expect(Object.keys(materialize(state).monthLocks).sort()).toEqual(["2026-05", "2026-06", "2026-07"]);
   });
 
+  it("re-issues an add-back's marker (F3) the rebuild lacks, beside the record it made", async () => {
+    const dead = `e/${"00000000-0000-4000-8000-0000000000dd"}`;
+    const one = new Replica(D, emptyDocument());
+    const two = new Replica(D, emptyDocument());
+    one.amend((doc) => (doc.monthLocks["2026-05"] = true), undefined, [dead]); // L 2
+    await two.backend.setMonthLock(2026, 6, true); // L 2
+    const rebuilt = rebuild(emptyDocument(), two.ops);
+
+    const ops = reissue(one.state, rebuilt);
+    expect(ops.map((op) => [op.L, op.ab])).toEqual([[2, [dead]]]);
+    const state = cloneState(rebuilt);
+    for (const op of ops) applyOp(state, D2, op);
+    expect([...state.ab]).toEqual([dead]);
+  });
+
   it("re-issues 200,000 distinct own Ls without overflowing the stack", () => {
     // A spread of one argument per L overflowed V8's stack near 120k (and
     // JavaScriptCore's near 64k), which refused the rehome on every retry.

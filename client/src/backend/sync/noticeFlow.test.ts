@@ -3,6 +3,7 @@ import { ApiError } from "../ApiError";
 import { DocumentBackend } from "../document/DocumentBackend";
 import { EPOCH, MemoryStore, device, edits, entry, expectConverged, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import { testKey } from "./localTestkit";
+import { ADDED_BACK } from "./noticeActions";
 import { NOTICE_CAP } from "./notices";
 import { unseal } from "./records";
 import { genesisState, type Op } from "./state";
@@ -145,6 +146,63 @@ describe("edit / delete through logs (section 4.2 rule 2, D16)", () => {
     expect(remarks(b)).toEqual(["Bus", "Groceries"]);
     expect(amountOf(b, "Groceries")).toBe("45.00");
     for (const d of [a, b]) expect(d.engine.getState().noticeCount).toBe(0);
+  });
+});
+
+describe("Add it back on two told devices (F3)", () => {
+  it("the first add-back settles the other device's notice; a second Add it back is refused, and there is one Groceries", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await a.backend.addEntry(entry("Bus", 15));
+    await quiesce(w, a, b, c);
+    // a and b each edit Groceries (different fields) while c deletes it.
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), edits("Groceries", 45));
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), { amount: 40, remarks: "Groceries (veg)", category: "food", isCard: false });
+    await c.backend.deleteEntry(2026, 5, await row(c, "Groceries"));
+    await quiesce(w, a, b, c);
+    const told = (d: Device) => notices(d).filter((v) => v.notice.kind === "deleted");
+    expect(told(a)).toHaveLength(1);
+    expect(told(b)).toHaveLength(1);
+    const [onB] = told(b);
+    await a.engine.noticeAction(told(a)[0].key, "addBack");
+    // b hasn't joined the add-back yet: both buttons look live.
+    expect(onB.actions[0].refused).toBeNull();
+    await quiesce(w, a, b, c);
+    expectConverged(a, b);
+    expectConverged(a, c);
+    // a's add-back had seen b's edit, so b's notice is settled.
+    expect(told(b)).toEqual([]);
+    await expect(b.engine.noticeAction(onB.key, "addBack")).rejects.toMatchObject({ status: 404 });
+    expect(remarks(b)).toEqual(["Bus", "Groceries (veg)"]);
+    expect(amountOf(b, "Groceries (veg)")).toBe("45.00");
+  });
+
+  it("an add-back that hadn't seen my edit leaves my notice, but its Add it back refuses: the record is back", async () => {
+    const { offline, wrapFetch } = offlineSwitch();
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam", wrapFetch });
+    const c = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await quiesce(w, a, b, c);
+    await c.backend.deleteEntry(2026, 5, await row(c, "Groceries"));
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), edits("Groceries", 45));
+    // b edits offline; a and c sync, a is told and adds it back without b's edit.
+    offline.on = true;
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), { amount: 40, remarks: "Groceries (veg)", category: "food", isCard: false });
+    await quiesce(w, a, c);
+    const [onA] = notices(a).filter((v) => v.notice.kind === "deleted");
+    await a.engine.noticeAction(onA.key, "addBack");
+    await quiesce(w, a, c);
+    offline.on = false;
+    await quiesce(w, a, b, c);
+    expectConverged(a, b);
+    const [onB] = notices(b).filter((v) => v.notice.kind === "deleted");
+    expect(onB.actions[0].refused).toEqual({ reason: "inEffect", detail: ADDED_BACK });
+    await expect(b.engine.noticeAction(onB.key, "addBack")).rejects.toMatchObject({ status: 409 });
+    await quiesce(w, a, b, c);
+    expect(remarks(b)).toEqual(["Groceries"]);
   });
 });
 

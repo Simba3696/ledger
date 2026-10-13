@@ -31,7 +31,9 @@ import type { Tag } from "./tags";
 //     month (or list), from the dead record's registers as they are now; an
 //     expense gets a fresh sortKey at the end of its month, and a list
 //     record lists last (its order key comes from the write's own L). It is
-//     causally after the delete, so only a new delete removes it.
+//     causally after the delete, so only a new delete removes it. Its op
+//     names the dead record in `ab` (state.ts), and once the state holds
+//     that, every device's Add it back for the record refuses: it is back.
 //   - Record again: payEmi again on the EMI as it is now, for its EMI
 //     amount (the amount the losing payment used isn't kept anywhere).
 
@@ -251,6 +253,9 @@ function planAddBack(notice: Extract<StoredNotice, { kind: "deleted" }>, doc: Le
   const regs = state.rec.get(rk);
   if (!regs?.has(CREATE)) return refuse("missing");
   if (!state.del.has(rk)) return refuse("notDeleted");
+  // Another device told of the same delete already added it back (its op's
+  // `ab`, F3): a second add-back would make a second entry.
+  if (state.ab.has(rk)) return refuse("inEffect", ADDED_BACK);
   if (!doc.settings.modules.includes(MODULE_OF[coll])) return refuse("moduleOff");
   const copied = FIELDS[coll].filter((field) => !(coll === "e" && field === "sortKey"));
   if (!copied.every((field) => regs.get(field) !== undefined)) return refuse("missing");
@@ -363,6 +368,9 @@ export function noticeView(key: string, notice: StoredNotice, doc: LedgerDocumen
   }
   return { key, notice, names, actions: previewActions(notice, doc, state, env) };
 }
+
+/** Why Add it back refuses once the record was added back elsewhere. */
+export const ADDED_BACK = "It was already added back as a new entry.";
 
 /** The words for a refusal, and the HTTP status a write refused for it
  * answers with. */

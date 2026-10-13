@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../ApiError";
 import type { LedgerDocument } from "../document/types";
-import { actionsFor, applyAction, noticeView, previewActions, type ActionEnv, type NoticeActionKind } from "./noticeActions";
+import { ADDED_BACK, actionsFor, applyAction, noticeView, previewActions, type ActionEnv, type NoticeActionKind } from "./noticeActions";
 import { detectNotices, type StoredNotice } from "./notices";
 import { emptyState, joinInto, opState } from "./state";
 import { Replica, deviceId, docText, emptyDocument } from "./testkit";
@@ -230,6 +230,15 @@ describe("Add it back as a new entry (section 4.1, D16)", () => {
     const alive = await lostEdit();
     const fake: StoredNotice = { kind: "deleted", winner: { L: 9, device: B, by: "sam" }, loser: { L: 2, device: A }, target: { kind: "record", coll: "e", id: groceries(alive.a)!.id, month: "2026-05", name: "Groceries" }, seq: 1, at: 0 };
     expect(refusal(alive.a, fake, "addBack").status).toBe(409);
+  });
+
+  it("F3: refuses once the state holds an add-back of the record from another device, so there is never a second entry", async () => {
+    const { a, id, notice } = await lostToDelete();
+    // Another device told of the same delete added it back: its op names the dead record in ab.
+    a.receive(deviceId(0xc), { L: a.state.maxL + 1, at: 0, by: "kai", vv: {}, set: [], del: [], ab: [`e/${id}`] });
+    expect(previewActions(notice, a.doc, a.state, ENV)[0].refused).toEqual({ reason: "inEffect", detail: ADDED_BACK });
+    expect(refusal(a, notice, "addBack").status).toBe(409);
+    expect(groceries(a)).toBeUndefined();
   });
 
   it("a list record goes last in its list", async () => {

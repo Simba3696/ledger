@@ -5,7 +5,8 @@ import { COLLECTIONS, CREATE, FIELDS, STAMP, TOGETHER, genesisOrderKey, parseReg
 import { GENESIS_TAG, compareTags, type Tag, type VersionVector } from "./tags";
 
 // The sync state and its join (design section 2.3). The state is a set of
-// registers, a deleted set, re-apply markers and a seen vector. Joining two
+// registers, a deleted set, re-apply and add-back markers and a seen
+// vector. Joining two
 // states takes, per register, the one with the greater tag, and per field
 // group (keys.ts TOGETHER) the whole group of one side. The join is
 // commutative, associative and idempotent, so the same ops give the same
@@ -36,6 +37,11 @@ export interface SyncState {
   del: Map<string, Deletion>;
   /** Re-apply markers "<oldEpoch>/<deviceId>" (section 9.4). */
   ra: Set<string>;
+  /** Add-back markers: the keys of deleted records that "Add it back as a
+   * new entry" (section 4.1) has re-made as a new record. Grow-only, like
+   * `ra`: a second device told of the same delete refuses its own add-back
+   * once it holds one (ADR-0008, stage 7 review, F3). */
+  ab: Set<string>;
   /** Per device, the greatest L joined from it. */
   seen: Map<string, number>;
   /** The greatest L in anything joined or committed. */
@@ -53,6 +59,7 @@ export interface Op {
   set: [key: string, value: unknown][];
   del: string[];
   ra?: string[];
+  ab?: string[];
 }
 
 /** What a join changed, for incremental materialisation: the record keys
@@ -65,7 +72,7 @@ export interface Changes {
 }
 
 export function emptyState(): SyncState {
-  return { rec: new Map(), unit: new Map(), del: new Map(), ra: new Set(), seen: new Map(), maxL: 0 };
+  return { rec: new Map(), unit: new Map(), del: new Map(), ra: new Set(), ab: new Set(), seen: new Map(), maxL: 0 };
 }
 
 /** A copy a join can change without touching `state`. Registers are
@@ -76,6 +83,7 @@ export function cloneState(state: SyncState): SyncState {
     unit: new Map(state.unit),
     del: new Map(state.del),
     ra: new Set(state.ra),
+    ab: new Set(state.ab),
     seen: new Map(state.seen),
     maxL: state.maxL,
   };
@@ -190,6 +198,7 @@ export function joinInto(target: SyncState, source: SyncState): Changes {
     }
   }
   for (const marker of source.ra) target.ra.add(marker);
+  for (const marker of source.ab) target.ab.add(marker);
   for (const [device, L] of source.seen) if (L > (target.seen.get(device) ?? 0)) target.seen.set(device, L);
   target.maxL = Math.max(target.maxL, source.maxL);
   return changes;
@@ -221,6 +230,7 @@ export function opState(device: string, op: Op): SyncState {
   }
   for (const key of op.del) state.del.set(key, { by: device, L: op.L, vv: op.vv });
   for (const marker of op.ra ?? []) state.ra.add(marker);
+  for (const marker of op.ab ?? []) state.ab.add(marker);
   state.seen.set(device, op.L);
   state.maxL = op.L;
   return state;
@@ -245,6 +255,7 @@ export function holdsOp(state: SyncState, device: string, op: Op): boolean {
     if (!current || deletionBeats(deletion, current)) return false;
   }
   for (const marker of source.ra) if (!state.ra.has(marker)) return false;
+  for (const marker of source.ab) if (!state.ab.has(marker)) return false;
   return op.L <= (state.seen.get(device) ?? 0) && op.L <= state.maxL;
 }
 

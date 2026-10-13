@@ -26,7 +26,7 @@ import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHe
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
-import { checkNotice, detectNotices, overCap, type Arrivals, type StoredNotice } from "./notices";
+import { checkNotice, detectNotices, overCap, type Arrivals, type Detected, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
   LOCAL_FORMAT_VERSION,
@@ -622,10 +622,13 @@ interface NewEpoch {
  * group's marker, carried as the op's `ra` even when nothing else changes,
  * and the group is dropped from this device in the op's own transaction
  * (section 9.4). `settles`: a notice whose action this write is (section
- * 4.1), removed in the op's own transaction once the op holds something. */
+ * 4.1), removed in the op's own transaction once the op holds something.
+ * `addsBack`: the deleted record an "Add it back" re-makes, carried as the
+ * op's `ab` (state.ts). */
 interface CommitExtras {
   resolves?: string;
   settles?: string;
+  addsBack?: string;
 }
 
 /** A notice as it is told, before it is numbered and stored. */
@@ -1031,7 +1034,16 @@ export class SyncEngine {
     if (fenced.body || resolves !== undefined) {
       const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
       if (meta.ownMaxL > 0) vv[meta.deviceId] = Math.max(vv[meta.deviceId] ?? 0, meta.ownMaxL);
-      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body?.set ?? [], del: fenced.body?.del ?? [], ...(resolves !== undefined ? { ra: [resolves] } : {}) };
+      op = {
+        L,
+        at: this.#now(),
+        by: this.#actor,
+        vv,
+        set: fenced.body?.set ?? [],
+        del: fenced.body?.del ?? [],
+        ...(resolves !== undefined ? { ra: [resolves] } : {}),
+        ...(fenced.body && extras.addsBack !== undefined ? { ab: [extras.addsBack] } : {}),
+      };
       const problem = opProblem(op);
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
@@ -1119,9 +1131,24 @@ export class SyncEngine {
       const text = await seal({ ops, ...(whole ? { state: storedState(whole) } : {}) } satisfies Delta, this.#key);
       const meta = this.#meta!;
       // Who is told (section 4.2), from the state before the join: nothing
-      // else changes it until this task ends.
-      const found = detectNotices(this.#state!, source, { ops, states }, meta.deviceId);
-      const notices = found.length > 0 ? await this.#noticeWrites(found.map(({ key, ...body }): [string, NoticeBody] => [key, body])) : null;
+      // else changes it until this task ends. A delete notice is settled
+      // (or never stored) when an add-back of that record arrives in an op
+      // that had seen my edit: the record is back, with my edit in it.
+      const me = meta.deviceId;
+      const addedBack = (notice: StoredNotice | Detected): boolean => {
+        if (notice.kind !== "deleted") return false;
+        const rk = `${notice.target.coll}/${notice.target.id}`;
+        return ops.some(([, op]) => op.ab?.includes(rk) === true && (op.vv[me] ?? 0) >= notice.loser.L);
+      };
+      const found = detectNotices(this.#state!, source, { ops, states }, me).filter((notice) => !addedBack(notice));
+      const settled = [...this.#notices].filter(([, notice]) => addedBack(notice)).map(([key]) => key);
+      const notices =
+        found.length > 0 || settled.length > 0
+          ? await this.#noticeWrites(
+              found.map(({ key, ...body }): [string, NoticeBody] => [key, body]),
+              settled,
+            )
+          : null;
       const seen = new Map(this.#state!.seen);
       for (const [device, L] of source.seen) if (L > (seen.get(device) ?? 0)) seen.set(device, L);
       this.#assertWritable();
@@ -2284,6 +2311,7 @@ export class SyncEngine {
           set: r.set,
           del: r.del,
           ...(r.ra ? { ra: r.ra } : {}),
+          ...(r.ab ? { ab: r.ab } : {}),
         }));
         const next = cloneState(rebuilt.state);
         let chain = CHAIN_START;
@@ -2616,6 +2644,10 @@ export class SyncEngine {
    * (ShownChanged, 409) and noticeRevision moves, so the list shows what
    * it would write now (a day passed, or the document changed). */
   noticeAction(key: string, kind: NoticeActionKind, shown?: ShownAction): Promise<void> {
+    // An add-back records which deleted record it re-made (state.ts ab), so
+    // another device told of the same delete doesn't make a second one.
+    const told = this.#notices.get(key);
+    const addsBack = kind === "addBack" && told?.kind === "deleted" ? `${told.target.coll}/${told.target.id}` : undefined;
     return this.#amend((doc) => {
       const notice = this.#notices.get(key);
       if (!notice) throw new ApiError(404, NOTICE_GONE);
@@ -2628,7 +2660,7 @@ export class SyncEngine {
         }
         throw err;
       }
-    }, { settles: key });
+    }, { settles: key, ...(addsBack !== undefined ? { addsBack } : {}) });
   }
 
   #actionEnv() {

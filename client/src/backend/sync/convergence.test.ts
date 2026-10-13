@@ -3,8 +3,10 @@ import { ApiError } from "../ApiError";
 import type { LedgerDocument } from "../document/types";
 import { canonicalJson } from "./canonical";
 import { winningEpoch } from "./epoch";
-import { parseRegisterKey } from "./keys";
+import { parseRecordKey, parseRegisterKey } from "./keys";
 import { materialize } from "./materialize";
+import { applyAction } from "./noticeActions";
+import type { StoredNotice } from "./notices";
 import { cloneState, emptyState, genesisState, joinInto, opState, type Op, type SyncState } from "./state";
 import { compareTags } from "./tags";
 import { ALL_MODULES, Replica, Rng, deviceId, docText, emptyDocument, fingerprint, forEachSeed, testEnv } from "./testkit";
@@ -45,6 +47,7 @@ function referenceFold(genesis: SyncState, published: readonly Delivery[]): Sync
     }
     for (const key of op.del) state.del.set(key, { by: device, L: op.L, vv: op.vv });
     for (const marker of op.ra ?? []) state.ra.add(marker);
+    for (const marker of op.ab ?? []) state.ab.add(marker);
     state.seen.set(device, Math.max(state.seen.get(device) ?? 0, op.L));
     state.maxL = Math.max(state.maxL, op.L);
   }
@@ -78,7 +81,7 @@ async function randomWrite(r: Replica, rng: Rng): Promise<void> {
   const emi = () => ({ cardOrBank: rng.pick(["Car Loan", "Bank B"]), emiAmount: rng.pick([500, 1000]), dueDay: rng.pick([5, 20]), totalAmount: 12000, remarks: rng.pick(["", "x"]), remainingAsOf: rng.pick([9000, 8000]), interestRate: rng.pick([9.5, null]), foreclosureCharge: null, durationMonths: rng.pick([null, 12]) });
   const sub = () => ({ service: rng.pick(["Music", "Video"]), amount: rng.pick([199, 499]), duration: rng.pick(["Monthly", "Yearly"] as const), expiryAnchor: rng.pick(["2026-05-20", "2026-06-01"]), cardOrBank: "Card A" });
   try {
-    switch (rng.int(19)) {
+    switch (rng.int(20)) {
       case 0:
       case 1:
         await b.addEntry({ year: 2026, month, ...entry() });
@@ -131,6 +134,17 @@ async function randomWrite(r: Replica, rng: Rng): Promise<void> {
       case 17:
         await b.deleteSubscription(await row(b.getSubscriptions()));
         break;
+      case 18: {
+        // "Add it back as a new entry" (section 4.1) of a deleted record:
+        // a new record, its op naming the dead one in ab (F3).
+        const dead = [...r.state.del.keys()].filter((rk) => r.state.rec.get(rk)?.has("_c")).sort();
+        if (dead.length === 0) break;
+        const rk = rng.pick(dead);
+        const { coll, id } = parseRecordKey(rk)!;
+        const notice: StoredNotice = { kind: "deleted", winner: { L: 1, device: deviceId(0xf), by: null }, loser: { L: 1, device: r.device }, target: { kind: "record", coll, id, month: null, name: null }, seq: 0, at: 0 };
+        r.amend((doc) => applyAction(notice, "addBack", doc, r.state, { now: r.clock, actor: r.actor, newId: () => rng.uuid(), device: r.device }), undefined, [rk]);
+        break;
+      }
       default:
         // #8's updateSettings: a section switched, or the time zone.
         r.amend((doc) => {
@@ -142,6 +156,10 @@ async function randomWrite(r: Replica, rng: Rng): Promise<void> {
     if (!(err instanceof ApiError) || err.status === 500) throw err;
   }
 }
+
+/** Add-back ops (op.ab) published over every run, so the harness is seen
+ * to exercise them. */
+let addBacks = 0;
 
 /** One seeded run: 2-4 replicas, random writes and deliveries, then a
  * quiet period in which every replica receives everything. */
@@ -201,6 +219,7 @@ async function simulate(seed: number): Promise<void> {
     for (const { device, op } of rng.shuffle([...published, ...published.filter(() => rng.chance(0.2))])) r.receive(device, op);
   }
 
+  addBacks += published.filter(({ op }) => op.ab !== undefined).length;
   // No (device, L) was published with two contents.
   const byId = new Map<string, string>();
   for (const { device, op } of published) {
@@ -223,6 +242,7 @@ async function simulate(seed: number): Promise<void> {
 describe("convergence harness", () => {
   it(`converges on the reference fold over ${SIM_SEEDS} seeds x ${SIM_STEPS} steps`, async () => {
     await forEachSeed(SIM_SEEDS, simulate);
+    if (SIM_SEEDS >= 50) expect(addBacks).toBeGreaterThan(0);
   }, 300_000);
 });
 
