@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { EPOCH, FULL, cycle, device, edits, entry, expectConverged, logFile, nextTask, plant, puts, quiesce, remarks, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
-import { damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
+import { createGitHubClient } from "../github/contents";
+import { createLedger, damagedFileMessage, findLedger, openGenesis, readBackup, takeRestoredEpoch, type DamagedFile } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
-import { genesisState, type Op } from "./state";
+import { genesisState, type Op, type SyncState } from "./state";
 import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
@@ -33,6 +34,7 @@ beforeEach(async () => {
 afterEach(() => {
   for (const engine of running.splice(0)) engine.stop();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 async function open(options: DeviceOptions = {}): Promise<Device> {
@@ -1253,6 +1255,68 @@ describe("racing creates with two salts (D26)", () => {
     expect(result).toMatchObject({ kind: "failed", epochGone: { epoch: THEIRS, winner: e2 } });
     expect(result).not.toHaveProperty("damagedFile");
     expect(remarks(y)).toEqual(["Bus"]);
+  });
+
+  // Stage 8a (the stage 6 design question "racing creates with two salts
+  // still leave a window"): two creates whose genesis PUTs land within one
+  // listing's time of each other are both told `created`, since each one's
+  // listing after its PUT ran before the other's genesis landed. Closing
+  // it needs the engine to move to a newer epoch under another salt, which
+  // is not built. This pins what happens instead: the device whose genesis
+  // lost stops sync safely, names the other ledger, keeps its writes on the
+  // device, and writes nothing to GitHub; the winner syncs on.
+  it("the remaining window: creates landing within one listing's time are both told created; the loser stops safely and loses nothing", async () => {
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    const [keyA, keyB] = [await testKey(), await testKey()];
+    let hold: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => (hold = resolve));
+    let arrived!: () => void;
+    const waiting = new Promise<void>((resolve) => (arrived = resolve));
+    const holdGenesis = (inner: typeof fetch): typeof fetch => async (input, init) => {
+      if (init?.method === "PUT" && String(input).includes(".genesis.enc")) {
+        arrived();
+        await held;
+      }
+      return inner(input, init);
+    };
+    // A's epoch key is the greater (its random hex all f), B's the lesser.
+    let fill = 0xff;
+    vi.spyOn(crypto, "getRandomValues").mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+      if (array) new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(fill);
+      return array;
+    });
+    const remote = (wrap?: (inner: typeof fetch) => typeof fetch) => ({ client: createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_alex", fetch: wrap ? wrap(w.fake.fetch) : w.fake.fetch }), branch: "main" });
+    const doc = structuredClone(w.doc);
+    // A's PUT waits until B has created, listed and been told `created`.
+    const creatingA = createLedger(remote(holdGenesis), keyA, { doc, by: "alex", at: 1 });
+    await waiting;
+    fill = 0x00;
+    const b = await createLedger(remote(), keyB, { doc, by: "sam", at: 2 });
+    vi.restoreAllMocks();
+    hold!();
+    const a = await creatingA;
+    // Each listing after its PUT ran before the other genesis was listed
+    // (B's), or saw only a lesser one (A's): both are told created.
+    expect([a.kind, b.kind]).toEqual(["created", "created"]);
+    const [winner, loser] = (a as { epoch: string }).epoch > (b as { epoch: string }).epoch ? [{ r: a, key: keyA }, { r: b, key: keyB }] : [{ r: b, key: keyB }, { r: a, key: keyA }];
+    const start = async (side: typeof winner, login: string) => {
+      const r = side.r as { epoch: string; state: SyncState };
+      const d = await device({ ...w, key: side.key }, { login, init: { epoch: r.epoch, state: r.state } });
+      running.push(d.engine);
+      return d;
+    };
+    const win = await start(winner, "alex");
+    const lose = await start(loser, "sam");
+    await lose.backend.addEntry(entry("Bus"));
+    await win.backend.addEntry(entry("Groceries"));
+    await cycle(w, win, lose, win, lose);
+    const winnerEpoch = (winner.r as { epoch: string }).epoch;
+    expect(lose.engine.getState()).toMatchObject({ status: "needsPassphrase", pendingCount: 1, damagedFile: { epoch: winnerEpoch, reason: "joined", cause: "foreignKey" } });
+    expect(remarks(lose)).toEqual(["Bus"]);
+    expect(w.fake.commits.filter((c) => c.path.includes(lose.engine.deviceId!))).toEqual([]);
+    expect(win.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    expect(remarks(win)).toEqual(["Groceries"]);
+    expect(w.fake.violations).toEqual([]);
   });
 
   it("once the other creator has written in its epoch, its genesis is named as joined, never as one to delete", async () => {
