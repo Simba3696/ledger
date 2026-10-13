@@ -118,6 +118,8 @@ export class Replica implements DocumentHost {
   clock: number;
   checks = true;
   onOp?: (device: string, op: Op) => void;
+  /** The login on its ops (display only). */
+  readonly actor: string;
   #lastL = 0;
 
   constructor(device: string, genesis: LedgerDocument | SyncState, options: { actor?: string; clock?: number; newId?: () => string; epoch?: string } = {}) {
@@ -126,10 +128,11 @@ export class Replica implements DocumentHost {
     this.state = "rec" in genesis ? cloneState(genesis) : genesisState(genesis);
     this.doc = materialize(this.state);
     this.clock = options.clock ?? Date.UTC(2026, 4, 10, 6, 0);
+    this.actor = options.actor ?? "alex";
     this.backend = new DocumentBackend({
       host: this,
       now: () => this.clock,
-      actor: options.actor ?? "alex",
+      actor: this.actor,
       newId: options.newId ?? (() => crypto.randomUUID()),
     });
   }
@@ -143,8 +146,9 @@ export class Replica implements DocumentHost {
   }
 
   /** The commit path, synchronously: diff, allocate L, join, swap. `ra`
-   * is the re-apply markers the op carries (section 9.4). */
-  commitNow(next: LedgerDocument, ra?: string[]): Op | null {
+   * is the re-apply markers the op carries (section 9.4), `ab` its
+   * add-back markers (section 4.1). */
+  commitNow(next: LedgerDocument, ra?: string[], ab?: string[]): Op | null {
     let L: number;
     try {
       L = nextLamport(this.state.maxL, this.#lastL);
@@ -156,7 +160,7 @@ export class Replica implements DocumentHost {
     const body = diffDocuments(this.state, this.doc, next, { L, device: this.device });
     if (!body) return null;
     this.#lastL = L;
-    const op: Op = { L, at: this.clock, by: "alex", vv: vectorOf(this.state.seen), ...body, ...(ra ? { ra } : {}) };
+    const op: Op = { L, at: this.clock, by: this.actor, vv: vectorOf(this.state.seen), ...body, ...(ra ? { ra } : {}), ...(ab ? { ab } : {}) };
     expect(opProblem(op)).toBeNull();
     this.receive(this.device, op);
     if (this.checks) expect(docText(this.doc)).toBe(docText(next));
@@ -167,11 +171,11 @@ export class Replica implements DocumentHost {
 
   /** A write made directly on a copy of the document (a stand-in for
    * SyncedHost.amend and for #8's updateSettings), carrying the re-apply
-   * markers `ra` if given. */
-  amend(run: (doc: LedgerDocument) => void, ra?: string[]): Op | null {
+   * markers `ra` and add-back markers `ab` if given. */
+  amend(run: (doc: LedgerDocument) => void, ra?: string[], ab?: string[]): Op | null {
     const next = structuredClone(this.doc);
     run(next);
-    return this.commitNow(next, ra);
+    return this.commitNow(next, ra, ab);
   }
 
   /** Section 9.2 with the current document as the backup: a genesis whose
@@ -256,8 +260,8 @@ function unitValue(rng: Rng, family: string): unknown {
 export type RecordPool = string[];
 
 /** A random valid op: creates, field edits, deletes, month units,
- * settings and re-apply markers, over the records in `pool` (creates add
- * to it). Ops are not causally sensible; the join must not care. */
+ * settings and re-apply and add-back markers, over the records in `pool`
+ * (creates add to it). Ops are not causally sensible; the join must not care. */
 export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
   const set: [string, unknown][] = [];
   const del: string[] = [];
@@ -297,7 +301,9 @@ export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
       if (rng.chance(0.5)) put("st/timeZone", rng.pick(["UTC", "Asia/Kolkata"]));
       else put("st/modules", rng.chance(0.5) ? [...ALL_MODULES] : ["expenses"]);
     } else {
-      op.ra = [`e000001-0000000${rng.int(2)}/${deviceId(rng.int(3) + 1)}`];
+      // A marker: a re-apply's, or an add-back's naming a dead record.
+      if (rng.chance(0.5)) op.ra = [`e000001-0000000${rng.int(2)}/${deviceId(rng.int(3) + 1)}`];
+      else op.ab = [rng.pick(pool)];
     }
   }
   expect(opProblem(op)).toBeNull();

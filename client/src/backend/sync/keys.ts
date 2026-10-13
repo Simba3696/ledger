@@ -39,6 +39,11 @@ export const TOGETHER: { readonly [C in Coll]: readonly (readonly string[])[] } 
   sub: [],
 };
 
+/** The field a list names each collection's records by: an expense by its
+ * remarks, a debt by its name, an EMI by its card or bank, a subscription
+ * by its service. Notices and the left-behind list both use it. */
+export const NAME_FIELD: { readonly [C in Coll]: string } = { e: "remarks", debt: "name", emi: "cardOrBank", sub: "service" };
+
 export const CREATE = "_c";
 export const STAMP = "_s";
 

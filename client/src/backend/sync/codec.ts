@@ -57,6 +57,10 @@ const isReapplyMarker: Check = (value) => {
   return parts.length === 2 && isEpochKey(parts[0]) && isDeviceId(parts[1]);
 };
 
+/** An add-back marker: the key "<coll>/<id>" of the deleted record that
+ * "Add it back" re-made (state.ts). */
+const isAddBackMarker: Check = (value) => typeof value === "string" && parseRecordKey(value) !== null;
+
 const FIELD_CHECKS: { readonly [C in Coll]: Record<string, Check> } = {
   e: RECORD_FIELDS.expenses,
   debt: RECORD_FIELDS.debts,
@@ -120,7 +124,7 @@ function groupsShareTags(coll: Coll, regs: ReadonlyMap<string, Register>): boole
 
 /** Why `value` is not a valid op, or null if it is one. */
 export function opProblem(value: unknown): string | null {
-  if (!isPlainObject(value) || !hasKeys(value, ["L", "at", "by", "vv", "set", "del"], ["ra"])) return "op has the wrong keys";
+  if (!isPlainObject(value) || !hasKeys(value, ["L", "at", "by", "vv", "set", "del"], ["ra", "ab"])) return "op has the wrong keys";
   if (!isLamport(value.L)) return "op L is out of range";
   if (!isFiniteNumber(value.at) || !isString(value.by)) return "op stamp is malformed";
   if (!isVersionVector(value.vv)) return "op vv is malformed";
@@ -157,6 +161,10 @@ export function opProblem(value: unknown): string | null {
     if (!Array.isArray(value.ra) || !value.ra.every(isReapplyMarker)) return "op ra is malformed";
     if (new Set(value.ra).size !== value.ra.length) return "op ra repeats a marker";
   }
+  if (value.ab !== undefined) {
+    if (!Array.isArray(value.ab) || !value.ab.every(isAddBackMarker)) return "op ab is malformed";
+    if (new Set(value.ab).size !== value.ab.length) return "op ab repeats a marker";
+  }
   return null;
 }
 
@@ -176,6 +184,8 @@ export interface CompactState {
   unit: [key: string, value: unknown, tag: Tag][];
   del: [key: string, by: string, L: number, vv: VersionVector][];
   ra: string[];
+  /** Left out when empty, so a state with no add-back reads as before. */
+  ab?: string[];
 }
 
 function byString<T>(key: (item: T) => string): (a: T, b: T) => number {
@@ -211,13 +221,14 @@ export function encodeState(state: SyncState): CompactState {
     unit: [...state.unit].sort(byString(([key]) => key)).map(([key, reg]) => [key, reg.v, reg.t]),
     del: [...state.del].sort(byString(([key]) => key)).map(([key, d]) => [key, d.by, d.L, d.vv]),
     ra: [...state.ra].sort(),
+    ...(state.ab.size > 0 ? { ab: [...state.ab].sort() } : {}),
   };
 }
 
 /** A compact state back as a state, validated against `genesis`, its
  * epoch's genesis state; or why it is malformed. */
 export function decodeState(value: unknown, seen: VersionVector, maxL: number, genesis: SyncState): SyncState | string {
-  if (!isPlainObject(value) || !hasKeys(value, ["rec", "unit", "del", "ra"])) return "state has the wrong keys";
+  if (!isPlainObject(value) || !hasKeys(value, ["rec", "unit", "del", "ra"], ["ab"])) return "state has the wrong keys";
   if (!isVersionVector(seen) || !isLamportOrZero(maxL)) return "state seen or maxL is malformed";
   const state = emptyState();
   let greatestL = 0;
@@ -298,6 +309,15 @@ export function decodeState(value: unknown, seen: VersionVector, maxL: number, g
   for (const marker of value.ra as string[]) {
     if (state.ra.has(marker)) return "state ra repeats a marker";
     state.ra.add(marker);
+  }
+  if (value.ab !== undefined) {
+    // Written only when not empty (encodeState), so an empty list is not
+    // the form any device writes.
+    if (!Array.isArray(value.ab) || value.ab.length === 0 || !value.ab.every(isAddBackMarker)) return "state ab is malformed";
+    for (const marker of value.ab as string[]) {
+      if (state.ab.has(marker)) return "state ab repeats a marker";
+      state.ab.add(marker);
+    }
   }
 
   // maxL is the greatest L joined (section 2.3), never a free number: one

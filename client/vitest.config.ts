@@ -8,5 +8,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // syncUi.test.ts reads the sync UI's stylesheet as text (?raw), which
+    // vitest otherwise empties.
+    css: { include: [/sync\.css/] },
   },
 })

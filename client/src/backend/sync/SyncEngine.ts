@@ -25,6 +25,8 @@ import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
+import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
+import { checkNotice, detectNotices, overCap, type Arrivals, type Detected, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
   LOCAL_FORMAT_VERSION,
@@ -172,7 +174,12 @@ export interface EngineState {
   deviceSaveFailed: boolean;
   /** Records go only to this tab's memory (the browser refuses IndexedDB). */
   volatile: boolean;
+  /** Notices to review (section 4.2): notices(). */
   noticeCount: number;
+  /** Changes whenever notices() may: a notice added, settled or dismissed,
+   * or the document changed (what an action would write is worked out from
+   * it). */
+  noticeRevision: number;
   /** Groups of changes a restore left behind still to review (section 9.3):
    * every one shown, and of those this device's own (owner decision D18:
    * own prominently, other devices' in a collapsed list). */
@@ -437,10 +444,12 @@ const needsNewEpochPast = (file: DamagedFile) =>
  * once it landed: the caller clears this device's sync state and reloads
  * (section 9.2 step 7), so a write saved now would be lost with it. */
 const RESTORING = "A backup is being restored. Try again once it finishes.";
-const RESTORED = "Ledger was restored from a backup. Reload to continue.";
+export const RESTORED = "Ledger was restored from a backup. Reload to continue.";
 /** Why a write is refused after a restore whose genesis PUT got no answer,
  * until a listing settles whether it landed. */
-const RESTORE_UNKNOWN = "A backup restore may still be on its way to GitHub. Try again once Ledger has synced.";
+export const RESTORE_UNKNOWN = "A backup restore may still be on its way to GitHub. Try again once Ledger has synced.";
+/** Why a notice's action or dismissal is refused: the notice is gone. */
+export const NOTICE_GONE = "That notice was already dealt with.";
 /** Why reapply() or discard() is refused: the group is gone. */
 export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
 /** Why a write diffed in one epoch (or under one device id) is refused
@@ -518,7 +527,8 @@ interface StreamSource {
 /** What #readStreams found: snapshots (as states) and ops to join, the file
  * versions they hold, and each stream's health. */
 interface Streams {
-  states: SyncState[];
+  /** Each snapshot joined, with the device whose snapshot it is. */
+  states: { device: string; state: SyncState }[];
   ops: [device: string, op: Op][];
   /** Files newly joined (each read here), name to blob sha. */
   joined: Record<string, string>;
@@ -586,6 +596,9 @@ interface Loaded {
   /** Entries in `tail`. */
   tailCount: number;
   leftBehind: Map<string, LeftBehindGroup>;
+  notices: Map<string, StoredNotice>;
+  /** Keys of notice records this build can't read: kept as they are (D31). */
+  unreadNotices: Set<string>;
   old: string | null;
 }
 
@@ -607,8 +620,26 @@ interface NewEpoch {
   at: number;
 }
 
-/** A notice's key: (winner op, loser op), so each pair is stored once. */
-function noticeKey(notice: FenceNotice, mine: Tag): string {
+/** What a write's commit does besides its op. `resolves`: a left-behind
+ * group's marker, carried as the op's `ra` even when nothing else changes,
+ * and the group is dropped from this device in the op's own transaction
+ * (section 9.4). `settles`: a notice whose action this write is (section
+ * 4.1), removed in the op's own transaction once the op holds something.
+ * `addsBack`: the deleted record an "Add it back" re-makes, carried as the
+ * op's `ab` (state.ts). */
+interface CommitExtras {
+  resolves?: string;
+  settles?: string;
+  addsBack?: string;
+}
+
+/** A notice as it is told, before it is numbered and stored. */
+type NoticeBody = StoredNotice extends infer N ? (N extends StoredNotice ? Omit<N, "seq" | "at"> : never) : never;
+
+/** A fence notice's key: (winner op, loser op), so each pair is stored
+ * once. A join's notices add their kind and target (notices.ts), so no
+ * fence key equals one of theirs. */
+function fenceNoticeKey(notice: FenceNotice, mine: Tag): string {
   const id = (t: Tag) => `${t[0]}.${t[1]}`;
   return notice.kind === "kept" ? `${id(notice.theirs)}/${id(mine)}` : `${id(mine)}/${id(notice.theirs)}`;
 }
@@ -659,7 +690,22 @@ export class SyncEngine {
   #unreadable: UnreadableReason | null = null;
   #needsInit = false;
   #deviceSaveFailed = false;
-  #noticeCount = 0;
+  /** Notices to show (section 4.2), by key, as stored. */
+  #notices = new Map<string, StoredNotice>();
+  /** Keys of stored notice records this build can't read (owner decision
+   * D31): left in the store byte for byte, out of memory and the UI, and
+   * never written over by a notice told under the same key. */
+  #unreadNotices = new Set<string>();
+  /** The greatest `seq` stored: the next notice is numbered after it. */
+  #noticeSeq = 0;
+  /** Bumped whenever the notices or the document change: what an action
+   * previews may then differ (EngineState.noticeRevision). */
+  #noticeRev = 0;
+  /** The document the last emitted state was made with. */
+  #emittedDoc: LedgerDocument | null = null;
+  /** notices() as last built, for the revision and the day it was built
+   * at: Record again's preview depends on today (section 4.1). */
+  #noticeViews: { rev: number; day: string; views: NoticeView[] } | null = null;
   #leftBehindCount = 0;
   #leftBehindOwnCount = 0;
   /** Groups of changes restores left behind (section 9.3), by marker, as
@@ -880,7 +926,7 @@ export class SyncEngine {
       };
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
-      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), old: null }, true);
+      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), notices: new Map(), unreadNotices: new Set(), old: null }, true);
     }).then(() => this.#begin());
   }
 
@@ -920,8 +966,8 @@ export class SyncEngine {
   }
 
   /** A write's turn (beginWrite), whose commit may also resolve a group a
-   * restore left behind (reapply, discard). */
-  #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, resolves?: string) => Promise<void>; end: () => void } {
+   * restore left behind (reapply, discard) or settle a notice (its action). */
+  #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, extras?: CommitExtras) => Promise<void>; end: () => void } {
     const pin = this.#fence.pin();
     const ready = this.#writesSettled;
     let ended!: () => void;
@@ -929,9 +975,9 @@ export class SyncEngine {
     this.#writesSettled = ready.then(() => end);
     return {
       ready,
-      commit: (next, resolves) => {
+      commit: (next, extras) => {
         try {
-          return this.#commit(next, pin.asOf, resolves);
+          return this.#commit(next, pin.asOf, extras);
         } catch (err) {
           return Promise.reject(err);
         }
@@ -952,24 +998,22 @@ export class SyncEngine {
     return this.#amend(run);
   }
 
-  /** amend(), and with `resolves` (a left-behind group's marker) the op
-   * carries it as `ra` even when `run` changes nothing, and the group is
-   * dropped from this device in the op's own transaction (section 9.4). */
-  async #amend(run: (doc: LedgerDocument) => void, resolves?: string): Promise<void> {
+  /** amend(), with `extras` (CommitExtras). */
+  async #amend(run: (doc: LedgerDocument) => void, extras: CommitExtras = {}): Promise<void> {
     const write = this.#turn();
     try {
       await write.ready;
       const next = structuredClone(this.current());
       run(next);
-      await write.commit(next, resolves);
+      await write.commit(next, extras);
     } finally {
       write.end();
     }
   }
 
-  /** `asOf`: the revision on screen when the write was submitted.
-   * `resolves`: a left-behind group's marker, carried as the op's `ra`. */
-  #commit(next: LedgerDocument, asOf: number, resolves?: string): Promise<void> {
+  /** `asOf`: the revision on screen when the write was submitted. */
+  #commit(next: LedgerDocument, asOf: number, extras: CommitExtras = {}): Promise<void> {
+    const { resolves } = extras;
     this.#assertWritable();
     this.#assertNotRestoring();
     // The epoch's genesis is a format this build can't read (section 12):
@@ -984,7 +1028,7 @@ export class SyncEngine {
       // No L is left in this epoch: the next epoch makes room, and the
       // write commits there (ADR-0008). `next` was built from current(),
       // which reads the same in the new epoch.
-      if (err instanceof LamportExhausted) return this.#renumber().then(() => this.#commit(next, asOf, resolves));
+      if (err instanceof LamportExhausted) return this.#renumber().then(() => this.#commit(next, asOf, extras));
       throw err;
     }
     const body = diffDocuments(state, this.#doc!, next, { L, device: meta.deviceId });
@@ -996,15 +1040,24 @@ export class SyncEngine {
     if (fenced.body || resolves !== undefined) {
       const vv = { ...this.#fence.renderedSeen(state.seen, asOf) };
       if (meta.ownMaxL > 0) vv[meta.deviceId] = Math.max(vv[meta.deviceId] ?? 0, meta.ownMaxL);
-      op = { L, at: this.#now(), by: this.#actor, vv, set: fenced.body?.set ?? [], del: fenced.body?.del ?? [], ...(resolves !== undefined ? { ra: [resolves] } : {}) };
+      op = {
+        L,
+        at: this.#now(),
+        by: this.#actor,
+        vv,
+        set: fenced.body?.set ?? [],
+        del: fenced.body?.del ?? [],
+        ...(resolves !== undefined ? { ra: [resolves] } : {}),
+        ...(fenced.body && extras.addsBack !== undefined ? { ab: [extras.addsBack] } : {}),
+      };
       const problem = opProblem(op);
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
     const writer = { epoch: meta.epochKey, device: meta.deviceId };
-    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, resolves));
+    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
   }
 
-  async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, resolves?: string): Promise<void> {
+  async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, { resolves, settles }: CommitExtras): Promise<void> {
     this.#assertWritable();
     // Diffed before a restore took its turn (a direct commit()), but saved
     // after: the restore's cut may not hold it, and the reload after it
@@ -1026,10 +1079,14 @@ export class SyncEngine {
       writes.chain = [[op.L, await seal(chain, this.#key)]];
       nextMeta = { ...meta, maxL: Math.max(meta.maxL, op.L), ownMaxL: op.L, seen: { ...meta.seen, [me]: op.L } };
     }
-    if (notices.length > 0) {
-      const mine: Tag = [L, me];
-      writes.notices = { put: await Promise.all(notices.map(async (n): Promise<[string, string]> => [noticeKey(n, mine), await seal({ ...n, mine }, this.#key)])) };
-    }
+    // The fence's notices (section 3.4), and the notice an action settles:
+    // only once its write holds something (the fence may have dropped it all,
+    // and then the remote value stands and the notice stays).
+    const mine: Tag = [L, me];
+    const fenceNotices = notices.map((n): [string, NoticeBody] => [fenceNoticeKey(n, mine), { kind: n.kind, theirs: n.theirs, mine, registers: n.registers }]);
+    const settled = settles !== undefined && op !== null ? [settles] : [];
+    const noticeWrites = fenceNotices.length > 0 || settled.length > 0 ? await this.#noticeWrites(fenceNotices, settled) : null;
+    if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
       const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => marker !== resolves));
@@ -1050,7 +1107,7 @@ export class SyncEngine {
       this.#leftBehind.delete(resolves);
       if (writes.old !== undefined) this.#oldText = writes.old;
     }
-    this.#noticeCount += notices.length;
+    if (noticeWrites) this.#keepNotices(noticeWrites.next);
     this.#refreshLeftBehind();
     this.#emit();
     if (op && !this.#stopped) {
@@ -1061,23 +1118,49 @@ export class SyncEngine {
 
   // --- Remote joins ---------------------------------------------------------
 
-  /** Joins other devices' validated ops and/or a validated state (a
-   * snapshot): one transaction appends the delta to tail and records
-   * `bookkeeping` in meta, then the delta is joined through the fence. */
-  join(delta: { ops?: [device: string, op: Op][]; state?: SyncState }, bookkeeping: MetaPatch = {}): Promise<void> {
+  /** Joins other devices' validated ops and/or validated states (snapshots,
+   * each with the device whose snapshot it is, and an epoch's genesis, with
+   * none): one transaction appends the delta to tail,
+   * records `bookkeeping` in meta and stores the notices the join raises
+   * (section 4.2), then the delta is joined through the fence. */
+  join(delta: { ops?: [device: string, op: Op][]; states?: Arrivals["states"] }, bookkeeping: MetaPatch = {}): Promise<void> {
     return this.#enqueue(async () => {
       this.#assertWritable();
       this.#assertCycleCurrent();
+      const ops = delta.ops ?? [];
+      const states = delta.states ?? [];
+      let whole: SyncState | null = null;
+      for (const part of states) joinInto((whole ??= emptyState()), part.state);
       const source = emptyState();
-      if (delta.state) joinInto(source, delta.state);
-      for (const [device, op] of delta.ops ?? []) joinInto(source, opState(device, op));
-      const text = await seal({ ops: delta.ops ?? [], ...(delta.state ? { state: storedState(delta.state) } : {}) } satisfies Delta, this.#key);
+      if (whole) joinInto(source, whole);
+      for (const [device, op] of ops) joinInto(source, opState(device, op));
+      const text = await seal({ ops, ...(whole ? { state: storedState(whole) } : {}) } satisfies Delta, this.#key);
       const meta = this.#meta!;
+      // Who is told (section 4.2), from the state before the join: nothing
+      // else changes it until this task ends. A delete notice is settled
+      // (or never stored) when an add-back of that record arrives in an op
+      // that had seen my edit: the record is back, with my edit in it.
+      const me = meta.deviceId;
+      const addedBack = (notice: StoredNotice | Detected): boolean => {
+        if (notice.kind !== "deleted") return false;
+        const rk = `${notice.target.coll}/${notice.target.id}`;
+        return ops.some(([, op]) => op.ab?.includes(rk) === true && (op.vv[me] ?? 0) >= notice.loser.L);
+      };
+      const found = detectNotices(this.#state!, source, { ops, states }, me).filter((notice) => !addedBack(notice));
+      const settled = [...this.#notices].filter(([, notice]) => addedBack(notice)).map(([key]) => key);
+      const notices =
+        found.length > 0 || settled.length > 0
+          ? await this.#noticeWrites(
+              found.map(({ key, ...body }): [string, NoticeBody] => [key, body]),
+              settled,
+            )
+          : null;
       const seen = new Map(this.#state!.seen);
       for (const [device, L] of source.seen) if (L > (seen.get(device) ?? 0)) seen.set(device, L);
       this.#assertWritable();
       this.#assertCycleCurrent();
-      await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text] });
+      await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text], ...(notices ? { notices: notices.writes } : {}) });
+      if (notices) this.#keepNotices(notices.next);
 
       const changes = this.#fence.join(this.#state!, source);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
@@ -1408,14 +1491,11 @@ export class SyncEngine {
       patch.lastSeenCommit = listing.commit;
       patch.refEtag = listing.etag;
     }
-    // The genesis and every snapshot read join as one state.
-    const states = genesis.state ? [genesis.state, ...others.states] : others.states;
-    let state: SyncState | undefined;
-    if (states.length > 0) {
-      state = emptyState();
-      for (const part of states) joinInto(state, part);
-    }
-    if (others.ops.length > 0 || state) await this.join({ ops: others.ops, ...(state ? { state } : {}) }, patch);
+    // The genesis and every snapshot read join as one state; each is passed
+    // on its own, since a snapshot's `seen` stands in for the vv of the
+    // writes it holds when notices are worked out (section 4.2).
+    const states = genesis.state ? [{ device: null, state: genesis.state }, ...others.states] : others.states;
+    if (others.ops.length > 0 || states.length > 0) await this.join({ ops: others.ops, states }, patch);
     else await this.#record(patch);
     return { listedOwn: listedOwn?.sha };
   }
@@ -1658,7 +1738,7 @@ export class SyncEngine {
         return refused;
       }
       this.#unlistedSeen.delete(at);
-      out.states.push(state);
+      out.states.push({ device: file.device, state });
       // Its own device's ops through `through` (its seen for itself, which
       // the validator holds it to), and nothing about any other device's.
       // Every version joined in this read is in the state, so the greatest
@@ -2237,6 +2317,7 @@ export class SyncEngine {
           set: r.set,
           del: r.del,
           ...(r.ra ? { ra: r.ra } : {}),
+          ...(r.ab ? { ab: r.ab } : {}),
         }));
         const next = cloneState(rebuilt.state);
         let chain = CHAIN_START;
@@ -2273,7 +2354,7 @@ export class SyncEngine {
           refEtag: rebuilt.complete ? listing.etag : null,
         };
         const doc = materialize(next);
-        const notice = await seal({ kind: "rehome", from: meta.deviceId, to: device, at, message: REHOMED }, this.#key);
+        const notice = await this.#noticeWrites([[`rehome/${device}`, { kind: "rehome", from: meta.deviceId, to: device, message: REHOMED }]]);
         const base = await seal(storedState(next), this.#key);
         this.#assertWritable();
         await this.#mutate(nextMeta, {
@@ -2282,7 +2363,7 @@ export class SyncEngine {
           ownLog: { dropThrough: Number.MAX_SAFE_INTEGER, put: ownLog },
           clearChain: true,
           chain: chainEntries,
-          notices: { put: [[`rehome/${device}`, notice]] },
+          ...(notice ? { notices: notice.writes } : {}),
         });
         const before = this.#doc!;
         this.#fence.replace(pre, next, canonicalJson({ ...before, tombstones: [] }) !== canonicalJson({ ...doc, tombstones: [] }));
@@ -2296,7 +2377,7 @@ export class SyncEngine {
         this.#halted.clear();
         for (const [name, problem] of rebuilt.halted) this.#halted.set(name, problem);
         this.#gapWait = rebuilt.gap;
-        this.#noticeCount++;
+        if (notice) this.#keepNotices(notice.next);
         // The cycle that found the fork syncs on under the new id.
         if (this.#cycleFor !== null) this.#cycleFor = this.#identity();
         this.#refreshLeftBehind();
@@ -2349,7 +2430,7 @@ export class SyncEngine {
       snaps: [...versions.keys()].filter((name) => parseRepoFileName(name)?.kind === "snap"),
       versions: (name) => versions.get(name) ?? [],
     });
-    for (const part of streams.states) joinInto(state, part);
+    for (const part of streams.states) joinInto(state, part.state);
     for (const [device, op] of streams.ops) applyOp(state, device, op);
     return {
       state,
@@ -2515,7 +2596,7 @@ export class SyncEngine {
       const group = this.#leftBehind.get(id);
       if (!group) throw new ApiError(404, ALREADY_RESOLVED);
       result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
-    }, id);
+    }, { resolves: id });
     return result!;
   }
 
@@ -2523,7 +2604,104 @@ export class SyncEngine {
   discard(id: string): Promise<void> {
     return this.#amend(() => {
       if (!this.#leftBehind.has(id)) throw new ApiError(404, ALREADY_RESOLVED);
-    }, id);
+    }, { resolves: id });
+  }
+
+  // --- Notices (section 4) -----------------------------------------------------
+
+  /** The notices to review, newest first, each with what its actions would
+   * write now (or why they can't): the same array until noticeRevision
+   * changes or the day does (in the ledger's time zone). */
+  notices(): NoticeView[] {
+    const state = this.#state;
+    const doc = this.#doc;
+    if (state === null || doc === null) return [];
+    const env = this.#actionEnv();
+    const day = actionDay(env.now, doc.settings.timeZone);
+    if (this.#noticeViews?.rev === this.#noticeRev && this.#noticeViews.day === day) return this.#noticeViews.views;
+    const views = [...this.#notices]
+      .sort(([ka, a], [kb, b]) => b.seq - a.seq || (ka < kb ? -1 : ka > kb ? 1 : 0))
+      .map(([key, notice]) => noticeView(key, notice, doc, state, env));
+    this.#noticeViews = { rev: this.#noticeRev, day, views };
+    return views;
+  }
+
+  /** Dismisses a notice on this device (section 4.2). Resolves once it is
+   * gone from the device's records, at once when it was already gone. */
+  dismissNotice(key: string): Promise<void> {
+    return this.#enqueue(async () => {
+      this.#assertWritable();
+      if (!this.#notices.has(key)) return;
+      const writes = await this.#noticeWrites([], [key]);
+      if (writes === null) return;
+      await this.#mutate(this.#meta!, { notices: writes.writes });
+      this.#keepNotices(writes.next);
+      this.#emit();
+    });
+  }
+
+  /** A notice's action (section 4.1): one new write, at its turn, worked out
+   * from the document as it is then, never from anything stored. It refuses
+   * (an ApiError, nothing written) on a locked month, a module that is off,
+   * a record that is deleted or gone ("Add it back" aside), or a ledger that
+   * already holds what it would write; the notice then stays. Once the write
+   * is saved the notice is gone, in the same transaction. `shown`, what the
+   * button showed, must still be what it writes: otherwise it refuses
+   * (ShownChanged, 409) and noticeRevision moves, so the list shows what
+   * it would write now (a day passed, or the document changed). */
+  noticeAction(key: string, kind: NoticeActionKind, shown?: ShownAction): Promise<void> {
+    // An add-back records which deleted record it re-made (state.ts ab), so
+    // another device told of the same delete doesn't make a second one.
+    const told = this.#notices.get(key);
+    const addsBack = kind === "addBack" && told?.kind === "deleted" ? `${told.target.coll}/${told.target.id}` : undefined;
+    return this.#amend((doc) => {
+      const notice = this.#notices.get(key);
+      if (!notice) throw new ApiError(404, NOTICE_GONE);
+      try {
+        applyAction(notice, kind, doc, this.#state!, this.#actionEnv(), shown);
+      } catch (err) {
+        if (err instanceof ShownChanged) {
+          this.#noticeRev++;
+          this.#emit();
+        }
+        throw err;
+      }
+    }, { settles: key, ...(addsBack !== undefined ? { addsBack } : {}) });
+  }
+
+  #actionEnv() {
+    return { now: this.#now(), actor: this.#actor, newId: () => crypto.randomUUID(), device: this.#meta!.deviceId };
+  }
+
+  /** The notice writes that store `added` (by key) and remove `drop` in a
+   * mutation: a key already stored is left as it is (a pair is told once),
+   * each new one is numbered after the last, and past the cap the oldest
+   * go. Null when nothing changes; otherwise the writes, and the notices to
+   * keep (#keepNotices) once they commit. */
+  async #noticeWrites(added: [key: string, notice: NoticeBody][], drop: string[] = []): Promise<{ writes: NonNullable<Mutation["notices"]>; next: Map<string, StoredNotice> } | null> {
+    const next = new Map(this.#notices);
+    for (const key of drop) next.delete(key);
+    let seq = this.#noticeSeq;
+    const at = this.#now();
+    const fresh: string[] = [];
+    for (const [key, body] of added) {
+      if (next.has(key) || this.#unreadNotices.has(key)) continue;
+      next.set(key, { ...body, seq: ++seq, at } as StoredNotice);
+      fresh.push(key);
+    }
+    const over = overCap(new Map([...next].map(([key, notice]) => [key, notice.seq])));
+    for (const key of over) next.delete(key);
+    const put = await Promise.all(fresh.filter((key) => next.has(key)).map(async (key): Promise<[string, string]> => [key, await seal(next.get(key)!, this.#key)]));
+    const remove = [...drop, ...over].filter((key) => this.#notices.has(key));
+    if (put.length === 0 && remove.length === 0) return null;
+    return { writes: { put, delete: remove }, next };
+  }
+
+  /** `notices` are this device's notices now. */
+  #keepNotices(notices: Map<string, StoredNotice>): void {
+    this.#notices = notices;
+    for (const notice of notices.values()) this.#noticeSeq = Math.max(this.#noticeSeq, notice.seq);
+    this.#noticeRev++;
   }
 
   /** Section 9.2 steps 3 to 5: the genesis of the epoch after this device's
@@ -3096,7 +3274,6 @@ export class SyncEngine {
         this.#fail("loadFailed");
         return;
       }
-      this.#noticeCount = records.noticeCount;
       this.#adopt(claim === "failed" ? loaded : { ...loaded, meta: claim }, claim !== "failed");
       return;
     }
@@ -3134,6 +3311,8 @@ export class SyncEngine {
     this.#lastAllocated = 0;
     this.#leftBehind = loaded.leftBehind;
     this.#oldText = loaded.old;
+    this.#unreadNotices = loaded.unreadNotices;
+    this.#keepNotices(loaded.notices);
     // Counted only: hidden groups are dropped by the next refresh, once the
     // load has finished.
     this.#refreshLeftBehind(false);
@@ -3146,6 +3325,8 @@ export class SyncEngine {
     this.#meta = this.#state = this.#doc = null;
     this.#leftBehind = new Map();
     this.#oldText = null;
+    this.#unreadNotices = new Set();
+    this.#keepNotices(new Map());
     this.#refreshLeftBehind(false);
     this.#needsInit = false;
     this.#unreadable = reason;
@@ -3208,6 +3389,26 @@ export class SyncEngine {
         if (group === null || group.marker !== key) return malformed("a group of changes left behind is malformed");
         leftBehind.set(key, group);
       }
+      // A notice this build can't read (a newer build's, or damaged) holds
+      // no data: it is left in the store as it is, out of memory and the
+      // UI, and the device loads (owner decision D31). A left-behind group
+      // above holds changes, so it keeps the strict rule.
+      const notices = new Map<string, StoredNotice>();
+      const unreadNotices = new Set<string>();
+      for (const [key, text] of records.notices) {
+        let notice: StoredNotice | null = null;
+        try {
+          notice = checkNotice(await this.#open(text));
+        } catch (err) {
+          if (!(err instanceof Undecryptable)) throw err;
+        }
+        if (notice === null) {
+          this.#log(`a stored notice can't be read, so it is kept as it is and not shown: ${key}`);
+          unreadNotices.add(key);
+          continue;
+        }
+        notices.set(key, notice);
+      }
       // The previous epochs' states are read now, like the groups: one that
       // can't be read is unreadable (section 12, B13), never dropped later
       // or written over by the next switch.
@@ -3215,7 +3416,7 @@ export class SyncEngine {
         const old = decodeOld(await this.#open(records.old));
         if (typeof old === "string") return malformed(old);
       }
-      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, old: records.old ?? null };
+      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, notices, unreadNotices, old: records.old ?? null };
     } catch (err) {
       if (err instanceof Undecryptable) {
         this.#log("the saved sync state doesn't decrypt with this device's key", err);
@@ -3307,7 +3508,8 @@ export class SyncEngine {
       pendingCount: this.#pendingCount(),
       deviceSaveFailed: this.#deviceSaveFailed,
       volatile: this.#store.volatile(),
-      noticeCount: this.#noticeCount,
+      noticeCount: this.#notices.size,
+      noticeRevision: this.#noticeRev,
       leftBehindCount: this.#leftBehindCount,
       leftBehindOwnCount: this.#leftBehindOwnCount,
       damagedFile: this.#damaged,
@@ -3317,6 +3519,10 @@ export class SyncEngine {
   }
 
   #emit(): void {
+    if (this.#doc !== this.#emittedDoc) {
+      this.#emittedDoc = this.#doc;
+      this.#noticeRev++;
+    }
     const next = this.#makeSnapshot();
     const prev = this.#snapshot;
     if ((Object.keys(next) as (keyof EngineState)[]).every((key) => next[key] === prev[key])) return;

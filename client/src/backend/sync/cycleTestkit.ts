@@ -67,7 +67,7 @@ export class MemoryStore implements SyncStore {
       tail: [...r.tail],
       ownLog: ascending(r.ownLog),
       chainHead: ascending(r.chain).at(-1) ?? null,
-      noticeCount: r.notices.size,
+      notices: [...r.notices].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       leftBehind: [...r.leftBehind].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       old: r.old,
     };

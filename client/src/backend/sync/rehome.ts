@@ -17,15 +17,16 @@ import { compareTags } from "./tags";
 //   - A TOGETHER group (an EMI's balance pair) is re-issued whole when
 //     either of its registers is.
 //
-// Re-apply markers (ra, section 9.4) carry no tag, so the walk above never
-// sees them. Every marker of the pre-rehome state that the rebuilt state
-// lacks is re-issued too, on the last re-issued op, or alone on an op at
-// the device's greatest own L when nothing else is. A marker is a
-// grow-only set member, so re-issuing one held elsewhere changes nothing.
+// Re-apply markers (ra, section 9.4) and add-back markers (ab, section 4.1)
+// carry no tag, so the walk above never sees them. Every marker of the
+// pre-rehome state that the rebuilt state lacks is re-issued too, on the
+// last re-issued op, or alone on an op at the device's greatest own L when
+// nothing else is. A marker is a grow-only set member, so re-issuing one
+// held elsewhere changes nothing.
 
 /** One re-issued op's content at its original L, before the engine adds
  * `at`, `by` and `vv`. */
-export type Reissue = Pick<Op, "L" | "set" | "del" | "ra">;
+export type Reissue = Pick<Op, "L" | "set" | "del" | "ra" | "ab">;
 
 function kept(reg: Register, rebuilt: Register | undefined): boolean {
   return rebuilt !== undefined && compareTags(reg.t, rebuilt.t) === 0 && sameValue(reg.v, rebuilt.v);
@@ -74,7 +75,8 @@ export function rehomeReissue(pre: SyncState, rebuilt: SyncState, device: string
   }
 
   const markers = [...pre.ra].filter((marker) => !rebuilt.ra.has(marker)).sort();
-  if (markers.length > 0 && byL.size === 0) at(Math.max(1, pre.seen.get(device) ?? pre.maxL));
+  const addedBack = [...pre.ab].filter((marker) => !rebuilt.ab.has(marker)).sort();
+  if ((markers.length > 0 || addedBack.length > 0) && byL.size === 0) at(Math.max(1, pre.seen.get(device) ?? pre.maxL));
   // A loop, not Math.max(...keys): a spread of one argument per re-issued L
   // overflows the stack past about 120k of them, and rehome is never refused.
   let last = 0;
@@ -87,5 +89,6 @@ export function rehomeReissue(pre: SyncState, rebuilt: SyncState, device: string
       set: [...op.set].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       del: op.del.sort(),
       ...(L === last && markers.length > 0 ? { ra: markers } : {}),
+      ...(L === last && addedBack.length > 0 ? { ab: addedBack } : {}),
     }));
 }

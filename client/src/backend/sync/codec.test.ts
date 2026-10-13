@@ -43,6 +43,8 @@ describe("op validator", () => {
     expect(opProblem({ L: 3, at: 0, by: "", vv: {}, set: [["lk/2026-05", false], ["fm/2026-05", null], ["cb/2026-05", null]], del: [`e/${ID}`], ra: ["e000001-9c1f22aa/d0000000000000001"] })).toBeNull();
     // A re-apply in an epoch numbered past 999999 (epoch keys go on growing).
     expect(opProblem({ L: 3, at: 0, by: "", vv: {}, set: [], del: [], ra: ["e1000000-9c1f22aa/d0000000000000001"] })).toBeNull();
+    // An add-back names the deleted record it re-made (F3).
+    expect(opProblem({ ...createOp(), ab: [`e/${ID}`, `debt/${ID}`] })).toBeNull();
   });
 
   const bad: [string, unknown][] = [
@@ -87,6 +89,10 @@ describe("op validator", () => {
     ["a malformed delete key", { ...createOp(), del: [`debt/${ID}/name`] }],
     ["a delete repeated", { ...createOp(), del: [`debt/${ID}`, `debt/${ID}`] }],
     ["a malformed re-apply marker", { ...createOp(), ra: ["e000001/d0000000000000001"] }],
+    ["an add-back marker that is no record key", { ...createOp(), ab: [`e/${ID}/amount`] }],
+    ["an add-back marker that is not text", { ...createOp(), ab: [1] }],
+    ["an add-back marker repeated", { ...createOp(), ab: [`e/${ID}`, `e/${ID}`] }],
+    ["add-back markers that are not a list", { ...createOp(), ab: `e/${ID}` }],
   ];
   for (const [name, op] of bad) {
     it(`refuses ${name}`, () => {
@@ -482,6 +488,9 @@ describe("files", () => {
     ["a joined name with a path", (f) => (f.joined = { [`../${GENESIS}`]: SHA })],
     ["a joined name with an uppercase device id", (f) => (f.joined = { [`${EPOCH}.${D.toUpperCase()}.log.enc`]: SHA })],
     ["a state with missing parts", (_f, s) => delete s.ra],
+    ["an empty add-back list (never written)", (_f, s) => (s.ab = [])],
+    ["a malformed add-back marker", (_f, s) => (s.ab = ["e/not-an-id"])],
+    ["an add-back marker held twice", (_f, s) => (s.ab = [`e/${ID}`, `e/${ID}`])],
     ["a through below its own device's seen", (f) => (f.through = (f.through as number) - 1)],
     ["a through above its own device's seen", (f) => (f.through = (f.through as number) + 1)],
   ];
@@ -659,6 +668,17 @@ describe("compact state", () => {
     const [record] = encodeState(r.state).rec.e;
     expect(record.c).toEqual([2, D]);
     expect(record.t).toEqual({ amount: [3, D], _s: [3, D] });
+  });
+
+  it("carries add-back markers only when there are some, and reads them back (F3)", async () => {
+    const { replica, file } = await snapFile();
+    expect(file.state.ab).toBeUndefined();
+    replica.receive(deviceId(0xe), { L: replica.state.maxL + 1, at: 0, by: "kai", vv: {}, set: [], del: [], ab: [`e/${ID}`] });
+    const state = encodeState(replica.state);
+    expect(state.ab).toEqual([`e/${ID}`]);
+    const withAb = { ...file, seen: vectorOf(replica.state.seen), maxL: replica.state.maxL, state };
+    const checked = check(SNAP, withAb);
+    expect(checked.ok && [...checked.state!.ab]).toEqual([`e/${ID}`]);
   });
 
   it("is deterministic: equal states give equal text whatever their insertion order", async () => {

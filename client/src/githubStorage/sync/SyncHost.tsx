@@ -1,5 +1,6 @@
-import { Fragment, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { OTHER_TAB, type EngineState, type SyncEngine } from "../../backend/sync/SyncEngine";
+import { SyncContext, type SyncStateValue } from "./syncContext";
 
 /** The words for each `unreadable` reason (design section 12). */
 const UNREADABLE: Record<NonNullable<EngineState["unreadable"]>, string> = {
@@ -14,13 +15,32 @@ const UNREADABLE: Record<NonNullable<EngineState["unreadable"]>, string> = {
  * revision, so the open section reads again after someone else's changes
  * are joined (this device's own writes don't bump it), and tells the
  * engine, from a layout effect once the re-keyed tree has committed, which
- * revision is on screen: the stale-UI fence (section 3.4). Status, notices
- * and the left-behind list come with the sync UI. */
-export function SyncHost({ engine, children }: { engine: SyncEngine; children?: ReactNode }) {
+ * revision is on screen: the stale-UI fence (section 3.4). It also gives
+ * the sync state (syncContext.ts: the status, the notices and the changes
+ * a restore left behind, with their actions) to `bar` and its children.
+ * `bar` is where the sync UI (SyncPanel) goes: it is rendered outside the
+ * re-keyed part, so a remote join doesn't remount it and it keeps what it
+ * holds (the review list open, an action under way, its messages). */
+export function SyncHost({ engine, bar, children }: { engine: SyncEngine; bar?: ReactNode; children?: ReactNode }) {
   const state = useSyncExternalStore(engine.subscribe, engine.getState, engine.getState);
   const { hasDocument, revision } = state;
   const shown = useRef(revision);
   shown.current = revision;
+  // Rebuilt whenever the engine's state changes: notices() is the same
+  // array until its revision moves, and leftBehind() follows the counts.
+  const value = useMemo<SyncStateValue>(
+    () => ({
+      ...state,
+      notices: engine.notices(),
+      leftBehind: engine.leftBehind(),
+      syncNow: () => engine.syncNow(),
+      noticeAction: (key, kind, shown) => engine.noticeAction(key, kind, shown),
+      dismissNotice: (key) => engine.dismissNotice(key),
+      reapply: (id) => engine.reapply(id),
+      discard: (id) => engine.discard(id),
+    }),
+    [engine, state],
+  );
 
   // Attached while the ledger is on screen; until then (and in tests with
   // no view) the engine treats every revision as rendered.
@@ -50,5 +70,23 @@ export function SyncHost({ engine, children }: { engine: SyncEngine; children?: 
     );
   }
   if (!hasDocument) return <p className="sync-message">Loading your ledger...</p>;
-  return <Fragment key={revision}>{children}</Fragment>;
+  return (
+    <SyncLayers value={value} revision={revision} bar={bar}>
+      {children}
+    </SyncLayers>
+  );
+}
+
+/** What SyncHost renders once there is a document: the context above
+ * everything, `bar` first and outside the re-keyed part, and `children`
+ * keyed on `revision`. React keeps an element's state while the type and
+ * key at each level above it stay the same, so a new revision remounts
+ * the children and leaves `bar` mounted. */
+export function SyncLayers({ value, revision, bar, children }: { value: SyncStateValue; revision: number; bar?: ReactNode; children?: ReactNode }) {
+  return (
+    <SyncContext.Provider value={value}>
+      {bar}
+      <Fragment key={revision}>{children}</Fragment>
+    </SyncContext.Provider>
+  );
 }
