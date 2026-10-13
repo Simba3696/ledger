@@ -488,7 +488,7 @@ export function createFakeGitHub({
   putLatencyMs = 0,
   rateLimit = 5000,
   treeEntryLimit = TREE_ENTRY_LIMIT,
-  now = Date.now,
+  now = () => Date.now(),
 }: {
   apiBase?: string;
   repos?: FakeRepo[];
