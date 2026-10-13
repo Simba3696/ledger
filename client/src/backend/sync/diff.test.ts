@@ -450,6 +450,16 @@ describe("a next document sharing the parts it didn't change with current", () =
         doc.expenses["2026-01"].push(doc.expenses["2026-02"].pop()!);
         (doc.expenses["2026-06"][0] as unknown as Record<string, unknown>).note = "x";
       },
+      // A month listing a shared month's record, then a later failure of
+      // another kind before that shared month is reached.
+      (doc) => {
+        doc.expenses["2026-01"].push(doc.expenses["2026-05"][0]);
+        (doc.expenses["2026-03"][0] as unknown as Record<string, unknown>).note = "x";
+      },
+      (doc) => {
+        doc.expenses["2026-06"].push(doc.expenses["2026-05"][0]);
+        (doc.expenses["2026-03"][0] as unknown as Record<string, unknown>).note = "x";
+      },
       (doc) => (doc.expenses["2026-03"] = []),
       (doc) => (doc.expenses["2026-07"] = doc.expenses["2026-03"].splice(0)),
       (doc) => {

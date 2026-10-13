@@ -215,14 +215,44 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
       beforeRecords.push(record as unknown as AnyRecord);
     }
   }
+  // A month `next` shares with `current` (the very same list: a write's
+  // settled draft keeps every month the write didn't read as current()'s
+  // own, stage 8c-2) holds current's own records, unchanged, so nothing in
+  // it is set, created or deleted, and its records aren't checked again
+  // (current is materialised, so well-formed). What reading it record by
+  // record would refuse is still refused, at the same record: an id it
+  // lists that another month of `next` lists too.
+  const sharedMonths = new Set<string>();
+  for (const [month, records] of Object.entries(next.expenses)) {
+    if (records === current.expenses[month] && Object.hasOwn(current.expenses, month) && records.length > 0) sharedMonths.add(month);
+  }
+  /** Per shared month not read yet, the ids an earlier month listed too. */
+  const listedBefore = new Map<string, Set<string>>();
+  const sharedRead = new Set<string>();
   const afterIds = new Set<string>();
   const afterMonths: string[] = [];
   const afterRecords: AnyRecord[] = [];
   for (const [month, records] of Object.entries(next.expenses)) {
     if (!Array.isArray(records)) fail("an expense month is not a list");
+    if (sharedMonths.has(month)) {
+      const twice = listedBefore.get(month);
+      if (twice) for (const record of records) if (twice.has(record.id)) fail(`expense ${record.id} appears twice`);
+      sharedRead.add(month);
+      continue;
+    }
     for (const value of records) {
       const record = checkRecord("e", value);
       if (afterIds.has(record.id)) fail(`expense ${record.id} appears twice`);
+      const old = beforeAt.get(record.id);
+      const from = old === undefined ? undefined : beforeMonths[old];
+      if (from !== undefined && sharedMonths.has(from)) {
+        // Listed in a shared month too: refused there, or here if that
+        // month came first.
+        if (sharedRead.has(from)) fail(`expense ${record.id} appears twice`);
+        let twice = listedBefore.get(from);
+        if (!twice) listedBefore.set(from, (twice = new Set()));
+        twice.add(record.id);
+      }
       afterIds.add(record.id);
       afterMonths.push(month);
       afterRecords.push(record);
@@ -240,7 +270,7 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
     else update("e", beforeRecords[old], record, `e:${month}`);
   }
   for (const [id, at] of beforeAt) {
-    if (afterIds.has(id)) continue;
+    if (afterIds.has(id) || sharedMonths.has(beforeMonths[at])) continue;
     del.push(recordKey("e", id));
     dirty.add(`e:${beforeMonths[at]}`);
   }
