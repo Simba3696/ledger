@@ -66,8 +66,21 @@ export async function submitSignIn(page: Page, email: string, password: string):
 
 /** Removes every console error mentioning `status`, for checks that provoke
  * that response on purpose. Every match, since the browser may log one
- * failed request more than once. */
-export function dropConsoleErrors(consoleErrors: string[], status: string): void {
+ * failed request more than once.
+ *
+ * Waits first until those errors stop arriving: the browser reports a failed
+ * request asynchronously, and React's dev StrictMode can send the same request
+ * twice, so dropping at once could leave a late copy behind to fail the final
+ * "no console errors" check (a 403 did, once). */
+export async function dropConsoleErrors(page: Page, consoleErrors: string[], status: string): Promise<void> {
+  await page.waitForLoadState("networkidle");
+  let seen = -1;
+  for (let i = 0; i < 20; i++) {
+    const count = consoleErrors.filter((e) => e.includes(status)).length;
+    if (count === seen) break;
+    seen = count;
+    await page.waitForTimeout(150);
+  }
   for (let i = consoleErrors.length - 1; i >= 0; i--) {
     if (consoleErrors[i].includes(status)) consoleErrors.splice(i, 1);
   }
@@ -98,7 +111,7 @@ export async function checkSignInFlow(
   // Supabase Auth answers the wrong password with a 400, which the browser
   // logs as a console error. Expected here, so drop it rather than fail the
   // "no console errors" check at the end.
-  dropConsoleErrors(consoleErrors, "400");
+  await dropConsoleErrors(page, consoleErrors, "400");
 
   await submitSignIn(page, ownerEmail, OWNER_PASSWORD);
   await page.waitForSelector(".tabs");

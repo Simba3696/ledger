@@ -564,6 +564,9 @@ async function main() {
     // browser logs the failed fetch as a console error regardless, so filter
     // this one known-expected occurrence out rather than let it fail the "no
     // console errors" check at the end.
+    // The error is logged asynchronously, so wait (up to 3 s) for it to arrive
+    // before removing it; otherwise a late copy can outlive the removal.
+    for (let i = 0; i < 20 && !consoleErrors.some((e) => e.includes("403")); i++) await page.waitForTimeout(150);
     const expected403 = consoleErrors.findIndex((e) => e.includes("403"));
     if (expected403 !== -1) consoleErrors.splice(expected403, 1);
 
@@ -1739,7 +1742,7 @@ async function main() {
     await page.waitForSelector(".auth-card >> text=This account is not allowed on this deployment.");
     check("A 403 from the API shows the not-allowed screen, not the app", (await page.locator(".tabs").count()) === 0);
     // Every simulated 403 is expected (React's dev StrictMode requests config twice).
-    dropConsoleErrors(consoleErrors, "403");
+    await dropConsoleErrors(page, consoleErrors, "403");
     await page.unroute("**/api/config");
     await page.locator(".auth-card").getByRole("button", { name: "Sign out" }).click();
     await page.waitForSelector("form.auth-card");
@@ -1758,7 +1761,7 @@ async function main() {
       "A 401 from the API signs out and explains why",
       (await page.locator(".auth-notice").innerText()).includes("Sign in again"),
     );
-    dropConsoleErrors(consoleErrors, "401");
+    await dropConsoleErrors(page, consoleErrors, "401");
     await page.unroute("**/api/categories");
 
     await browser.close();
