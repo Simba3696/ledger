@@ -118,6 +118,8 @@ export class Replica implements DocumentHost {
   clock: number;
   checks = true;
   onOp?: (device: string, op: Op) => void;
+  /** The login on its ops (display only). */
+  readonly actor: string;
   #lastL = 0;
 
   constructor(device: string, genesis: LedgerDocument | SyncState, options: { actor?: string; clock?: number; newId?: () => string; epoch?: string } = {}) {
@@ -126,10 +128,11 @@ export class Replica implements DocumentHost {
     this.state = "rec" in genesis ? cloneState(genesis) : genesisState(genesis);
     this.doc = materialize(this.state);
     this.clock = options.clock ?? Date.UTC(2026, 4, 10, 6, 0);
+    this.actor = options.actor ?? "alex";
     this.backend = new DocumentBackend({
       host: this,
       now: () => this.clock,
-      actor: options.actor ?? "alex",
+      actor: this.actor,
       newId: options.newId ?? (() => crypto.randomUUID()),
     });
   }
@@ -156,7 +159,7 @@ export class Replica implements DocumentHost {
     const body = diffDocuments(this.state, this.doc, next, { L, device: this.device });
     if (!body) return null;
     this.#lastL = L;
-    const op: Op = { L, at: this.clock, by: "alex", vv: vectorOf(this.state.seen), ...body, ...(ra ? { ra } : {}) };
+    const op: Op = { L, at: this.clock, by: this.actor, vv: vectorOf(this.state.seen), ...body, ...(ra ? { ra } : {}) };
     expect(opProblem(op)).toBeNull();
     this.receive(this.device, op);
     if (this.checks) expect(docText(this.doc)).toBe(docText(next));
