@@ -40,8 +40,8 @@ export function SyncPanel({ initiallyOpen = false }: { initiallyOpen?: boolean }
   const hasReview = sync.notices.length > 0 || sync.leftBehind.length > 0;
   return (
     <div className="sync-panel">
-      <SyncMessages state={sync.state} />
-      <SyncStatus state={sync.state} reviewOpen={open && hasReview} reviewId={reviewId} onRetry={() => void sync.syncNow()} onToggleReview={() => setOpen(!open)} />
+      <SyncMessages state={sync} />
+      <SyncStatus state={sync} reviewOpen={open && hasReview} reviewId={reviewId} onRetry={() => void sync.syncNow()} onToggleReview={() => setOpen(!open)} />
       {done && (
         <p className="sync-review-done" role="status">
           {done}

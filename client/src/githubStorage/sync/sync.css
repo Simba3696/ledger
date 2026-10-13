@@ -63,6 +63,10 @@
   font-size: var(--font-size-sm);
 }
 
+.sync-message-note {
+  border-color: var(--border);
+}
+
 .sync-review {
   margin: 4px 12px 12px;
   padding: 12px;

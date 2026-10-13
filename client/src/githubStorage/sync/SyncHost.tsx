@@ -28,7 +28,7 @@ export function SyncHost({ engine, children }: { engine: SyncEngine; children?: 
   // array until its revision moves, and leftBehind() follows the counts.
   const value = useMemo<SyncStateValue>(
     () => ({
-      state,
+      ...state,
       notices: engine.notices(),
       leftBehind: engine.leftBehind(),
       syncNow: () => engine.syncNow(),

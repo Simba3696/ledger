@@ -16,7 +16,7 @@ import { Replica, deviceId, emptyDocument } from "../../backend/sync/testkit";
 import { LeftBehindList } from "./LeftBehindList";
 import { NoticeList } from "./NoticeList";
 import { SyncHost } from "./SyncHost";
-import { SyncMessages } from "./SyncMessages";
+import { SyncMessages, VOLATILE } from "./SyncMessages";
 import { SyncPanel } from "./SyncPanel";
 import { SyncStatus } from "./SyncStatus";
 import { actionLabel, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
@@ -170,7 +170,6 @@ describe("labels", () => {
     expect(statusText({ ...STATE, status: "needsAttention" })).toBe("Changes from one device can't be read. Everything else keeps syncing.");
     expect(statusText({ ...STATE, deviceSaveFailed: true, status: "pending" })).toBe("This device couldn't save. Free up storage and try again.");
     for (const status of ["saving", "needsToken", "needsPassphrase", "missing", "unreadable", "needsUpdate", "locked"] as const) expect(statusText({ ...STATE, status })).not.toBe("");
-    expect(statusText({ ...STATE, volatile: true })).toBe("Saved in this tab only");
     expect(reviewText(STATE)).toBeNull();
     expect(reviewText({ noticeCount: 2, leftBehindCount: 1 })).toBe("3 to review");
   });
@@ -265,14 +264,19 @@ describe("LeftBehindList (D18)", () => {
 describe("SyncMessages", () => {
   it("uses the engine's own words for a damaged file, a gone epoch and a restore", () => {
     const damagedFile = { path: "ledger/e000002-0000000b.genesis.enc", epoch: "e000002-0000000b", reason: "malformed" as const };
-    const html = renderToString(SyncMessages({ state: { damagedFile, epochGone: { epoch: "e000001-0000000a", winner: null }, restore: { state: "landed", epoch: "e000002-0000000b" } } }));
+    const html = renderToString(SyncMessages({ state: { damagedFile, epochGone: { epoch: "e000001-0000000a", winner: null }, restore: { state: "landed", epoch: "e000002-0000000b" }, volatile: false } }));
     expect(html).toContain(damagedFileMessage(damagedFile).replaceAll("'", "&#x27;").slice(0, 60));
     expect(html).toContain(EPOCH_GONE_EMPTY.replaceAll("'", "&#x27;"));
     expect(html).toContain(RESTORED);
     expect(html.match(/role="alert"/g)).toHaveLength(3);
-    expect(renderToString(SyncMessages({ state: { damagedFile: null, epochGone: { epoch: "e000001-0000000a", winner: "e000002-0000000b" }, restore: { state: "pending", epoch: "e" } } }))).toContain(EPOCH_GONE.replaceAll("'", "&#x27;").slice(0, 40));
-    expect(renderToString(SyncMessages({ state: { damagedFile: null, epochGone: null, restore: { state: "pending", epoch: "e" } } }))).toContain(RESTORE_UNKNOWN.replaceAll("'", "&#x27;"));
-    expect(SyncMessages({ state: { damagedFile: null, epochGone: null, restore: null } })).toBeNull();
+    expect(renderToString(SyncMessages({ state: { damagedFile: null, epochGone: { epoch: "e000001-0000000a", winner: "e000002-0000000b" }, restore: { state: "pending", epoch: "e" }, volatile: false } }))).toContain(EPOCH_GONE.replaceAll("'", "&#x27;").slice(0, 40));
+    expect(renderToString(SyncMessages({ state: { damagedFile: null, epochGone: null, restore: { state: "pending", epoch: "e" }, volatile: false } }))).toContain(RESTORE_UNKNOWN.replaceAll("'", "&#x27;"));
+    expect(SyncMessages({ state: { damagedFile: null, epochGone: null, restore: null, volatile: false } })).toBeNull();
+    // A browser that keeps nothing on the device: a banner, not an alert.
+    const banner = renderToString(SyncMessages({ state: { damagedFile: null, epochGone: null, restore: null, volatile: true } }));
+    expect(banner).toContain(VOLATILE.replaceAll("'", "&#x27;"));
+    expect(banner).toContain('role="status"');
+    expect(banner).not.toContain('role="alert"');
   });
 });
 

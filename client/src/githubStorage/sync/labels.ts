@@ -187,8 +187,8 @@ export function leftBehindHeading(group: LeftBehindView): string {
     : `${changes} from ${group.who ?? "another device"} ${were} in ${group.into.by}'s restore on ${when}.`;
 }
 
-/** The status line, as section 11's statuses read (null: nothing to say). */
-export function statusText(state: Pick<EngineState, "status" | "pendingCount" | "deviceSaveFailed" | "volatile">): string {
+/** The status line, as section 11's statuses read. */
+export function statusText(state: Pick<EngineState, "status" | "pendingCount" | "deviceSaveFailed">): string {
   // A failed save on this device outranks the rest: the write was refused.
   if (state.deviceSaveFailed) return DEVICE_SAVE_FAILED;
   const n = state.pendingCount;
@@ -212,8 +212,7 @@ export function statusText(state: Pick<EngineState, "status" | "pendingCount" | 
     case "saving":
       return "Saving...";
     case "idle":
-      if (n > 0) return "Saving...";
-      return state.volatile ? "Saved in this tab only" : "Saved";
+      return n > 0 ? "Saving..." : "Saved";
   }
 }
 
