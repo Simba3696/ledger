@@ -533,7 +533,13 @@ async function step(h: Harness, rng: Rng, events: { restoreAt: number[]; forkAt:
   const roll = rng.int(100);
   if (roll < 34) await randomCall(h, slot, rng);
   else if (roll < 48) await cycle(h, slot);
-  else if (roll < 52) for (const s of h.slots) await cycle(h, s);
+  else if (roll < 52) {
+    // Each view renders what its cycle joined, as after any other step.
+    for (const s of h.slots) {
+      await cycle(h, s);
+      render(s);
+    }
+  }
   else if (roll < 60) fault(h, rng);
   else if (roll < 63) slot.offline = !slot.offline;
   else if (roll < 66) h.fake.staleReads(rng.chance(0.5) ? 1 + rng.int(2) : 0);
