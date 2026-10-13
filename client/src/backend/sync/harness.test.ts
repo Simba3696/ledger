@@ -109,6 +109,7 @@ const counts = {
   snapshots: 0,
   obligations: 0,
   offered: 0,
+  reappliedOb: 0,
 };
 
 /** One physical device: its engines over time (reloads), the stores it has
@@ -745,11 +746,23 @@ async function check(h: Harness, where: string): Promise<void> {
     for (const c of mine) if (!inRepo.has(`${c.device}/${c.op.L}/${plainText(c.op)}`)) ops.push({ device: c.device, op: c.op });
     const writes = writesOf(genesis.doc, [...ops, ...committed.filter((c) => c.epoch === epoch).map((c) => ({ device: c.device, op: c.op }))]);
     const cut = cutFor(history, W, epoch);
+    const reapplied = (ob: Obligation): boolean =>
+      wOps.some(({ op }) => (ob.kind === "del" ? op.del.includes(ob.key) : op.set.some(([key, value]) => key === ob.key && (key.endsWith("/_c") || plainText(value) === plainText(ob.value)))));
     for (const ob of obligations(epoch, genesis.doc, ops, cut)) {
       counts.obligations++;
+      // The near-top phantom has no device to offer its change on (D18 owes
+      // it to its own device): like any retired device's, it may show
+      // only in other devices' collapsed lists, so it is not owed here.
+      if (ob.device === PHANTOM) continue;
       const slots = owners.get(`${epoch}/${ob.device}`) ?? [];
       expect(slots.length, `${where}: ${epoch}/${ob.device} belongs to no device`).toBeGreaterThan(0);
       const text = obligationText(ob);
+      // Re-applied by any device into the winning epoch: the change is in
+      // the oracle's op set there (AC6), whatever later writes did to it.
+      if (reapplied(ob)) {
+        counts.reappliedOb++;
+        continue;
+      }
       const settled = slots.some((slot) => {
         if (holdsIn(finalFold, ob)) return true;
         const after = slot.epochs.slice(slot.epochs.indexOf(epoch) + 1);
@@ -767,7 +780,7 @@ async function check(h: Harness, where: string): Promise<void> {
         }
         return false;
       });
-      const story = slots.map((s) => `${s.name}: epochs ${s.epochs.join(">")}, restored ${JSON.stringify(s.restored)}, resolved [${[...s.resolved].join(",")}], discardedAt [${s.discardedAt.join(",")}], groups ${JSON.stringify(s.engine.leftBehind().map((g) => ({ id: g.id, own: g.own, items: [...offered(g)] })))}`).join("; ");
+      const story = slots.map((s) => `${s.name}: epochs ${s.epochs.join(">")}, restored ${JSON.stringify(s.restored)}, resolved [${[...s.resolved].join(",")}], discardedAt [${s.discardedAt.join(",")}], groups ${JSON.stringify(s.engine.leftBehind().map((g) => ({ id: g.id, own: g.own, items: [...offered(g)] })))}, ids ${JSON.stringify([...(slotIds.get(s) ?? new Map())])}`).join("; ") + ` ALL: ${h.slots.map((s) => `${s.name} epochs ${s.epochs.join(">")} restored ${JSON.stringify(s.restored)} resolved [${[...s.resolved].join(",")}] discardedAt [${s.discardedAt.join(",")}] ids ${JSON.stringify([...(slotIds.get(s) ?? new Map())])}`).join(" / ")}`;
       expect(settled, `${where}: ${ob.device}'s ${text} in ${epoch} (L ${ob.L}, cut ${cut[ob.device] ?? 0}) was left behind and is offered nowhere. ${story}. Geneses: ${[...history.geneses.values()].map((g) => `${g.epoch} based on ${JSON.stringify(g.basedOn)}`).join("; ")}`).toBe(true);
     }
     // Nothing invented in what is offered.
