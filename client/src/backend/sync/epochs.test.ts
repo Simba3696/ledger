@@ -631,6 +631,30 @@ describe("re-apply and discard (section 9.4)", () => {
   });
 });
 
+describe("re-apply under a view that hasn't rendered the switch (stage 8a, E2)", () => {
+  it("never reports a change applied that it dropped silently: a month lock the restore lacks is kept with a notice", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, b);
+    const backup = structuredClone(b.engine.current());
+    // The view shows everything so far, then renders nothing more.
+    a.engine.attachView(a.engine.getState().revision);
+    await a.backend.setMonthLock(2026, 6, true);
+    expect((await b.engine.restore(backup)).kind).toBe("restored");
+    await cycle(w, a);
+    expect(a.engine.current().monthLocks).toEqual({});
+    const [group] = a.engine.leftBehind();
+    expect(group.items).toEqual([{ kind: "unit", key: "lk/2026-06", value: true }]);
+    const result = await a.engine.reapply(group.id);
+    expect(result.applied).toEqual(group.items);
+    // What the view still shows (locked) is the value re-applied, so the
+    // fence keeps the restore's: and says so.
+    expect(a.engine.current().monthLocks).toEqual({});
+    expect(a.engine.notices().map((n) => n.notice)).toMatchObject([{ kind: "kept", registers: [{ key: "lk/2026-06", theirs: false, mine: true }] }]);
+  });
+});
+
 describe("racing restores (sections 9.2 step 6 and 9.4)", () => {
   it("B20: the losing restorer is told: its restore landed, but a greater epoch was listed", async () => {
     const a = await open({ login: "alex" });
