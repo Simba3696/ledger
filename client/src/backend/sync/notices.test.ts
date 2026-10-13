@@ -411,7 +411,7 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     expect(deliverState(a, cloneState(c.state), c.device)).toEqual([]);
   });
 
-  it("residual (stage 7 review, F11): a clash that reaches me first in a third device's snapshot is never told", async () => {
+  it("residual (stage 7 review, finding 11): a clash that reaches me first in a third device's snapshot is never told", async () => {
     // b's write R clashes with mine; c joined R and snapshotted. If c's
     // snapshot is joined while b's own stream is halted or waiting out a
     // gap, R is held before b's log arrives, and then replaces nothing.

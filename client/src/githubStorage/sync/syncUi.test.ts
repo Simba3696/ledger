@@ -206,7 +206,7 @@ describe("labels", () => {
     for (const status of ["saving", "needsToken", "needsPassphrase", "missing", "unreadable", "needsUpdate", "locked"] as const) expect(statusText({ ...STATE, status })).not.toBe("");
     expect(reviewText(STATE)).toBeNull();
     expect(reviewText({ noticeCount: 2, leftBehindCount: 1, leftBehindOwnCount: 0 })).toBe("3 to review");
-    // This device's own groups are shown outside the toggle (F2).
+    // This device's own groups are shown outside the toggle (finding 2).
     expect(reviewText({ noticeCount: 2, leftBehindCount: 3, leftBehindOwnCount: 1 })).toBe("4 to review");
     expect(reviewText({ noticeCount: 0, leftBehindCount: 1, leftBehindOwnCount: 1 })).toBeNull();
   });
@@ -258,7 +258,7 @@ describe("NoticeList", () => {
     button(node, /^Record again: pay 1000.00/).props.onClick();
     const useMine = button(node, "Use mine");
     expect(useMine.props.disabled).toBe(true);
-    // Described by the notice's sentence, and by the reason when refused (F9).
+    // Described by the notice's sentence, and by the reason when refused (finding 9).
     expect(useMine.props["aria-describedby"]).toBe("sync-notice-2-text sync-notice-2-useMine-why");
     expect(button(node, "Use 10.00").props["aria-describedby"]).toBe("sync-notice-0-text");
     (elements(node).filter((el) => el.type === "button" && text(el) === "Dismiss")[0].props as { onClick: () => void }).onClick();
@@ -275,7 +275,7 @@ describe("NoticeList", () => {
     expect(NoticeList({ notices: [], work: { busy: null, errors: {} }, onAction: () => {}, onDismiss: () => {} })).toBeNull();
   });
 
-  it("F8: while any action runs, every button in the lists is disabled, not just that item's", () => {
+  it("finding 8: while any action runs, every button in the lists is disabled, not just that item's", () => {
     const work = { busy: deleted.key, errors: {} };
     const notices = NoticeList({ notices: [amountClash, deleted], work, onAction: () => {}, onDismiss: () => {} });
     const buttons = elements(notices).filter((el) => el.type === "button");
@@ -304,7 +304,7 @@ function contextValue(state: Partial<EngineState>, notices: NoticeView[], leftBe
   return { ...STATE, ...state, notices, leftBehind, syncNow: async () => {}, noticeAction: async () => {}, dismissNotice: async () => {}, reapply: async () => ({ applied: [], skipped: [] }), discard: async () => {} };
 }
 
-describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 step 5, F2)", () => {
+describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 step 5, finding 2)", () => {
   it("shows them at once, outside the review toggle, which counts only notices and other devices' groups", () => {
     const value = contextValue({ noticeCount: 1, leftBehindCount: 2, leftBehindOwnCount: 1 }, [amountClash], [group(true, A), group(false, B)]);
     const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
@@ -331,7 +331,7 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
   });
 });
 
-describe("accessibility (F9)", () => {
+describe("accessibility (finding 9)", () => {
   it("the toggle controls a list that is always in the page, hidden while closed", () => {
     const value = contextValue({ noticeCount: 1 }, [amountClash], []);
     for (const initiallyOpen of [false, true]) {
@@ -364,7 +364,7 @@ describe("accessibility (F9)", () => {
   });
 });
 
-describe("sync.css (F10)", () => {
+describe("sync.css (finding 10)", () => {
   /** Every declaration the stylesheet gives `selector`, comments left out. */
   function rulesFor(selector: string): string {
     const css = syncCss.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -454,7 +454,7 @@ describe("SyncPanel inside SyncHost", () => {
     expect(closed).toContain('aria-expanded="false"');
   });
 
-  it("F1: the bar keeps its place across a remote join, so the panel's open list and done message survive it", async () => {
+  it("finding 1: the bar keeps its place across a remote join, so the panel's open list and done message survive it", async () => {
     // No DOM here, so this checks what React keys state on: an element keeps
     // its state while the type and key at every level above it stay the
     // same. The bar's path must not change when the revision does; the

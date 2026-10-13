@@ -3,7 +3,7 @@ import { leftBehindHeading, leftBehindItemText } from "./labels";
 import type { PendingWork } from "./NoticeList";
 
 function Group({ group, work, textId, onReapply, onDiscard }: { group: LeftBehindView; work: PendingWork; textId: string; onReapply: (id: string) => void; onDiscard: (id: string) => void }) {
-  // One action at a time: every button waits while any runs (F8).
+  // One action at a time: every button waits while any runs (stage 7 review, finding 8).
   const busy = work.busy !== null;
   const error = work.errors[group.id];
   return (

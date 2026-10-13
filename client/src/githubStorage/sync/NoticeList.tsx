@@ -22,7 +22,7 @@ export function NoticeList({ notices, work, idPrefix = "sync-notice", onAction, 
   return (
     <ul className="sync-review-list" aria-label="Changes that clashed">
       {notices.map((view, i) => {
-        // One action at a time: every button waits while any runs (F8).
+        // One action at a time: every button waits while any runs (stage 7 review, finding 8).
         const busy = work.busy !== null;
         const error = work.errors[view.key];
         const textId = `${idPrefix}-${i}-text`;
