@@ -54,7 +54,9 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 // LEDGER_HARNESS_SEEDS (default 40), LEDGER_HARNESS_STEPS (default 100) and
 // LEDGER_HARNESS_FIRST (the first seed, default 1) size a run;
 // LEDGER_HARNESS_SEED replays one seed. A failure names its seed;
-// LEDGER_HARNESS_KEEP_GOING=1 runs every seed and lists every failure. Device
+// LEDGER_HARNESS_KEEP_GOING=1 runs every seed and lists every failure;
+// LEDGER_HARNESS_TRACE=1 adds each request and its answer to the log a
+// stuck run prints. Device
 // ids, record ids, epoch keys and IVs come from the seed, so a replay takes
 // the same path, short of the order in which concurrent crypto settles.
 // Fictional data only.
@@ -75,6 +77,7 @@ const DAY = 86_400_000;
 /** A device with no engine whose op starts a run near the top of the
  * Lamport range, in that share of runs. */
 const PHANTOM = "d00000000000000aa";
+const TRACE = testEnv("LEDGER_HARNESS_TRACE") === "1";
 const LAMPORT_TOP = Number(testEnv("LEDGER_HARNESS_LAMPORT_TOP") ?? 0.15);
 /** Texts no repo file or saved meta may hold in plaintext (AC15). Each has
  * a space, which base64 never holds, so a match is never by chance. */
@@ -188,7 +191,9 @@ async function startingDocument(rng: Rng): Promise<LedgerDocument> {
 function client(h: Harness, slot: Pick<Slot, "login" | "offline">, life: { dead: boolean }, engine: () => SyncEngine | null): GitHubClient {
   const fetchFn: typeof fetch = (input, init) => {
     if (life.dead || slot.offline) return Promise.reject(new TypeError("Failed to fetch"));
-    return h.fake.fetchAs(engine()?.deviceId ?? "dnone")(input, init);
+    const p = h.fake.fetchAs(engine()?.deviceId ?? "dnone")(input, init);
+    if (TRACE) void p.then((r) => h.log.push(`${engine()?.deviceId} ${init?.method ?? "GET"} ${String(input).replace(/.*ledger-data/, "")} -> ${r.status}`), (e: unknown) => h.log.push(`${engine()?.deviceId} ${init?.method ?? "GET"} ${String(input).replace(/.*ledger-data/, "")} -> ${String(e)}`));
+    return p;
   };
   return createGitHubClient({ owner: OWNER, repo: REPO, token: `github_pat_${slot.login}`, fetch: fetchFn });
 }
@@ -576,7 +581,7 @@ async function quiesce(h: Harness): Promise<void> {
     if (round > 40) {
       const states = h.slots.map((s) => `${s.name} ${s.engine.getState().status}/${s.engine.getState().pendingCount} dead=${s.life.dead} ${JSON.stringify(s.engine.getState())}`).join(", ");
       const requests = h.fake.requests.slice(-8).map((r) => `${r.device} ${r.method} ${r.path}`);
-      throw new Error(`the devices did not quiesce: ${states}\n${h.log.slice(-12).join("\n")}\n${requests.join("\n")}`);
+      throw new Error(`the devices did not quiesce: ${states}\n${h.log.slice(TRACE ? -60 : -12).join("\n")}\n${requests.join("\n")}`);
     }
     const commits = h.fake.commits.length;
     // A fault queued but not yet met (a rate limit, say) is met now; its
@@ -799,7 +804,11 @@ async function run(seed: number): Promise<void> {
   const rng = new Rng(seed);
   seedCrypto(seed);
   const where = `seed ${seed}`;
+  // GitHub's rate limits run on the devices' monotonic time, which a
+  // schedule moves on by hours in seconds of real time.
+  const clock = { wall: Date.UTC(2026, 4, 10, 9), mono: 1_000_000 };
   const fake = createFakeGitHub({
+    now: () => clock.mono,
     repos: [{ owner: OWNER, name: REPO, private: true }],
     tokens: {
       github_pat_alex: { login: "alex", repos: [FULL], permission: "write" },
@@ -813,14 +822,14 @@ async function run(seed: number): Promise<void> {
   // Sometimes the run starts near the top of the Lamport range: another
   // device's op sits a few dozen Ls below 2^50, so writes run out of L and
   // start next epochs (ADR-0008) amid everything else.
-  if (rng.chance(LAMPORT_TOP)) {
+  if (LAMPORT_TOP > 0 && rng.chance(LAMPORT_TOP)) {
     counts.nearTop++;
     const top = MAX_L - 20 - rng.int(40);
     const op: Op = { L: top, at: 1, by: "sam", vv: {}, set: [["lk/2026-12", true]], del: [] };
     const log = { fv: FORMAT_VERSION, kind: "log", epoch, device: PHANTOM, snapThrough: 0, chain: "0".repeat(16), ops: [op] };
     await fake.seedFile(FULL, `ledger/${epoch}.${PHANTOM}.log.enc`, await seal(log, key));
   }
-  const h: Harness = { rng, fake, key, clock: { wall: Date.UTC(2026, 4, 10, 9), mono: 1_000_000 }, slots: [], backups: [structuredClone(doc)], floating: [], storeFaults: 0, log: [] };
+  const h: Harness = { rng, fake, key, clock, slots: [], backups: [structuredClone(doc)], floating: [], storeFaults: 0, log: [] };
   const count = 2 + rng.int(3);
   for (let i = 0; i < count; i++) {
     const slot = newSlot(`p${i}`, i % 2 ? "sam" : "alex", rng);
