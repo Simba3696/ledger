@@ -234,6 +234,12 @@ async function open(h: Harness, slot: Slot, store: MemoryStore, init?: { epoch: 
   }
   const rng = h.rng;
   slot.engine = engine;
+  // Every epoch it is in, however it got there (a switch inside a restore's
+  // own sync, or a write's next epoch, included).
+  const live = engine;
+  live.subscribe(() => {
+    if (slot.engine === live) noteEpoch(slot);
+  });
   slot.backend = new DocumentBackend({ host: new SyncedHost(engine), now: () => h.clock.wall + slot.skew, actor: slot.login, newId: () => crypto.randomUUID() });
   slot.store = store;
   if (!slot.stores.includes(store)) slot.stores.push(store);
@@ -468,6 +474,7 @@ async function restoreBy(h: Harness, slots: Slot[], rng: Rng): Promise<void> {
   counts.restores++;
   if (slots.length > 1) counts.racing++;
   const runs = slots.map(async (slot) => {
+    noteEpoch(slot);
     const from = { epoch: slot.engine.epochKey!, device: slot.engine.deviceId! };
     const discard = rng.chance(0.6);
     const backup = structuredClone(rng.pick(h.backups));
