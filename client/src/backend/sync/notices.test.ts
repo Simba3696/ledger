@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { NOTICE_CAP, checkNotice, detectNotices, noticeKeyOf, overCap, type Detected } from "./notices";
 import { cloneState, emptyState, joinInto, opState, type Op, type SyncState } from "./state";
-import { Replica, deviceId, emptyDocument } from "./testkit";
+import { compareTags } from "./tags";
+import { Replica, Rng, deviceId, emptyDocument, fingerprint, forEachSeed, testEnv } from "./testkit";
 
 // Who is told (design section 4.2): one named test per row of the section 4
 // conflict table whose "who is told" column names someone, on the pure
@@ -321,6 +322,55 @@ describe("through a snapshot (section 4.2: its seen stands in for vv)", () => {
     const found = detectNotices(a.state, source, { ops: [[B, b.ops[0]]], states: [{ device: B, state: snapshot }] }, A);
     expect(found).toHaveLength(1);
     expect(found[0].winner.by).toBe("sam");
+  });
+});
+
+describe("rule 1 against an oracle (AC7, randomised)", () => {
+  const SEEDS = Number(testEnv("LEDGER_NOTICE_SEEDS") ?? 150);
+
+  // Two replicas edit the same two records without seeing each other, then
+  // exchange everything. For each field, the device whose last write lost
+  // to a greater tag with a different value is told once, naming exactly
+  // that pair of ops, and nobody else is told anything. Both end equal.
+  it("tells exactly the losers of concurrent same-field writes with different values", async () => {
+    await forEachSeed(SEEDS, async (seed) => {
+      const rng = new Rng(seed);
+      const { a, b } = await pair();
+      const amounts = [10, 12, 40];
+      const names = ["Groceries", "Bus"];
+      for (let i = 0; i < 6; i++) {
+        const r = rng.pick([a, b]);
+        const name = rng.pick(names);
+        const row = await rowOf(r, name);
+        if (rng.chance(0.2)) await r.backend.setMonthLock(2026, 8, rng.chance(0.5));
+        else await r.backend.updateEntry(2026, 5, row, edit(rng.pick(amounts), name));
+      }
+      /** Per field, the last op of `r` that set it: its tag and value. */
+      const lastWrites = (r: Replica) => {
+        const out = new Map<string, { L: number; device: string; value: unknown }>();
+        for (const op of r.ops) for (const [key, value] of op.set) if (!key.endsWith("/_s")) out.set(key, { L: op.L, device: r.device, value });
+        return out;
+      };
+      const expected = (loser: Replica, winner: Replica) => {
+        const mine = lastWrites(loser);
+        const keys = new Set<string>();
+        for (const [key, theirs] of lastWrites(winner)) {
+          const own = mine.get(key);
+          if (!own || compareTags([theirs.L, theirs.device], [own.L, own.device]) < 0) continue;
+          if (JSON.stringify(theirs.value) === JSON.stringify(own.value)) continue;
+          keys.add(`${noticeKeyOf(theirs, own)} ${key}`);
+        }
+        return [...keys].sort();
+      };
+      const told = (found: Detected[]) => found.flatMap((n) => (n.kind === "overwrite" ? n.registers.map((r) => `${n.key} ${r.key}`) : [])).sort();
+      const onA = expected(a, b);
+      const onB = expected(b, a);
+      const [aOps, bOps] = [[...a.ops], [...b.ops]];
+      expect(told(deliver(a, b, bOps)), `seed ${seed} on a`).toEqual(onA);
+      expect(told(deliver(b, a, aOps)), `seed ${seed} on b`).toEqual(onB);
+      // Notices change nothing: both replicas hold the same state.
+      expect(fingerprint(a.state)).toBe(fingerprint(b.state));
+    });
   });
 });
 

@@ -148,6 +148,40 @@ describe("edit / delete through logs (section 4.2 rule 2, D16)", () => {
   });
 });
 
+describe("whole units, a lock and a setting through logs (section 4 table)", () => {
+  it("each clash tells its loser alone, and Use mine puts the whole value back everywhere", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await quiesce(w, a, b);
+    // a writes first, b after with greater Ls (b writes one more op first).
+    await b.backend.addEntry(entry("Bus", 1));
+    for (const d of [a, b]) {
+      const mine = d === a;
+      await d.backend.setMonthIncome(2026, 5, { salary: mine ? 60000 : 65000, otherIncome: null, savings: [] });
+      await d.backend.setMonthBills(2026, 5, [{ name: "Card A", due: mine ? 100 : 120, paid: 0, dueDate: null, settled: false }]);
+      // An unlock of an unlocked month changes nothing: b locks, then unlocks.
+      await d.backend.setMonthLock(2026, 6, true);
+      if (!mine) await d.backend.setMonthLock(2026, 6, false);
+      await d.engine.amend((doc) => void (doc.settings.timeZone = mine ? "Asia/Kolkata" : "Europe/London"));
+    }
+    await quiesce(w, a, b);
+    expectConverged(a, b);
+    expect(b.engine.getState().noticeCount).toBe(0);
+    const told = notices(a).map((v) => (v.notice.kind === "overwrite" ? v.notice.registers.map((r) => r.key) : []));
+    expect(told.flat().sort()).toEqual(["cb/2026-05", "fm/2026-05", "lk/2026-06", "st/timeZone"]);
+    for (const view of notices(a)) await a.engine.noticeAction(view.key, "useMine");
+    await quiesce(w, a, b);
+    expectConverged(a, b);
+    const doc = b.engine.current();
+    expect(doc.financeMonths["2026-05"].salary).toBe("60000.00");
+    expect(doc.cardBills["2026-05"][0].due).toBe("100.00");
+    expect(doc.monthLocks["2026-06"]).toBe(true);
+    expect(doc.settings.timeZone).toBe("Asia/Kolkata");
+    for (const d of [a, b]) expect(d.engine.getState().noticeCount).toBe(0);
+  });
+});
+
 describe("payEmi / payEmi (D20)", () => {
   it("one payment is kept; the loser is told and Record again pays once more, everywhere", async () => {
     const a = await open({ login: "alex" });
