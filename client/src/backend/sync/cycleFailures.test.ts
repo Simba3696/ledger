@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../ApiError";
 import { bytesToBase64 } from "../base64";
-import { newSalt } from "../crypto";
+import { encryptDocument, newSalt } from "../crypto";
+import type { LedgerDocument } from "../document/types";
 import {
   ENTRY,
   EPOCH,
@@ -25,6 +26,7 @@ import {
   type Device,
   type World,
 } from "./cycleTestkit";
+import { readBackup } from "./ledgerRepo";
 import { testKey } from "./localTestkit";
 import { REPO_FILE_MAX_BYTES, REPO_FILE_MAX_PLAIN_BYTES, repoPath } from "./repoFiles";
 import type { Op } from "./state";
@@ -440,6 +442,46 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
       expect(status(a)).toBe("saving");
       expect(remarks(a)).toEqual([]);
       expect(a.store.meta().joined).not.toHaveProperty(`${EPOCH}.${X}.log.enc`);
+    });
+  });
+
+  describe("B23: a duplicate record in a genesis or a backup never enters state (section 13)", () => {
+    /** This device's document with its one expense listed twice, id and all. */
+    async function duplicated(): Promise<LedgerDocument> {
+      const a = await open();
+      await a.backend.addEntry(entry("Groceries"));
+      const doc = structuredClone(a.engine.current());
+      a.engine.stop();
+      const [month, [record]] = Object.entries(doc.expenses)[0];
+      doc.expenses[month] = [record, { ...record, remarks: "Groceries again" }];
+      return doc;
+    }
+
+    it("B23: a genesis holding a duplicate record is refused: the device stays on its epoch, names the file, joins nothing of it and keeps writing", async () => {
+      const doc = await duplicated();
+      const a = await open();
+      await a.backend.addEntry(entry("Bus"));
+      const bad = "e000002-0000000b";
+      await plant(w, { kind: "genesis", epoch: bad }, { fv: 1, kind: "genesis", epoch: bad, reason: "restore", by: "sam", at: 2, basedOn: null, doc });
+      await cycle(w, a);
+      expect(a.engine.getState()).toMatchObject({ status: "needsAttention", damagedFile: { epoch: bad } });
+      expect(a.engine.epochKey).toBe(EPOCH);
+      expect(a.store.meta().joined).not.toHaveProperty(`${bad}.genesis.enc`);
+      await a.backend.addEntry(entry("Taxi"));
+      expect(remarks(a)).toEqual(["Bus", "Taxi"]);
+    });
+
+    it("B23: a backup holding a duplicate record is refused: restore writes nothing, and the file doesn't open as a backup", async () => {
+      const doc = await duplicated();
+      const a = await open();
+      await a.backend.addEntry(entry("Bus"));
+      await cycle(w, a);
+      const before = puts(w).length;
+      expect(await a.engine.restore(structuredClone(doc))).toEqual({ kind: "invalid" });
+      expect(puts(w).length).toBe(before);
+      expect(a.engine.epochKey).toBe(EPOCH);
+      const file = await encryptDocument(doc, w.key.key, { salt: w.key.salt, iter: w.key.iter });
+      expect(await readBackup(file, w.key.key)).toEqual({ ok: false, problem: "damaged" });
     });
   });
 
