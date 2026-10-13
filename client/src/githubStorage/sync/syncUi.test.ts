@@ -15,7 +15,7 @@ import { genesisState, type Op } from "../../backend/sync/state";
 import { Replica, deviceId, emptyDocument } from "../../backend/sync/testkit";
 import { LeftBehindList } from "./LeftBehindList";
 import { NoticeList } from "./NoticeList";
-import { SyncHost } from "./SyncHost";
+import { SyncHost, SyncLayers } from "./SyncHost";
 import { SyncMessages, VOLATILE } from "./SyncMessages";
 import { SyncPanel } from "./SyncPanel";
 import { SyncStatus } from "./SyncStatus";
@@ -39,6 +39,22 @@ afterEach(() => {
   for (const engine of running.splice(0)) engine.stop();
   vi.restoreAllMocks();
 });
+
+/** The (type, key, place) of each element from `node` down to `target`,
+ * function components not called through: what React matches an element
+ * by when it renders again. Null when `target` isn't under `node`. */
+function pathTo(node: ReactNode, target: ReactElement, place = 0): unknown[] | null {
+  if (!isValidElement(node)) return null;
+  const here = [node.type, node.key, place];
+  if (node === target) return [here];
+  const children = (node.props as { children?: ReactNode }).children;
+  const list = Array.isArray(children) ? children : [children];
+  for (let i = 0; i < list.length; i++) {
+    const rest = pathTo(list[i] as ReactNode, target, i);
+    if (rest) return [here, ...rest];
+  }
+  return null;
+}
 
 /** Every element `node` renders, function components called through (only
  * for hook-free ones), in document order. */
@@ -314,14 +330,40 @@ describe("SyncPanel inside SyncHost", () => {
     await engine.join({ ops: sam.ops.slice(-2).map((op): [string, Op] => [B, op]) });
     expect(engine.getState().noticeCount).toBe(1);
 
-    const html = renderToString(createElement(SyncHost, { engine }, createElement(SyncPanel, { initiallyOpen: true })));
+    const html = renderToString(createElement(SyncHost, { engine, bar: createElement(SyncPanel, { initiallyOpen: true }) }, createElement("main", null, "The ledger")));
     expect(html).toContain("1 to review");
     expect(html).toContain("sam changed Groceries · amount to 12.00; your 10.00 was replaced.");
     expect(html).toContain("Use 10.00");
     expect(html).toContain('aria-expanded="true"');
-    const closed = renderToString(createElement(SyncHost, { engine }, createElement(SyncPanel)));
+    expect(html).toContain("The ledger");
+    const closed = renderToString(createElement(SyncHost, { engine, bar: createElement(SyncPanel) }));
     expect(closed).toContain('aria-expanded="false"');
-    expect(closed).not.toContain("Use 10.00");
+  });
+
+  it("F1: the bar keeps its place across a remote join, so the panel's open list and done message survive it", async () => {
+    // No DOM here, so this checks what React keys state on: an element keeps
+    // its state while the type and key at every level above it stay the
+    // same. The bar's path must not change when the revision does; the
+    // children's must (they read the ledger again).
+    const engine = new SyncEngine({ key: await testKey(), actor: "alex", store: new MemoryStore(), locks: null, log: () => {} });
+    running.push(engine);
+    await engine.start();
+    await engine.initialize("e000001-0000000a", genesisState(emptyDocument()));
+    const before = engine.getState().revision;
+    const sam = new Replica(B, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry({ year: 2026, month: 5, amount: 12, remarks: "Bus", category: "transportation", isCard: false });
+    await engine.join({ ops: sam.ops.map((op): [string, Op] => [B, op]) });
+    const after = engine.getState().revision;
+    expect(after).not.toBe(before);
+
+    const bar = createElement(SyncPanel, { initiallyOpen: true });
+    const page = createElement("main", null, "The ledger");
+    const value = { ...engine.getState(), notices: [], leftBehind: [], syncNow: async () => {}, noticeAction: async () => {}, dismissNotice: async () => {}, reapply: async () => ({ applied: [], skipped: [] }), discard: async () => {} };
+    const tree = (revision: number) => SyncLayers({ value, revision, bar, children: page });
+    expect(pathTo(tree(after), bar)).toEqual(pathTo(tree(before), bar));
+    expect(pathTo(tree(after), page)).not.toEqual(pathTo(tree(before), page));
+    // The context is above the bar: the panel reads it there.
+    expect(renderToString(createElement(SyncHost, { engine, bar }))).toContain("Saved");
   });
 
   it("useSyncState needs a SyncHost above it", () => {

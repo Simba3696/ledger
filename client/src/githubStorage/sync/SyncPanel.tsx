@@ -9,7 +9,10 @@ import { reapplyText } from "./labels";
 import "./sync.css";
 
 /** GitHub mode's sync bar (design sections 4.2, 9.3 and 11), for #8 to
- * mount above the ledger inside <SyncHost>: the messages that need the
+ * mount as SyncHost's `bar` (<SyncHost engine={e} bar={<SyncPanel />}>),
+ * which keeps it mounted across remote joins, so the list stays open and
+ * an action's result stays shown: as a child of SyncHost it would be
+ * remounted on every remote change. It shows the messages that need the
  * person, the status line with "N to review", and, when opened, the
  * notices and the changes a restore left behind. Non-modal: the ledger
  * stays usable, and nothing waits for an answer (owner decision D17). */

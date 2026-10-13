@@ -16,10 +16,12 @@ const UNREADABLE: Record<NonNullable<EngineState["unreadable"]>, string> = {
  * are joined (this device's own writes don't bump it), and tells the
  * engine, from a layout effect once the re-keyed tree has committed, which
  * revision is on screen: the stale-UI fence (section 3.4). It also gives
- * its children the sync state (syncContext.ts: the status, the notices and
- * the changes a restore left behind, with their actions), which the sync
- * UI (SyncPanel) reads. */
-export function SyncHost({ engine, children }: { engine: SyncEngine; children?: ReactNode }) {
+ * the sync state (syncContext.ts: the status, the notices and the changes
+ * a restore left behind, with their actions) to `bar` and its children.
+ * `bar` is where the sync UI (SyncPanel) goes: it is rendered outside the
+ * re-keyed part, so a remote join doesn't remount it and it keeps what it
+ * holds (the review list open, an action under way, its messages). */
+export function SyncHost({ engine, bar, children }: { engine: SyncEngine; bar?: ReactNode; children?: ReactNode }) {
   const state = useSyncExternalStore(engine.subscribe, engine.getState, engine.getState);
   const { hasDocument, revision } = state;
   const shown = useRef(revision);
@@ -69,7 +71,21 @@ export function SyncHost({ engine, children }: { engine: SyncEngine; children?: 
   }
   if (!hasDocument) return <p className="sync-message">Loading your ledger...</p>;
   return (
+    <SyncLayers value={value} revision={revision} bar={bar}>
+      {children}
+    </SyncLayers>
+  );
+}
+
+/** What SyncHost renders once there is a document: the context above
+ * everything, `bar` first and outside the re-keyed part, and `children`
+ * keyed on `revision`. React keeps an element's state while the type and
+ * key at each level above it stay the same, so a new revision remounts
+ * the children and leaves `bar` mounted. */
+export function SyncLayers({ value, revision, bar, children }: { value: SyncStateValue; revision: number; bar?: ReactNode; children?: ReactNode }) {
+  return (
     <SyncContext.Provider value={value}>
+      {bar}
       <Fragment key={revision}>{children}</Fragment>
     </SyncContext.Provider>
   );
