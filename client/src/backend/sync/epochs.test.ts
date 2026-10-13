@@ -7,7 +7,7 @@ import { testKey } from "./localTestkit";
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
 import { genesisState, type Op, type SyncState } from "./state";
-import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
+import { ALREADY_RESOLVED, EPOCH_GONE, EPOCH_GONE_EMPTY, LEDGER_UPDATED, NEEDS_NEW_EPOCH, SYNC_TIMING, epochGoneMessage, type SyncEngine } from "./SyncEngine";
 import { MAX_L } from "./tags";
 import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit";
 
@@ -1531,6 +1531,24 @@ describe("Lamport exhaustion (ADR-0008)", () => {
     const fresh = await reload(await open({ login: "sam" }));
     await quiesce(w, a, fresh);
     expectConverged(a, fresh);
+  });
+
+  it("a newer genesis this build is too old to read refuses the write that needs a new epoch with 'update the app', not 'try again' (stage 8a, E4)", async () => {
+    const a = await open({ login: "alex" });
+    await plantTopOfRange();
+    await cycle(w, a);
+    const newer = "e000002-0000000b";
+    await plant(w, { kind: "genesis", epoch: newer }, { fv: 2, kind: "genesis", epoch: newer });
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsUpdate", damagedFile: null });
+    // Every try says the same: trying again can't help, updating can.
+    for (let i = 0; i < 2; i++) {
+      await expect(a.backend.addEntry(entry("After"))).rejects.toMatchObject({ status: 503, message: LEDGER_UPDATED });
+      await cycle(w, a);
+    }
+    expect(a.engine.epochKey).toBe(EPOCH);
+    expect(remarks(a)).toEqual(["Planted"]);
+    expect(w.fake.commits.filter((c) => c.path.endsWith(".genesis.enc"))).toEqual([]);
   });
 
   it("a next epoch that would fill the gap below a genesis no device can open is not written: the write is refused, naming the file (D26)", async () => {
