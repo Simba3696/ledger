@@ -2,6 +2,7 @@ import { expect } from "vitest";
 import { createEmptyDocument } from "../document/createDocument";
 import { DocumentBackend, type DocumentHost } from "../document/DocumentBackend";
 import type { LedgerDocument } from "../document/types";
+import type { LedgerBackend } from "../LedgerBackend";
 import { isWritableDocument } from "../document/validate";
 import { canonicalJson } from "./canonical";
 import { encodeState, opProblem, vectorOf } from "./codec";
@@ -308,4 +309,46 @@ export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
   }
   expect(opProblem(op)).toBeNull();
   return op;
+}
+
+/** One of the 17 writes through `b`, chosen and filled in by `rng`, in the
+ * first three months of 2026, against a random existing row (or one that
+ * isn't there). A refusal the store would answer with (a 4xx: a locked
+ * month, a missing row) is part of the mix and is swallowed; anything else
+ * is thrown. */
+export async function randomWrite(rng: Rng, b: LedgerBackend): Promise<void> {
+  const month = 1 + rng.int(3);
+  const amount = () => rng.pick([5, 12.5, 40, 99.99]);
+  const row = async (list: Promise<{ row: number }[]>) => {
+    const rows = await list;
+    return rows.length === 0 || rng.chance(0.05) ? 999_999 : rng.pick(rows).row;
+  };
+  const entry = () => ({ amount: amount(), remarks: rng.pick(["Bus", "Tea", "Rent", "Lunch"]), category: rng.pick(["food", "transportation", "bills"]), isCard: rng.chance(0.3) });
+  const emi = () => ({ cardOrBank: rng.pick(["Car Loan", "Card A"]), emiAmount: 1000, dueDay: 1 + rng.int(28), totalAmount: 12000, remarks: rng.pick(["", "Fixed"]), remainingAsOf: rng.pick([9000, 6000]), interestRate: rng.pick([null, 9.5]), foreclosureCharge: null });
+  const sub = () => ({ service: rng.pick(["Music", "Video"]), amount: amount(), duration: rng.pick(["Monthly", "Yearly"] as const), expiryAnchor: "2026-05-20", cardOrBank: "Card A" });
+  try {
+    switch (rng.int(18)) {
+      case 0:
+      case 1: await b.addEntry({ year: 2026, month, ...entry() }); break;
+      case 2: await b.updateEntry(2026, month, await row(b.getMonth(2026, month)), entry()); break;
+      case 3: await b.deleteEntry(2026, month, await row(b.getMonth(2026, month))); break;
+      case 4: await b.moveEntry(2026, month, await row(b.getMonth(2026, month)), await row(b.getMonth(2026, month))); break;
+      case 5: await b.setMonthLock(2026, month, rng.chance(0.2)); break;
+      case 6: await b.setMonthIncome(2026, month, { salary: rng.pick([null, 50000, 52000]), otherIncome: rng.pick([null, 10]), savings: rng.chance(0.5) ? [] : [{ name: "Fund A", amount: amount() }] }); break;
+      case 7: await b.addDebt({ name: rng.pick(["Sam", "Alex"]), amount: amount() }); break;
+      case 8: await b.updateDebt(await row(b.getDebts()), { name: rng.pick(["Sam", "Alex"]), amount: amount() }); break;
+      case 9: await b.deleteDebt(await row(b.getDebts())); break;
+      case 10: await b.setMonthBills(2026, month, rng.pick([["Card A"], ["Card A", "Card B"], []]).map((name) => ({ name, due: amount(), paid: rng.pick([0, 10]), dueDate: rng.pick([null, "2026-06-25"]), settled: rng.chance(0.3) }))); break;
+      case 11: await b.addEmi(emi()); break;
+      case 12: await b.updateEmi(await row(b.getEmis()), emi()); break;
+      case 13: await b.payEmi(await row(b.getEmis()), rng.pick([500, 1000])); break;
+      case 14: await b.deleteEmi(await row(b.getEmis())); break;
+      case 15: await b.addSubscription(sub()); break;
+      case 16: await b.updateSubscription(await row(b.getSubscriptions()), sub()); break;
+      default: await b.deleteSubscription(await row(b.getSubscriptions()));
+    }
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === undefined || status >= 500) throw err;
+  }
 }
