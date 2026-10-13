@@ -48,8 +48,10 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 //     discarded or skipped (with its reason) by that device in the winner's
 //     line, item by item, or was replaced by its own device's restore (AC6,
 //     AC13, D18);
-//   - nothing invented: every snapshot write and every offered left-behind
-//     change is one an op or a genesis made;
+//   - nothing invented: every snapshot write is one an op or a genesis
+//     made, and every offered left-behind change is a write by that group's
+//     device in that epoch above the cut the winner's line left it behind
+//     with (nothing the winner already holds is offered);
 //   - no file written but a device's own (AC10), nothing in plaintext
 //     (AC15), no (device, L) published twice with two contents except by a
 //     cloned id that then rehomed, and an idle round of one request and no
@@ -901,14 +903,21 @@ async function check(h: Harness, where: string): Promise<void> {
       const story = slots.map((s) => `${s.name}: epochs ${s.epochs.join(">")}, restored ${JSON.stringify(s.restored)}, resolved [${[...s.resolved].join(",")}], discardedAt [${s.discardedAt.join(",")}], groups ${JSON.stringify(s.engine.leftBehind().map((g) => ({ id: g.id, own: g.own, items: [...offered(g)] })))}, ids ${JSON.stringify([...(slotIds.get(s) ?? new Map())])}`).join("; ") + ` ALL: ${h.slots.map((s) => `${s.name} epochs ${s.epochs.join(">")} restored ${JSON.stringify(s.restored)} resolved [${[...s.resolved].join(",")}] discardedAt [${s.discardedAt.join(",")}] ids ${JSON.stringify([...(slotIds.get(s) ?? new Map())])}`).join(" / ")}`;
       expect(settled, `${where}: ${ob.device}'s ${text} in ${epoch} (L ${ob.L}, cut ${cut[ob.device] ?? 0}) was left behind and is offered nowhere. ${story}. Geneses: ${[...history.geneses.values()].map((g) => `${g.epoch} based on ${JSON.stringify(g.basedOn)}`).join("; ")}`).toBe(true);
     }
-    // Nothing invented in what is offered.
+    // Nothing invented in what is offered, and nothing offered that the
+    // winner's line holds: each item is a write that group's device made
+    // in that epoch above the cut the winner's line left it behind with.
+    const above = (device: string, L: string) => Number(L) > (cut[device] ?? 0);
+    const parsed = [...writes].map((w) => w.split(" "));
     for (const slot of h.slots) {
       for (const g of slot.engine.leftBehind().filter((x) => x.epoch === epoch)) {
         for (const item of offered(g)) {
           const [kind, key, ...rest] = item.split(" ");
           const value = rest.join(" ");
-          const made = kind === "del" ? [...writes].some((w) => w.startsWith(`del ${key} `) && w.endsWith(` ${g.device}`)) : [...writes].some((w) => w.startsWith(`${key} `) && w.includes(` ${g.device} `) && (key.endsWith("/_c") || w.endsWith(` ${value}`)));
-          expect(made, `${where}: ${slot.name} offers ${item} from ${g.device} in ${epoch}, which no op made`).toBe(true);
+          const made =
+            kind === "del"
+              ? parsed.some(([k, rk, L, by]) => k === "del" && rk === key && by === g.device && above(by, L))
+              : parsed.some(([k, L, d, ...v]) => k === key && d === g.device && above(d, L) && (key.endsWith("/_c") || v.join(" ") === value));
+          expect(made, `${where}: ${slot.name} offers ${item} from ${g.device} in ${epoch} (cut ${cut[g.device] ?? 0}), which no op made above the cut`).toBe(true);
         }
       }
     }
