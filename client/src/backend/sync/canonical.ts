@@ -20,5 +20,38 @@ export function canonicalJson(value: unknown): string {
 export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  return canonicalJson(a) === canonicalJson(b);
+  return surelySame(a, b) || canonicalJson(a) === canonicalJson(b);
+}
+
+const isEnumerable = Object.prototype.propertyIsEnumerable;
+
+/** Whether `a` and `b` certainly have the same canonical text, found by
+ * walking them instead of building it, which equal values (the common case)
+ * make cheap. True only when they do; false means not shown, and the texts
+ * decide. It reads values as canonicalJson does: strings, booleans, numbers,
+ * null and undefined as themselves (=== proves equal text), arrays item by
+ * item (a hole only matches a hole), other objects by their own enumerable
+ * keys with undefined members left out. Anything else is left to the text,
+ * so what canonicalJson throws on still throws. */
+function surelySame(a: unknown, b: unknown): boolean {
+  const type = typeof a;
+  if (type === "string" || type === "boolean" || type === "number" || a === null || a === undefined) return a === b;
+  if (type !== "object" || typeof b !== "object" || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (i in a !== i in b || !surelySame(a[i], b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let members = 0;
+  for (const key of Object.keys(x)) {
+    const value = x[key];
+    if (value === undefined) continue;
+    members++;
+    if (!isEnumerable.call(y, key) || !surelySame(value, y[key])) return false;
+  }
+  for (const key of Object.keys(y)) if (y[key] !== undefined) members--;
+  return members === 0;
 }

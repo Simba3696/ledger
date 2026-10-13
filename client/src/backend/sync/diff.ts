@@ -45,6 +45,8 @@ const DOCUMENT_KEYS = [
   "tombstones",
 ];
 const STAMP_KEYS = ["id", "updatedAt", "updatedBy"];
+/** Every key a record of each collection has. */
+const RECORD_KEYS = Object.fromEntries((Object.keys(FIELDS) as Coll[]).map((coll) => [coll, [...STAMP_KEYS, ...FIELDS[coll]]])) as Record<Coll, string[]>;
 
 type AnyRecord = { id: string } & Record<string, unknown>;
 
@@ -58,12 +60,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function hasExactKeys(value: unknown, keys: readonly string[]): boolean {
   if (!isPlainObject(value)) return false;
-  const own = Object.keys(value);
-  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  if (Object.keys(value).length !== keys.length) return false;
+  for (const key of keys) if (!Object.hasOwn(value, key)) return false;
+  return true;
 }
 
 function idsOf(records: readonly AnyRecord[] | undefined): string {
   return (records ?? []).map((r) => r.id).join(",");
+}
+
+/** idsOf(a) === idsOf(b), without joining the ids when they are equal one
+ * by one (the common case: every month a write doesn't touch). */
+function sameIds(a: readonly AnyRecord[] | undefined, b: readonly AnyRecord[] | undefined): boolean {
+  const x = a ?? [];
+  const y = b ?? [];
+  if (x.length === y.length) {
+    let i = 0;
+    while (i < x.length && x[i].id === y[i].id) i++;
+    if (i === x.length) return true;
+  }
+  return idsOf(x) === idsOf(y);
+}
+
+/** Whether every field of `coll` is the same in both records. */
+function sameFields(coll: Coll, a: AnyRecord, b: AnyRecord): boolean {
+  for (const field of FIELDS[coll]) {
+    const x = a[field];
+    const y = b[field];
+    if (x !== y && !sameValue(x, y)) return false;
+  }
+  return true;
 }
 
 /** A state with one op laid over it, read without changing either. */
@@ -158,8 +184,9 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
     dirty.add(unit);
   };
   const update = (coll: Coll, before: AnyRecord, after: AnyRecord, unit: string) => {
+    // Most records of a write are unchanged: those cost one pass.
+    if (sameFields(coll, before, after)) return;
     const differs = new Set(FIELDS[coll].filter((field) => !sameValue(before[field], after[field])));
-    if (differs.size === 0) return;
     // A group that changed at all is set whole (TOGETHER).
     for (const group of TOGETHER[coll]) if (group.some((field) => differs.has(field))) for (const field of group) differs.add(field);
     const changed = FIELDS[coll].filter((field) => differs.has(field));
@@ -170,38 +197,52 @@ export function diffDocuments(state: SyncState, current: LedgerDocument, next: L
     dirty.add(unit);
   };
   const checkRecord = (coll: Coll, record: unknown): AnyRecord => {
-    if (!hasExactKeys(record, [...STAMP_KEYS, ...FIELDS[coll]])) fail(`a ${COLLECTIONS[coll]} record has the wrong keys`);
+    if (!hasExactKeys(record, RECORD_KEYS[coll])) fail(`a ${COLLECTIONS[coll]} record has the wrong keys`);
     return record as AnyRecord;
   };
 
   // Expenses: matched by id across months; an expense never changes month.
+  // A 10-year ledger holds about 12,000, all compared on every write, so
+  // this keeps to flat arrays and maps of indices.
   if (!isPlainObject(next.expenses)) fail("expenses is not a month map");
-  const before = new Map<string, { month: string; record: AnyRecord }>();
+  const beforeAt = new Map<string, number>();
+  const beforeMonths: string[] = [];
+  const beforeRecords: AnyRecord[] = [];
   for (const [month, records] of Object.entries(current.expenses)) {
-    for (const record of records) before.set(record.id, { month, record: record as unknown as AnyRecord });
+    for (const record of records) {
+      beforeAt.set(record.id, beforeRecords.length);
+      beforeMonths.push(month);
+      beforeRecords.push(record as unknown as AnyRecord);
+    }
   }
-  const after = new Map<string, { month: string; record: AnyRecord }>();
+  const afterIds = new Set<string>();
+  const afterMonths: string[] = [];
+  const afterRecords: AnyRecord[] = [];
   for (const [month, records] of Object.entries(next.expenses)) {
     if (!Array.isArray(records)) fail("an expense month is not a list");
     for (const value of records) {
       const record = checkRecord("e", value);
-      if (after.has(record.id)) fail(`expense ${record.id} appears twice`);
-      after.set(record.id, { month, record });
+      if (afterIds.has(record.id)) fail(`expense ${record.id} appears twice`);
+      afterIds.add(record.id);
+      afterMonths.push(month);
+      afterRecords.push(record);
     }
     const currentMonth = current.expenses[month] as unknown as AnyRecord[] | undefined;
-    if (idsOf(currentMonth) !== idsOf(records as unknown as AnyRecord[]) || records.length === 0) dirty.add(`e:${month}`);
+    if (!sameIds(currentMonth, records as unknown as AnyRecord[]) || records.length === 0) dirty.add(`e:${month}`);
   }
   for (const month of Object.keys(current.expenses)) if (!Object.hasOwn(next.expenses, month)) dirty.add(`e:${month}`);
-  for (const [id, { month, record }] of after) {
-    const old = before.get(id);
-    if (!old) create("e", record, { m: month }, `e:${month}`);
-    else if (old.month !== month) fail(`expense ${id} moved from ${old.month} to ${month}`);
-    else update("e", old.record, record, `e:${month}`);
+  for (let i = 0; i < afterRecords.length; i++) {
+    const record = afterRecords[i];
+    const month = afterMonths[i];
+    const old = beforeAt.get(record.id);
+    if (old === undefined) create("e", record, { m: month }, `e:${month}`);
+    else if (beforeMonths[old] !== month) fail(`expense ${record.id} moved from ${beforeMonths[old]} to ${month}`);
+    else update("e", beforeRecords[old], record, `e:${month}`);
   }
-  for (const [id, { month }] of before) {
-    if (after.has(id)) continue;
+  for (const [id, at] of beforeAt) {
+    if (afterIds.has(id)) continue;
     del.push(recordKey("e", id));
-    dirty.add(`e:${month}`);
+    dirty.add(`e:${beforeMonths[at]}`);
   }
 
   // Debts, EMIs and subscriptions: ordered by their create marker, so a new

@@ -272,6 +272,67 @@ describe("fail closed", () => {
   });
 });
 
+describe("expenses across many months (stage 8c: every month is compared on every write)", () => {
+  /** A replica with three entries in each of six months. */
+  async function months(): Promise<Replica> {
+    const r = replica();
+    for (let month = 1; month <= 6; month++) {
+      for (const remarks of ["Bus", "Tea", "Rent"]) await r.backend.addEntry({ ...ENTRY, month, remarks });
+    }
+    return r;
+  }
+
+  it("one write touching three months: creates and edits in the next document's order, then deletes in the current one's", async () => {
+    const r = await months();
+    const next = structuredClone(r.doc);
+    const [feb, apr, jun] = [next.expenses["2026-02"], next.expenses["2026-04"], next.expenses["2026-06"]];
+    const gone = apr[1].id;
+    apr.splice(1, 1);
+    jun[2] = { ...jun[2], amount: "41.00" };
+    feb[0] = { ...feb[0], remarks: "Taxi" };
+    const added = { ...jun[0], id: "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a07", sortKey: "a5" };
+    jun.push(added);
+    const body = diffDocuments(r.state, r.doc, next, { L: 99, device: A });
+    expect(body?.set.map(([key]) => key)).toEqual([
+      `e/${feb[0].id}/remarks`,
+      `e/${feb[0].id}/_s`,
+      `e/${jun[2].id}/amount`,
+      `e/${jun[2].id}/_s`,
+      `e/${added.id}/_c`,
+      `e/${added.id}/sortKey`,
+      `e/${added.id}/amount`,
+      `e/${added.id}/remarks`,
+      `e/${added.id}/category`,
+      `e/${added.id}/cardNote`,
+      `e/${added.id}/_s`,
+    ]);
+    expect(body?.del).toEqual([`e/${gone}`]);
+  });
+
+  const failures: [string, (doc: LedgerDocument) => void, RegExp][] = [
+    ["moved to a month that holds others", (doc) => doc.expenses["2026-05"].push(doc.expenses["2026-02"].splice(1, 1)[0]), /moved from 2026-02 to 2026-05/],
+    ["listed in a second month too", (doc) => doc.expenses["2026-05"].push(doc.expenses["2026-02"][1]), /appears twice/],
+    ["listed twice, the second time with the wrong keys", (doc) => doc.expenses["2026-05"].push({ ...doc.expenses["2026-02"][1], note: "x" } as never), /wrong keys/],
+    ["a later month's record with the wrong keys, before an earlier move", (doc) => {
+      doc.expenses["2026-01"].push(doc.expenses["2026-02"].pop()!);
+      (doc.expenses["2026-06"][0] as unknown as Record<string, unknown>).note = "x";
+    }, /wrong keys/],
+    // The month's ids, joined with commas, read the same as before.
+    ["whose id holds the month's other ids, comma-joined", (doc) => {
+      const march = doc.expenses["2026-03"];
+      doc.expenses["2026-03"] = [{ ...march[0], id: march.map((e) => e.id).join(",") }];
+    }, /unknown register/],
+  ];
+  for (const [name, change, reason] of failures) {
+    it(`rejects an expense ${name}, naming why`, async () => {
+      const r = await months();
+      const next = structuredClone(r.doc);
+      change(next);
+      expect(() => diffDocuments(r.state, r.doc, next, { L: 99, device: A })).toThrow(reason);
+    });
+  }
+});
+
 describe("re-apply (section 9.4)", () => {
   // Re-apply builds one op through SyncedHost.amend: each list record it
   // re-creates keeps its old id and gets a fresh _c for the op's own L
