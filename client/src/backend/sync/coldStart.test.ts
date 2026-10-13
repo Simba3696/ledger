@@ -51,10 +51,13 @@ class Network {
   inFlight = 0;
   peak = 0;
   #blobs = 0;
+  readonly delay: (kind: string, nth: number) => number;
 
   /** `delay(kind, nth)`: the milliseconds before a request is sent, where
    * `nth` counts this device's blob reads from 0. */
-  constructor(readonly delay: (kind: string, nth: number) => number) {}
+  constructor(delay: (kind: string, nth: number) => number) {
+    this.delay = delay;
+  }
 
   wrap = (inner: typeof fetch): typeof fetch => {
     return async (input, init) => {
@@ -106,15 +109,16 @@ async function ledgerOfThree(): Promise<Device[]> {
   return devices;
 }
 
-/** A new device joining as #8 does, over `net`. */
-async function coldStart(net: Network): Promise<Device> {
+/** A new device joining as #8 does, over `net`; `handOver` passes the
+ * genesis it opened on to initialize. */
+async function coldStart(net: Network, { handOver = true }: { handOver?: boolean } = {}): Promise<Device> {
   const client = createGitHubClient({ owner: "alex", repo: "ledger-data", token: "github_pat_sam", fetch: net.wrap(w.fake.fetchAs("dnone")) });
   await client.verifyRepo();
   const found = await findLedger({ client, branch: "main" });
   if (found.kind !== "ledger") throw new Error(`no ledger found: ${found.kind}`);
   const opened = await openGenesis(found, w.key);
   if (!opened.ok) throw new Error(`the genesis can't be opened: ${opened.problem}`);
-  return open({ login: "sam", init: { epoch: opened.epoch, state: opened.state }, wrapFetch: net.wrap });
+  return open({ login: "sam", init: { epoch: opened.epoch, state: opened.state, ...(handOver ? { sha: opened.sha } : {}) }, wrapFetch: net.wrap });
 }
 
 /** What a cold start joined and recorded, without the device's own id. */
@@ -123,7 +127,7 @@ function outcome(d: Device) {
   return {
     doc: d.engine.current(),
     status: d.engine.getState().status,
-    joined: meta.joined,
+    joined: meta.joined as Record<string, string>,
     logReach: meta.logReach,
     snapReach: meta.snapReach,
     seen: meta.seen,
@@ -151,5 +155,21 @@ describe("cold start (section 8.3)", () => {
     expect(a.refused.some((line) => line.includes(Y) && line.includes("(needsUpdate)"))).toBe(true);
     for (const d of devices) expect(Object.keys(a.joined)).toContain(`${EPOCH}.${d.engine.deviceId}.log.enc`);
     expect(w.fake.violations).toEqual([]);
+  }, 30_000);
+
+  it("reads the genesis once: the join hands the version it opened to initialize", async () => {
+    await ledgerOfThree();
+    const genesisSha = w.fake.file(FULL, repoPath({ kind: "genesis", epoch: EPOCH }))!.sha;
+    const before = new Network(() => 1);
+    const without = outcome(await coldStart(before, { handOver: false }));
+    const after = new Network(() => 1);
+    const handed = outcome(await coldStart(after));
+    expect(before.reads(genesisSha)).toBe(2);
+    expect(after.reads(genesisSha)).toBe(1);
+    expect(after.count("blob")).toBe(before.count("blob") - 1);
+    expect(after.sent.length).toBe(before.sent.length - 1);
+    // Nothing else changes: the genesis is recorded as joined either way.
+    expect(handed).toEqual(without);
+    expect(handed.joined).toHaveProperty(`${EPOCH}.genesis.enc`, genesisSha);
   }, 30_000);
 });

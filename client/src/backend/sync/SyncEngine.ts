@@ -899,8 +899,12 @@ export class SyncEngine {
 
   /** A first start: saves `state` (a genesis or a cold join of the epoch)
    * as this device's base under a new device id. Refused unless nothing is
-   * saved, and the transaction itself refuses if anything was saved since. */
-  initialize(epochKey: string, state: SyncState): Promise<void> {
+   * saved, and the transaction itself refuses if anything was saved since.
+   * `genesis` is the epoch's genesis the caller has just opened (#8's join:
+   * openGenesis), by its blob sha and its state, which `state` holds: the
+   * first cycle then doesn't read that version again. Without it, the first
+   * cycle reads the listed genesis. */
+  initialize(epochKey: string, state: SyncState, genesis?: { sha: string; state: SyncState }): Promise<void> {
     if (!this.#needsInit || this.#stopped || this.#superseded || !this.#lockHeld) return Promise.reject(new Error("This device's sync state is not empty, or this tab can't write it"));
     if (!isEpochKey(epochKey)) return Promise.reject(new Error(`Not an epoch key: ${epochKey}`));
     return this.#enqueue(async () => {
@@ -922,7 +926,7 @@ export class SyncEngine {
         ownSnapSha: null,
         lastSentSnapSha: null,
         lastSentSnapThrough: 0,
-        joined: {},
+        joined: genesis ? { [repoFileName({ kind: "genesis", epoch: epochKey })]: genesis.sha } : {},
         seen: vectorOf(state.seen),
         logReach: {},
         snapReach: {},
@@ -933,6 +937,9 @@ export class SyncEngine {
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
       this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), notices: new Map(), unreadNotices: new Set(), old: null }, true);
+      // What a snapshot is checked against (#epochGenesis), as if the cycle
+      // had read it.
+      if (genesis) this.#genesis = { name: repoFileName({ kind: "genesis", epoch: epochKey }), sha: genesis.sha, state: cloneState(genesis.state) };
     }).then(() => this.#begin());
   }
 

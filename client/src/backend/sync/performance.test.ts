@@ -297,7 +297,7 @@ describe.runIf(testEnv("LEDGER_PERF") !== undefined)("AC7 performance run (LEDGE
       if (!opened.ok) throw new Error(`the genesis can't be opened: ${opened.problem}`);
       const join8 = meter.countsSince(from);
       const coldFrom = meter.records.length;
-      const cold = await device(w, { login: "sam", init: { epoch: opened.epoch, state: opened.state }, wrapFetch: meter.wrap(() => "cold") });
+      const cold = await device(w, { login: "sam", init: { epoch: opened.epoch, state: opened.state, sha: opened.sha }, wrapFetch: meter.wrap(() => "cold") });
       const coldMs = performance.now() - t0;
       expectConverged(cold, ...devices);
       const engineCounts = meter.countsSince(coldFrom);

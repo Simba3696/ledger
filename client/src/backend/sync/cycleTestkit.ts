@@ -208,8 +208,9 @@ export type DeviceOptions = Partial<SyncEngineOptions> & {
   /** Don't settle the first cycle. */
   noSettle?: boolean;
   /** The epoch and state a first start begins from (default: the world's
-   * genesis), as #8 join finds them (findLedger, openGenesis). */
-  init?: { epoch: string; state: SyncState };
+   * genesis), as #8 join finds them (findLedger, openGenesis), and the
+   * genesis's blob sha when `state` is that genesis, opened already. */
+  init?: { epoch: string; state: SyncState; sha?: string };
 };
 
 /** An engine as the app runs one, over the world's repo: started (and on a
@@ -239,7 +240,7 @@ export async function device(w: World, { store = new MemoryStore(), login = "ale
     ...options,
   });
   await engine.start();
-  if (engine.getState().needsInit) await engine.initialize(init?.epoch ?? EPOCH, init?.state ?? genesisState(w.doc));
+  if (engine.getState().needsInit) await engine.initialize(init?.epoch ?? EPOCH, init?.state ?? genesisState(w.doc), init?.sha !== undefined ? { sha: init.sha, state: init.state } : undefined);
   if (!noSettle) await engine.sync();
   const host = new SyncedHost(engine);
   const backend = new DocumentBackend({ host, now: options.now ?? (() => w.clock.wall), actor: login, newId: () => crypto.randomUUID() });
