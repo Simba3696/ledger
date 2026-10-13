@@ -592,6 +592,23 @@ async function restoreBy(h: Harness, slots: Slot[], rng: Rng): Promise<void> {
     // that finds it landed rejoins (cycle()).
     if (result.kind === "restored" || (result.kind === "replaced" && !result.damagedFile)) await rejoin(h, slot);
   });
+  // A third device often syncs while the two race, so it may switch to the
+  // one that lands first and lose, and then often goes offline: it stays
+  // on that losing epoch while a later restore is based on the winner,
+  // and so skips an epoch when it comes back (sections 9.3 and 9.4).
+  const others = h.slots.filter((s) => !slots.includes(s));
+  if (slots.length > 1 && others.length > 0 && rng.chance(0.6)) {
+    const watcher = rng.pick(others);
+    const wait = rng.int(12);
+    const away = rng.chance(0.6);
+    runs.push(
+      (async () => {
+        await turns(wait);
+        await cycle(h, watcher);
+        if (away) watcher.offline = true;
+      })(),
+    );
+  }
   await Promise.all(runs);
 }
 
