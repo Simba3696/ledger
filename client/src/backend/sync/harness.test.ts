@@ -28,8 +28,9 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 // responses; 409, 422, 5xx, 401 and rate-limit answers; stale reads and cut
 // listings; reloads at rest, mid-commit and mid-cycle; device-store
 // failures; compaction and snapshots; a stale-UI fence that lags; a cloned
-// profile (a fork, then a rehome); a device joining late; restores, racing
-// restores, re-apply and discard.
+// profile (a fork, then a rehome); a device joining late; restores (often
+// of a backup taken while a device had changes not yet synced), racing
+// restores (often followed by another), re-apply and discard.
 //
 // After quiescence (faults healed, every device cycled until two rounds
 // change nothing) it checks against oracle.ts, an implementation written
@@ -567,7 +568,9 @@ async function restoreBy(h: Harness, slots: Slot[], rng: Rng): Promise<void> {
     noteEpoch(slot);
     const from = { epoch: slot.engine.epochKey!, device: slot.engine.deviceId! };
     const discard = rng.chance(0.6);
-    const backup = structuredClone(rng.pick(h.backups));
+    // Often the latest backup: one taken while a device still had changes
+    // it hadn't synced, whose restore leaves the most behind (stage 8a).
+    const backup = structuredClone(rng.chance(0.5) ? h.backups.at(-1)! : rng.pick(h.backups));
     let result: Awaited<ReturnType<SyncEngine["restore"]>>;
     try {
       result = await slot.engine.restore(backup, { discardUnsynced: discard });
@@ -621,7 +624,14 @@ async function step(h: Harness, rng: Rng, events: { restoreAt: number[]; forkAt:
     const racing = rng.chance(0.4) && h.slots.length > 1;
     const restorers = racing ? rng.shuffle(h.slots).slice(0, 2) : [slot];
     await restoreBy(h, restorers, rng);
+    // A racing restore is often followed by another soon after, while
+    // devices are still switching between the two.
+    if (racing && rng.chance(0.5)) events.restoreAt.push(index + 1 + rng.int(3));
   }
+  // A backup taken while this device has changes not yet synced, more
+  // often than at rest: restoring one is what leaves those changes, and
+  // later ones, behind on other paths (stage 8a review, E1).
+  if (slot.engine.getState().pendingCount > 0 && rng.chance(0.15)) h.backups.push(structuredClone(slot.engine.current()));
   if (index === events.forkAt) await fork(h, slot, rng);
   if (index === events.joinAt) await join(h, rng);
   // What a person does with what the list shows: often, once there is any.
