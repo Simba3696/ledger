@@ -89,7 +89,7 @@ describe("oracle: hand-worked cases", () => {
     expect(winnerOf(["e000002-0000000b"])).toBeNull();
   });
 
-  it("leaves behind each device's winning writes above the cut, never stamps, never a record created and deleted above it", () => {
+  it("leaves behind each device's winning writes above the cut, never stamps, and of a record created and deleted above it only the delete", () => {
     const doc = genesis();
     const created = "00000000-0000-4000-8000-000000000004";
     const ops: OracleOp[] = [
@@ -99,12 +99,19 @@ describe("oracle: hand-worked cases", () => {
       { device: B, op: op(5, [], [`e/${created}`]) },
       { device: B, op: op(6, [["lk/2026-05", true]]) },
     ];
+    // A backup may hold the record (any document, one exported between the
+    // create and the delete included), so its delete is owed; a restored
+    // ledger without it already holds the delete.
     const left = obligations("e000001-00000001", doc, ops, { [B]: 3 });
-    expect(left.map((o) => `${o.device} ${o.kind} ${o.key}`).sort()).toEqual([`${B} set lk/2026-05`]);
+    expect(left.map((o) => `${o.device} ${o.kind} ${o.key}`).sort()).toEqual([`${B} del e/${created}`, `${B} set lk/2026-05`]);
     const all = obligations("e000001-00000001", doc, ops, {});
-    expect(all.map((o) => `${o.device} ${o.kind} ${o.key}`).sort()).toEqual([`${B} set e/${ID}/amount`, `${B} set lk/2026-05`].sort());
+    expect(all.map((o) => `${o.device} ${o.kind} ${o.key}`).sort()).toEqual([`${B} del e/${created}`, `${B} set e/${ID}/amount`, `${B} set lk/2026-05`].sort());
     expect(holds(doc, { epoch: "e", device: B, L: 6, kind: "set", key: "lk/2026-05", value: false })).toBe(true);
-    expect(holds(doc, all[0])).toBe(false);
+    expect(holds(doc, all.find((o) => o.key === `e/${ID}/amount`)!)).toBe(false);
+    const deletion = all.find((o) => o.kind === "del")!;
+    expect(holds(doc, deletion)).toBe(true);
+    const between = documentOf(fold(doc, ops.slice(0, 3)));
+    expect(holds(between, deletion)).toBe(false);
   });
 });
 

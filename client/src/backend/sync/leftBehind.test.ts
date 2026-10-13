@@ -85,7 +85,7 @@ describe("left behind (section 9.3)", () => {
     expect(leftBehind(b.state, cut, into(doc), { epoch: OLD, me: B }).map((g) => [g.device, g.own])).toEqual([[B, true]]);
   });
 
-  it("leaves nothing of a record created and deleted above the cut, and only the delete of a record deleted in the old epoch", async () => {
+  it("leaves nothing of a record created and deleted above the cut that the restored ledger lacks, and only the delete of a record deleted in the old epoch", async () => {
     const doc = await backup();
     const { a, b, sync } = pair(doc);
     await b.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
@@ -98,6 +98,20 @@ describe("left behind (section 9.3)", () => {
     const groups = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
     expect(groups.map((g) => g.device)).toEqual([B]);
     expect(leftBehindItems(groups[0])).toMatchObject([{ kind: "delete", coll: "e", record: { remarks: "Groceries" } }]);
+  });
+
+  it("leaves the delete of a record created and deleted above the cut when the restored ledger holds it (a backup taken in between)", async () => {
+    const doc = await backup();
+    const { a } = pair(doc);
+    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
+    // The backup is any document: here, one exported after Taxi was added.
+    const between = structuredClone(a.doc);
+    await a.backend.deleteEntry(2026, 5, await rowOf(a, "Taxi"));
+    const groups = leftBehind(a.state, {}, into(between), { epoch: OLD, me: A });
+    expect(groups.map((g) => [g.device, g.own])).toEqual([[A, true]]);
+    expect(leftBehindItems(groups[0])).toMatchObject([{ kind: "delete", coll: "e", record: { remarks: "Taxi" } }]);
+    // The same delete against a backup without Taxi has nothing to delete.
+    expect(leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A })).toEqual([]);
   });
 
   it("leaves nothing the restored ledger already holds: an equal value, a create it has, a delete of a record it lacks", async () => {

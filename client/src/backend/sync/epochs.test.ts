@@ -451,6 +451,32 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     await b.engine.reapply(group.id);
     expect(remarks(b)).toEqual([]);
   });
+
+  it("a delete of a record created and deleted above the cut is offered when the backup holds the record (stage 8a, E1)", async () => {
+    const a = await open({ login: "alex" });
+    const r = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a, r);
+    // Alex, before syncing, adds Taxi, exports a backup, then deletes Taxi.
+    await a.backend.addEntry(entry("Taxi"));
+    const backup = structuredClone(a.engine.current());
+    await a.backend.deleteEntry(2026, 5, await row(a, "Taxi"));
+    expect(remarks(a)).toEqual(["Groceries"]);
+    // Sam restores Alex's backup before Alex's changes reach GitHub.
+    expect((await r.engine.restore(backup)).kind).toBe("restored");
+    const r2 = await reload(r);
+    await cycle(w, a);
+    await quiesce(w, a, r2);
+    // The restore brought Taxi back; Alex's delete of it is Alex's own
+    // group, never silently undone.
+    expect(remarks(a).sort()).toEqual(["Groceries", "Taxi"]);
+    const [group] = a.engine.leftBehind();
+    expect(group).toMatchObject({ own: true, items: [{ kind: "delete", coll: "e", record: { remarks: "Taxi" } }] });
+    await a.engine.reapply(group.id);
+    await quiesce(w, a, r2);
+    for (const d of [a, r2]) expect(remarks(d)).toEqual(["Groceries"]);
+    expectConverged(a, r2);
+  });
 });
 
 describe("re-apply and discard (section 9.4)", () => {
