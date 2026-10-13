@@ -597,6 +597,8 @@ interface Loaded {
   tailCount: number;
   leftBehind: Map<string, LeftBehindGroup>;
   notices: Map<string, StoredNotice>;
+  /** Keys of notice records this build can't read: kept as they are (D31). */
+  unreadNotices: Set<string>;
   old: string | null;
 }
 
@@ -690,6 +692,10 @@ export class SyncEngine {
   #deviceSaveFailed = false;
   /** Notices to show (section 4.2), by key, as stored. */
   #notices = new Map<string, StoredNotice>();
+  /** Keys of stored notice records this build can't read (owner decision
+   * D31): left in the store byte for byte, out of memory and the UI, and
+   * never written over by a notice told under the same key. */
+  #unreadNotices = new Set<string>();
   /** The greatest `seq` stored: the next notice is numbered after it. */
   #noticeSeq = 0;
   /** Bumped whenever the notices or the document change: what an action
@@ -920,7 +926,7 @@ export class SyncEngine {
       };
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
-      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), notices: new Map(), old: null }, true);
+      this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), notices: new Map(), unreadNotices: new Set(), old: null }, true);
     }).then(() => this.#begin());
   }
 
@@ -2679,7 +2685,7 @@ export class SyncEngine {
     const at = this.#now();
     const fresh: string[] = [];
     for (const [key, body] of added) {
-      if (next.has(key)) continue;
+      if (next.has(key) || this.#unreadNotices.has(key)) continue;
       next.set(key, { ...body, seq: ++seq, at } as StoredNotice);
       fresh.push(key);
     }
@@ -3305,6 +3311,7 @@ export class SyncEngine {
     this.#lastAllocated = 0;
     this.#leftBehind = loaded.leftBehind;
     this.#oldText = loaded.old;
+    this.#unreadNotices = loaded.unreadNotices;
     this.#keepNotices(loaded.notices);
     // Counted only: hidden groups are dropped by the next refresh, once the
     // load has finished.
@@ -3318,6 +3325,7 @@ export class SyncEngine {
     this.#meta = this.#state = this.#doc = null;
     this.#leftBehind = new Map();
     this.#oldText = null;
+    this.#unreadNotices = new Set();
     this.#keepNotices(new Map());
     this.#refreshLeftBehind(false);
     this.#needsInit = false;
@@ -3381,11 +3389,24 @@ export class SyncEngine {
         if (group === null || group.marker !== key) return malformed("a group of changes left behind is malformed");
         leftBehind.set(key, group);
       }
-      // Notices too: one that isn't one this build wrote is malformed state.
+      // A notice this build can't read (a newer build's, or damaged) holds
+      // no data: it is left in the store as it is, out of memory and the
+      // UI, and the device loads (owner decision D31). A left-behind group
+      // above holds changes, so it keeps the strict rule.
       const notices = new Map<string, StoredNotice>();
+      const unreadNotices = new Set<string>();
       for (const [key, text] of records.notices) {
-        const notice = checkNotice(await this.#open(text));
-        if (notice === null) return malformed("a notice is malformed");
+        let notice: StoredNotice | null = null;
+        try {
+          notice = checkNotice(await this.#open(text));
+        } catch (err) {
+          if (!(err instanceof Undecryptable)) throw err;
+        }
+        if (notice === null) {
+          this.#log(`a stored notice can't be read, so it is kept as it is and not shown: ${key}`);
+          unreadNotices.add(key);
+          continue;
+        }
         notices.set(key, notice);
       }
       // The previous epochs' states are read now, like the groups: one that
@@ -3395,7 +3416,7 @@ export class SyncEngine {
         const old = decodeOld(await this.#open(records.old));
         if (typeof old === "string") return malformed(old);
       }
-      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, notices, old: records.old ?? null };
+      return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, notices, unreadNotices, old: records.old ?? null };
     } catch (err) {
       if (err instanceof Undecryptable) {
         this.#log("the saved sync state doesn't decrypt with this device's key", err);

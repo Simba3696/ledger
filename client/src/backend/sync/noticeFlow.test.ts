@@ -5,7 +5,7 @@ import { EPOCH, MemoryStore, device, edits, entry, expectConverged, quiesce, rem
 import { testKey } from "./localTestkit";
 import { ADDED_BACK } from "./noticeActions";
 import { NOTICE_CAP } from "./notices";
-import { unseal } from "./records";
+import { seal, unseal } from "./records";
 import { genesisState, type Op } from "./state";
 import { NOTICE_GONE, SyncEngine } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
@@ -372,15 +372,102 @@ describe("the cap and the order (section 4.2)", () => {
   });
 });
 
-describe("a stored notice this build can't read", () => {
-  it("leaves the device unreadable, its records untouched (section 12)", async () => {
-    const [loser] = await editClash();
-    loser.engine.stop();
-    const records = (await loser.store.load())!;
-    const [[noticeKey]] = records.notices;
-    const tampered = loser.store.clone();
-    await tampered.mutate({ expect: (tampered.meta() as { writerToken: string }).writerToken, meta: tampered.meta(), notices: { put: [[noticeKey, (await loser.store.load())!.base!]] } });
-    const again = await open({ login: loser.login, store: tampered, noSettle: true });
-    expect(again.engine.getState()).toMatchObject({ status: "unreadable", unreadable: "malformed" });
+describe("a stored notice this build can't read (D31)", () => {
+  it("is kept byte for byte and not shown; the device loads, keeps its unpushed op and pushes it", async () => {
+    const { offline, wrapFetch } = offlineSwitch();
+    const a = await open({ login: "alex", wrapFetch });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await a.backend.addEntry(entry("Bus", 15));
+    await quiesce(w, a, b);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), edits("Groceries", 10));
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), edits("Groceries", 12));
+    await quiesce(w, a, b);
+    const loser = a.engine.getState().noticeCount === 1 ? a : b;
+    expect(loser.engine.getState().noticeCount + (loser === a ? b : a).engine.getState().noticeCount).toBe(1);
+    // a writes once more while offline: an op only this device holds.
+    offline.on = true;
+    await a.backend.updateEntry(2026, 5, await row(a, "Bus"), edits("Bus", 3));
+    await quiesce(w, a);
+    expect(a.engine.getState().pendingCount).toBe(1);
+    a.engine.stop();
+    // One of a's notice records is damaged (or a newer build's), and one is
+    // a decryptable value that is no notice.
+    const store = a.store;
+    const damaged: [string, string][] = [
+      ["5.dffffffffffffffff/4.d0000000000000001/overwrite/e/x", "not encrypted"],
+      ["6.dffffffffffffffff/4.d0000000000000001/overwrite/e/x", (await store.load())!.base!],
+    ];
+    await store.mutate({ expect: (store.meta() as { writerToken: string }).writerToken, meta: store.meta(), notices: { put: damaged } });
+    const before = new Map((await store.load())!.notices);
+    offline.on = false;
+    const again = await open({ login: "alex", store, wrapFetch });
+    expect(again.engine.getState()).toMatchObject({ unreadable: null });
+    expect(again.engine.getState().noticeCount).toBe(loser === a ? 1 : 0);
+    expect(again.engine.notices().map((v) => v.key)).not.toContain(damaged[0][0]);
+    expect(again.logs.some((line) => line.includes("a stored notice can't be read"))).toBe(true);
+    await quiesce(w, again, b);
+    expectConverged(again, b);
+    expect(amountOf(b, "Bus")).toBe("3.00");
+    expect(again.engine.getState().pendingCount).toBe(0);
+    const after = new Map((await store.load())!.notices);
+    for (const [key, text] of damaged) expect(after.get(key)).toBe(text);
+    expect(after.get(damaged[0][0])).toBe(before.get(damaged[0][0]));
+  });
+});
+
+describe("a key already stored is never stored again (section 4.2)", () => {
+  /** An engine that edits Groceries, and Sam's edit of it that wins (a
+   * greater L): the notice it raises has a key known in advance. */
+  async function clash() {
+    const store = new MemoryStore();
+    const key = await testKey();
+    const make = () => new SyncEngine({ key, actor: "alex", store, locks: null, log: () => {} });
+    const engine = make();
+    running.push(engine);
+    await engine.start();
+    await engine.initialize(EPOCH, genesisState(emptyDocument()));
+    const backend = new DocumentBackend({ host: new SyncedHost(engine), now: () => Date.UTC(2026, 4, 10), actor: "alex", newId: () => crypto.randomUUID() });
+    await backend.addEntry(entry("Groceries", 40)); // L 2
+    const X = deviceId(0x5);
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    for (const op of engine.pushableOps()) sam.receive(engine.deviceId!, op);
+    await backend.updateEntry(2026, 5, (await backend.getMonth(2026, 5))[0].row, edits("Groceries", 10)); // L 3
+    await sam.backend.setMonthLock(2026, 7, true); // L 3
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5))[0].row, edits("Groceries", 12)); // L 4
+    const id = engine.current().expenses["2026-05"][0].id;
+    const noticeKey = `4.${X}/3.${engine.deviceId}/overwrite/e/${id}`;
+    engine.stop();
+    const put = async (text: string) => store.mutate({ expect: (store.meta() as { writerToken: string }).writerToken, meta: store.meta(), notices: { put: [[noticeKey, text]] } });
+    const reopen = async () => {
+      const again = make();
+      running.push(again);
+      await again.start();
+      return again;
+    };
+    return { store, key, sam, noticeKey, put, reopen, ops: sam.ops.map((op): [string, Op] => [X, op]) };
+  }
+
+  it("a readable notice stored under the key is left as it is when the same notice is told", async () => {
+    const { store, key, noticeKey, put, reopen, ops } = await clash();
+    const kept = { kind: "rehome", from: deviceId(0x1), to: deviceId(0x2), message: "Stored before.", seq: 7, at: 1 };
+    const text = await seal(kept, key);
+    await put(text);
+    const engine = await reopen();
+    expect(engine.getState().noticeCount).toBe(1);
+    await engine.join({ ops });
+    expect(engine.getState().noticeCount).toBe(1);
+    expect(new Map((await store.load())!.notices).get(noticeKey)).toBe(text);
+    expect(engine.notices()[0].notice).toMatchObject({ kind: "rehome", seq: 7 });
+  });
+
+  it("an unreadable record under the key is never written over (D31)", async () => {
+    const { store, noticeKey, put, reopen, ops } = await clash();
+    await put("not encrypted");
+    const engine = await reopen();
+    expect(engine.getState()).toMatchObject({ unreadable: null, noticeCount: 0 });
+    await engine.join({ ops });
+    expect(engine.getState().noticeCount).toBe(0);
+    expect(new Map((await store.load())!.notices).get(noticeKey)).toBe("not encrypted");
   });
 });
