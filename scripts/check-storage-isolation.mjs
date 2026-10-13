@@ -43,6 +43,9 @@ const FORBIDDEN_IN_DEFAULT = [
   'Add it back as a new entry',
   'just before you saved; its value was kept',
   'Changes from other devices not in the restore',
+  'It was already added back as a new entry',
+  'That changed since it was shown',
+  'It changed again since: now',
 ]
 
 // No file in the default build may have these in its name.
