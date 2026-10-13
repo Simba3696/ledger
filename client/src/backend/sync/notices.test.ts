@@ -3,6 +3,7 @@ import type { LedgerDocument } from "../document/types";
 import { NOTICE_CAP, checkNotice, detectNotices, overCap, type Detected } from "./notices";
 import { cloneState, emptyState, joinInto, opState, type Op, type SyncState } from "./state";
 import { compareTags } from "./tags";
+import { createOrderKey } from "./keys";
 import { Replica, Rng, deviceId, emptyDocument, fingerprint, forEachSeed, testEnv } from "./testkit";
 
 // Who is told (design section 4.2): one named test per row of the section 4
@@ -150,6 +151,44 @@ describe("rule 1: a register overwrite (section 4.2)", () => {
     expect(found).toHaveLength(1);
     expect(fieldsOf(found[0])).toEqual(["amount"]);
     expect(found[0]).toMatchObject({ winner: { L: 9, device: B }, loser: { L: 5, device: A }, registers: [{ theirs: "10.00", mine: "20.00" }] });
+  });
+
+  it("concurrent re-creates of one record with the same content tell no one: _c, _s and the order key aren't content", async () => {
+    // Two re-applies of the same group (section 9.4) re-create one debt,
+    // each with its own order key (its _c) and stamp, the fields the same.
+    const { a, b } = await pair();
+    const id = "00000000-0000-4000-8000-0000000000d1";
+    const recreate = (device: string, L: number): Op => ({
+      L,
+      at: L,
+      by: "sam",
+      vv: {},
+      set: [
+        [`debt/${id}/_c`, { o: createOrderKey(L, device) }],
+        [`debt/${id}/name`, "Sam"],
+        [`debt/${id}/amount`, "500.00"],
+        [`debt/${id}/_s`, { at: L, by: device === A ? "alex" : "sam" }],
+      ],
+      del: [],
+    });
+    a.receive(A, recreate(A, 5));
+    b.receive(B, recreate(B, 6));
+    expect(deliver(a, b, [recreate(B, 6)])).toEqual([]);
+    expect(deliver(b, a, [recreate(A, 5)])).toEqual([]);
+    expect(fingerprint(a.state)).toBe(fingerprint(b.state));
+  });
+
+  it("the same whole value set for a month's finances, card bills or a setting tells no one", async () => {
+    const { a, b } = await pair();
+    for (const r of [a, b]) {
+      await r.backend.setMonthIncome(2026, 6, { salary: 52000, otherIncome: null, savings: [] });
+      // Bills entered through the backend get a fresh card id each, so the
+      // same whole value is written directly.
+      r.amend((doc) => void (doc.cardBills["2026-06"] = [{ id: "00000000-0000-4000-8000-0000000000c1", updatedAt: 1, updatedBy: "alex", name: "Card A", due: "100.00", paid: "0.00", dueDate: null, settled: false }]));
+      r.amend((doc) => void (doc.settings.timeZone = "Asia/Kolkata"));
+    }
+    expect(deliver(a, b)).toEqual([]);
+    expect(deliver(b, a)).toEqual([]);
   });
 
   it("lock / unlock: the loser is told", async () => {
@@ -301,6 +340,36 @@ describe("rule 2: a concurrent delete (section 4.2)", () => {
     await two.b.backend.updateEntry(2026, 5, await rowOf(two.b, "Groceries"), edit(10));
     expect(deliver(two.a, two.b)).toEqual([]);
     expect(deliver(two.b, two.a)).toEqual([]);
+  });
+});
+
+describe("accepted residual: an equal-value edit can hide a delete notice (F2)", () => {
+  // a and b set Groceries' amount to the same 12 concurrently (b's tag
+  // wins, no one is told: same value), and c deletes Groceries without
+  // having seen either. Rule 2 finds my content op among the registers
+  // still tagged mine. If c's delete reaches a first, a is told; if b's
+  // equal edit reaches a first, a's register is b's by then and a is not.
+  // Either way every device ends the same, and the edit a lost is the same
+  // value b's register keeps under the dead id (ADR-0008, stage 7 review).
+  async function setup() {
+    const { a, b, doc } = await pair();
+    const c = new Replica(deviceId(0xc), doc, { actor: "kai" });
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), edit(12));
+    await b.backend.updateEntry(2026, 5, await rowOf(b, "Groceries"), edit(12));
+    await c.backend.deleteEntry(2026, 5, await rowOf(c, "Groceries"));
+    return { a, b, c };
+  }
+
+  it("the delete first: a is told", async () => {
+    const { a, b, c } = await setup();
+    expect(deliver(a, c).map((n) => n.kind)).toEqual(["deleted"]);
+    expect(deliver(a, b)).toEqual([]);
+  });
+
+  it("the equal edit first: a is not told", async () => {
+    const { a, b, c } = await setup();
+    expect(deliver(a, b)).toEqual([]);
+    expect(deliver(a, c)).toEqual([]);
   });
 });
 
