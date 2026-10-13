@@ -13,8 +13,9 @@ import "./sync.css";
  * which keeps it mounted across remote joins, so the list stays open and
  * an action's result stays shown: as a child of SyncHost it would be
  * remounted on every remote change. It shows the messages that need the
- * person, the status line with "N to review", and, when opened, the
- * notices and the changes a restore left behind. Non-modal: the ledger
+ * person, this device's own changes a restore left out (always shown,
+ * D18), the status line with "N to review", and, when opened, the notices
+ * and other devices' changes a restore left out. Non-modal: the ledger
  * stays usable, and nothing waits for an answer (owner decision D17). */
 export function SyncPanel({ initiallyOpen = false }: { initiallyOpen?: boolean }) {
   const sync = useSyncState();
@@ -41,10 +42,20 @@ export function SyncPanel({ initiallyOpen = false }: { initiallyOpen?: boolean }
   const onReapply = (id: string) => run(id, () => sync.reapply(id).then(reapplyText));
   const onDiscard = (id: string) => run(id, () => sync.discard(id).then(() => null));
 
-  const hasReview = sync.notices.length > 0 || sync.leftBehind.length > 0;
+  // This device's own changes a restore left out are its only copy (D18):
+  // shown at once, above the status line, never behind the toggle
+  // (section 9.3 step 5). Other devices' groups and the notices are.
+  const own = sync.leftBehind.filter((g) => g.own);
+  const others = sync.leftBehind.filter((g) => !g.own);
+  const hasReview = sync.notices.length > 0 || others.length > 0;
   return (
     <div className="sync-panel">
       <SyncMessages state={sync} />
+      {own.length > 0 && (
+        <div className="sync-review sync-review-own-groups">
+          <LeftBehindList groups={own} work={work} onReapply={onReapply} onDiscard={onDiscard} />
+        </div>
+      )}
       <SyncStatus state={sync} reviewOpen={open && hasReview} reviewId={reviewId} onRetry={() => void sync.syncNow()} onToggleReview={() => setOpen(!open)} />
       {done && (
         <p className="sync-review-done" role="status">
@@ -53,7 +64,7 @@ export function SyncPanel({ initiallyOpen = false }: { initiallyOpen?: boolean }
       )}
       {open && hasReview && (
         <section id={reviewId} className="sync-review" aria-label="To review">
-          <LeftBehindList groups={sync.leftBehind} work={work} onReapply={onReapply} onDiscard={onDiscard} />
+          <LeftBehindList groups={others} work={work} onReapply={onReapply} onDiscard={onDiscard} />
           <NoticeList notices={sync.notices} work={work} onAction={onAction} onDismiss={onDismiss} />
         </section>
       )}

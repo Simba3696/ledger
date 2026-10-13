@@ -226,8 +226,10 @@ export function statusText(state: Pick<EngineState, "status" | "pendingCount" | 
   }
 }
 
-/** "3 to review": notices plus groups a restore left behind, or null. */
-export function reviewText(state: Pick<EngineState, "noticeCount" | "leftBehindCount">): string | null {
-  const n = state.noticeCount + state.leftBehindCount;
+/** "3 to review": notices plus other devices' groups a restore left
+ * behind, or null. This device's own groups are shown outside the review
+ * list (D18), so they aren't counted in it. */
+export function reviewText(state: Pick<EngineState, "noticeCount" | "leftBehindCount" | "leftBehindOwnCount">): string | null {
+  const n = state.noticeCount + state.leftBehindCount - state.leftBehindOwnCount;
   return n > 0 ? `${n} to review` : null;
 }

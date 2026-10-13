@@ -20,7 +20,7 @@ import { SyncMessages, VOLATILE } from "./SyncMessages";
 import { SyncPanel } from "./SyncPanel";
 import { SyncStatus } from "./SyncStatus";
 import { actionLabel, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
-import { useSyncState } from "./syncContext";
+import { useSyncState, type SyncStateValue } from "./syncContext";
 
 // GitHub mode's sync UI (#7 stage 7): the status line with "N to review",
 // the notices with their actions, the changes a restore left behind (D18),
@@ -203,7 +203,10 @@ describe("labels", () => {
     expect(statusText({ ...STATE, deviceSaveFailed: true, status: "pending" })).toBe("This device couldn't save. Free up storage and try again.");
     for (const status of ["saving", "needsToken", "needsPassphrase", "missing", "unreadable", "needsUpdate", "locked"] as const) expect(statusText({ ...STATE, status })).not.toBe("");
     expect(reviewText(STATE)).toBeNull();
-    expect(reviewText({ noticeCount: 2, leftBehindCount: 1 })).toBe("3 to review");
+    expect(reviewText({ noticeCount: 2, leftBehindCount: 1, leftBehindOwnCount: 0 })).toBe("3 to review");
+    // This device's own groups are shown outside the toggle (F2).
+    expect(reviewText({ noticeCount: 2, leftBehindCount: 3, leftBehindOwnCount: 1 })).toBe("4 to review");
+    expect(reviewText({ noticeCount: 0, leftBehindCount: 1, leftBehindOwnCount: 1 })).toBeNull();
   });
 
   it("left-behind changes and a re-apply's result", () => {
@@ -269,19 +272,49 @@ describe("NoticeList", () => {
   });
 });
 
-describe("LeftBehindList (D18)", () => {
-  const group = (own: boolean, device: string, extra: Partial<LeftBehindView> = {}): LeftBehindView => ({
-    id: `e000001-0000000a/${device}`,
-    epoch: "e000001-0000000a",
-    device,
-    own,
-    who: own ? "alex" : "sam",
-    into: { epoch: "e000002-0000000b", by: "kai", at: Date.UTC(2026, 4, 12) },
-    resolvedElsewhere: false,
-    items: [{ kind: "add", coll: "e", id: ID, record: { id: ID, remarks: own ? "Taxi" : "Bus", amount: "20.00" }, fields: {}, month: "2026-05" }],
-    ...extra,
+/** A left-behind group: this device's own (Taxi) or another's (Bus). */
+const group = (own: boolean, device: string, extra: Partial<LeftBehindView> = {}): LeftBehindView => ({
+  id: `e000001-0000000a/${device}`,
+  epoch: "e000001-0000000a",
+  device,
+  own,
+  who: own ? "alex" : "sam",
+  into: { epoch: "e000002-0000000b", by: "kai", at: Date.UTC(2026, 4, 12) },
+  resolvedElsewhere: false,
+  items: [{ kind: "add", coll: "e", id: ID, record: { id: ID, remarks: own ? "Taxi" : "Bus", amount: "20.00" }, fields: {}, month: "2026-05" }],
+  ...extra,
+});
+
+/** A context value for SyncLayers, with actions that do nothing. */
+function contextValue(state: Partial<EngineState>, notices: NoticeView[], leftBehind: LeftBehindView[]): SyncStateValue {
+  return { ...STATE, ...state, notices, leftBehind, syncNow: async () => {}, noticeAction: async () => {}, dismissNotice: async () => {}, reapply: async () => ({ applied: [], skipped: [] }), discard: async () => {} };
+}
+
+describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 step 5, F2)", () => {
+  it("shows them at once, outside the review toggle, which counts only notices and other devices' groups", () => {
+    const value = contextValue({ noticeCount: 1, leftBehindCount: 2, leftBehindOwnCount: 1 }, [amountClash], [group(true, A), group(false, B)]);
+    const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
+    expect(html).toContain("kai restored a backup on");
+    expect(html).toContain("1 change made on this device wasn&#x27;t in it.");
+    expect(html).toContain("Added Taxi (20.00) in May 2026");
+    // Before the status line and its toggle, with its own buttons.
+    expect(html.indexOf("Added Taxi")).toBeLessThan(html.indexOf("to review"));
+    expect(html.indexOf("Re-apply")).toBeLessThan(html.indexOf("to review"));
+    expect(html).toContain("2 to review");
+    // Other devices' groups and the notices stay behind the closed toggle.
+    expect(html.slice(html.indexOf("to review"))).not.toContain("Added Bus");
+    expect(html).not.toContain("Use 10.00");
   });
 
+  it("with only own groups there is nothing behind the toggle", () => {
+    const value = contextValue({ leftBehindCount: 1, leftBehindOwnCount: 1 }, [], [group(true, A)]);
+    const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
+    expect(html).toContain("Added Taxi");
+    expect(html).not.toContain("to review");
+  });
+});
+
+describe("LeftBehindList (D18)", () => {
   it("shows this device's own changes first and prominently, and other devices' collapsed", () => {
     const calls: string[] = [];
     const own = group(true, A, { resolvedElsewhere: true });
