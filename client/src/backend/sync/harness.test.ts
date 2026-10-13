@@ -52,7 +52,8 @@ import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 //
 // LEDGER_HARNESS_SEEDS (default 40), LEDGER_HARNESS_STEPS (default 100) and
 // LEDGER_HARNESS_FIRST (the first seed, default 1) size a run;
-// LEDGER_HARNESS_SEED replays one seed. A failure names its seed. Device
+// LEDGER_HARNESS_SEED replays one seed. A failure names its seed;
+// LEDGER_HARNESS_KEEP_GOING=1 runs every seed and lists every failure. Device
 // ids, record ids, epoch keys and IVs come from the seed, so a replay takes
 // the same path, short of the order in which concurrent crypto settles.
 // Fictional data only.
@@ -61,6 +62,10 @@ const SEEDS = Number(testEnv("LEDGER_HARNESS_SEEDS") ?? 40);
 const STEPS = Number(testEnv("LEDGER_HARNESS_STEPS") ?? 100);
 const FIRST = Number(testEnv("LEDGER_HARNESS_FIRST") ?? 1);
 const ONLY = testEnv("LEDGER_HARNESS_SEED");
+/** Run every seed and list every failure, for a deep run. */
+const KEEP_GOING = testEnv("LEDGER_HARNESS_KEEP_GOING") === "1";
+/** Every engine a seed started, stopped once it ends, passed or not. */
+const started: SyncEngine[] = [];
 
 const OWNER = "alex";
 const REPO = "ledger-data";
@@ -209,6 +214,7 @@ async function open(h: Harness, slot: Slot, store: MemoryStore, init?: { epoch: 
     now: () => h.clock.wall + slot.skew,
     ...(slot.compaction ? { compaction: slot.compaction } : {}),
   });
+  started.push(engine);
   await engine.start();
   if (engine.getState().needsInit) {
     if (!init) throw new Error(`${slot.name} has no saved state to load`);
@@ -825,19 +831,23 @@ describe("property harness (section 16.4): every device equals an independent or
   it(`converges on the oracle, loses nothing and invents nothing over ${SEEDS} seeds x ${STEPS} steps`, async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const seeds = ONLY !== undefined ? [Number(ONLY)] : Array.from({ length: SEEDS }, (_, i) => FIRST + i);
+    const failures: string[] = [];
     for (const seed of seeds) {
       try {
         await run(seed);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`seed ${seed} failed (replay with LEDGER_HARNESS_SEED=${seed} LEDGER_HARNESS_STEPS=${STEPS}): ${message}`, { cause: err });
+        const message = `seed ${seed} failed (replay with LEDGER_HARNESS_SEED=${seed} LEDGER_HARNESS_STEPS=${STEPS}): ${err instanceof Error ? err.message : String(err)}`;
+        if (!KEEP_GOING) throw new Error(message, { cause: err });
+        failures.push(message);
       } finally {
+        for (const engine of started.splice(0)) engine.stop();
         vi.restoreAllMocks();
       }
     }
-    console.log(`property harness: ${seeds.length} seeds x ${STEPS} steps`, JSON.stringify(counts));
+    console.log(`property harness: ${seeds.length} seeds (${seeds[0]}-${seeds.at(-1)}) x ${STEPS} steps`, JSON.stringify(counts));
+    expect(failures).toEqual([]);
     if (ONLY === undefined && SEEDS >= 8) {
       for (const name of ["writes", "cycles", "faults", "reloads", "midCommit", "notices", "snapshots"] as const) expect(counts[name], name).toBeGreaterThan(0);
     }
-  }, 600_000);
+  }, Math.max(600_000, SEEDS * STEPS * 30));
 });
