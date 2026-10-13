@@ -514,7 +514,9 @@ describe("re-apply and discard (section 9.4)", () => {
   // re-apply op's own transaction, as section 9.4 says. An earlier device
   // view re-applied later can then set the newer value back with no group
   // left to show it; stage 7's register-overwrite notice (design section 4.2
-  // rule 1) is what tells b, with "Use mine" (ADR-0008, stage 7).
+  // rule 1) is what tells b, with "Use mine" (ADR-0008, STAGE-7): it names
+  // the amount alone, the one register whose value changed, and puts 20
+  // back on every device.
   it("D28: an own re-apply drops the group at once, so a concurrent stale re-apply with a greater L wins and leaves b no group (stage 7's register-overwrite notice tells b)", async () => {
     let a = await open({ login: "alex" });
     const b = await open({ login: "sam" });
@@ -547,11 +549,26 @@ describe("re-apply and discard (section 9.4)", () => {
     expectConverged(a, b, c);
     const taxi = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).find((e) => e.remarks === "Taxi")!;
     for (const d of [a, b, c]) expect(taxi(d).amount).toBe("10.00");
-    // Accepted under D28: nothing is left behind on b. Stage 7 must raise a
-    // register-overwrite notice here whose "Use mine" puts 20 back.
+    // Accepted under D28: nothing is left behind on b.
     for (const d of [a, b, c]) expect(d.engine.leftBehind()).toEqual([]);
     expect(b.engine.getState()).toMatchObject({ leftBehindCount: 0, leftBehindOwnCount: 0 });
     expect((await b.store.load())?.leftBehind).toEqual([]);
+
+    // STAGE-7: b is told, once, that c's 10 replaced its 20: the amount
+    // alone, not the equal fields c's re-create also set again.
+    expect(b.engine.getState().noticeCount).toBe(1);
+    expect(a.engine.getState().noticeCount).toBe(0);
+    expect(c.engine.getState().noticeCount).toBe(0);
+    const [view] = b.engine.notices();
+    expect(view.notice).toMatchObject({ kind: "overwrite", winner: { device: c.engine.deviceId, by: "alex" }, loser: { device: b.engine.deviceId } });
+    expect(view.notice.kind === "overwrite" && view.notice.registers).toEqual([{ key: expect.stringMatching(/\/amount$/), theirs: "10.00", mine: "20.00" }]);
+    expect(view.actions).toEqual([{ kind: "useMine", writes: [{ key: expect.stringMatching(/\/amount$/), value: "20.00" }], refused: null }]);
+    // Use mine puts 20 back on every device, and tells no one else.
+    await b.engine.noticeAction(view.key, "useMine");
+    await quiesce(w, a, b, c);
+    expectConverged(a, b, c);
+    for (const d of [a, b, c]) expect(taxi(d).amount).toBe("20.00");
+    for (const d of [a, b, c]) expect(d.engine.getState().noticeCount).toBe(0);
   });
 
   it("two devices re-applying the same group at once is harmless: one record, everywhere", async () => {
