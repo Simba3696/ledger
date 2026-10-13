@@ -300,10 +300,10 @@ export function randomOp(rng: Rng, L: number, pool: RecordPool): Op {
     } else if (rng.chance(0.5)) {
       if (rng.chance(0.5)) put("st/timeZone", rng.pick(["UTC", "Asia/Kolkata"]));
       else put("st/modules", rng.chance(0.5) ? [...ALL_MODULES] : ["expenses"]);
-    } else if (rng.chance(0.5)) {
-      op.ra = [`e000001-0000000${rng.int(2)}/${deviceId(rng.int(3) + 1)}`];
     } else {
-      op.ab = [rng.pick(pool)];
+      // A marker: a re-apply's, or an add-back's naming a dead record.
+      if (rng.chance(0.5)) op.ra = [`e000001-0000000${rng.int(2)}/${deviceId(rng.int(3) + 1)}`];
+      else op.ab = [rng.pick(pool)];
     }
   }
   expect(opProblem(op)).toBeNull();
