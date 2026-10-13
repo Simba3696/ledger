@@ -848,10 +848,24 @@ async function run(seed: number): Promise<void> {
   await idleRound(h, where);
 
   // No device is blocked: a new write on each one reaches every device.
-  for (const slot of h.slots) await slot.backend.addEntry({ year: 2026, month: 7, amount: 1, remarks: `Probe ${slot.name}`, category: "food", isCard: false }).catch((err: unknown) => {
-    // A write refused at the origin (expenses off, July locked) is no block.
-    if (!(err instanceof ApiError) || ![403, 404].includes(err.status)) throw err;
-  });
+  // A 503 is a "try again" (another device just started a next epoch at
+  // the top of the Lamport range): the person tries again after a sync,
+  // and by the second try it must go through.
+  for (const slot of h.slots) {
+    for (let attempt = 1; ; attempt++) {
+      const refused = await slot.backend.addEntry({ year: 2026, month: 7, amount: 1, remarks: `Probe ${slot.name}`, category: "food", isCard: false }).then(
+        () => null,
+        (err: unknown) => err,
+      );
+      // A write refused at the origin (expenses off, July locked) is no block.
+      if (refused === null || (refused instanceof ApiError && [403, 404].includes(refused.status))) break;
+      if (refused instanceof ApiError && refused.status === 503 && attempt < 3) {
+        await cycle(h, slot);
+        continue;
+      }
+      throw new Error(`the probe write on ${slot.name} failed: ${String(refused)}\n${h.log.slice(-20).join("\n")}`, { cause: refused });
+    }
+  }
   await quiesce(h);
   await check(h, `${where} (after a write on every device)`);
   counts.told += h.slots.flatMap((s) => s.stores).flatMap((s) => s.mutations).reduce((n, m) => n + (m.notices?.put?.length ?? 0), 0);
