@@ -14,6 +14,7 @@ import { WriterTokenMismatch, type SyncStore } from "./persist";
 import { seal, unseal, type DeviceKey, type SyncMeta } from "./records";
 import { genesisState, type Op, type SyncState } from "./state";
 import { DEVICE_SAVE_FAILED, SyncEngine, type LeftBehindView } from "./SyncEngine";
+import { MAX_L } from "./tags";
 import { SyncedHost } from "./SyncedHost";
 import { ALL_MODULES, Replica, Rng, emptyDocument, testEnv } from "./testkit";
 
@@ -71,6 +72,10 @@ const OWNER = "alex";
 const REPO = "ledger-data";
 const FULL = `${OWNER}/${REPO}`;
 const DAY = 86_400_000;
+/** A device with no engine whose op starts a run near the top of the
+ * Lamport range, in that share of runs. */
+const PHANTOM = "d00000000000000aa";
+const LAMPORT_TOP = Number(testEnv("LEDGER_HARNESS_LAMPORT_TOP") ?? 0.15);
 /** Texts no repo file or saved meta may hold in plaintext (AC15). Each has
  * a space, which base64 never holds, so a match is never by chance. */
 const REMARKS = ["Groceries run", "Bus ticket", "Rent payment", "Tea shop"];
@@ -79,6 +84,7 @@ const REMARKS = ["Groceries run", "Bus ticket", "Rent payment", "Tea shop"];
  * doing nothing. */
 const counts = {
   steps: 0,
+  nearTop: 0,
   writes: 0,
   refused: 0,
   reads: 0,
@@ -804,6 +810,16 @@ async function run(seed: number): Promise<void> {
   const doc = await startingDocument(rng);
   const epoch = "e000001-0000000a";
   await fake.seedFile(FULL, `ledger/${epoch}.genesis.enc`, await seal({ fv: FORMAT_VERSION, kind: "genesis", epoch, reason: "create", by: "alex", at: Date.UTC(2026, 4, 1), basedOn: null, doc }, key));
+  // Sometimes the run starts near the top of the Lamport range: another
+  // device's op sits a few dozen Ls below 2^50, so writes run out of L and
+  // start next epochs (ADR-0008) amid everything else.
+  if (rng.chance(LAMPORT_TOP)) {
+    counts.nearTop++;
+    const top = MAX_L - 20 - rng.int(40);
+    const op: Op = { L: top, at: 1, by: "sam", vv: {}, set: [["lk/2026-12", true]], del: [] };
+    const log = { fv: FORMAT_VERSION, kind: "log", epoch, device: PHANTOM, snapThrough: 0, chain: "0".repeat(16), ops: [op] };
+    await fake.seedFile(FULL, `ledger/${epoch}.${PHANTOM}.log.enc`, await seal(log, key));
+  }
   const h: Harness = { rng, fake, key, clock: { wall: Date.UTC(2026, 4, 10, 9), mono: 1_000_000 }, slots: [], backups: [structuredClone(doc)], floating: [], storeFaults: 0, log: [] };
   const count = 2 + rng.int(3);
   for (let i = 0; i < count; i++) {
