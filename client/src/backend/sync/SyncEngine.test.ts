@@ -342,7 +342,7 @@ describe("device storage failures (owner decision 5, B8, B17)", () => {
     return on;
   }
 
-  it("a full device refuses the write with 'This device couldn't save': nothing changes in memory or on the device, nothing is pushable, and the next write succeeds", async () => {
+  it("B8: a full device refuses the write with 'This device couldn't save': nothing changes in memory or on the device, nothing is pushable, and the next write succeeds (never memory for good)", async () => {
     const d = await device();
     await d.backend.addEntry(ENTRY);
     const before = await dumpDatabase();

@@ -171,3 +171,23 @@ describe("fake GitHub test views (the stage 8a property harness's oracle reads t
     expect(whole.files.map((f) => f.sha).sort()).toEqual([first.sha, second.sha].sort());
   });
 });
+
+describe("old-bug catalogue (design section 13)", () => {
+  it("B24: the fake's check of a PUT's sha and its store are one step, so a second PUT against the same sha is refused", async () => {
+    // The old fake checked and stored across an await, so two PUTs against
+    // one sha could both land and one write was lost. Same tick and in turn.
+    const gh = client();
+    const base = await gh.putFile({ path: MY_LOG, text: "v0", sha: null, message: sync });
+    const results = await Promise.allSettled([
+      gh.putFile({ path: MY_LOG, text: "a", sha: base.sha, message: sync }),
+      gh.putFile({ path: MY_LOG, text: "b", sha: base.sha, message: sync }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason).toBeInstanceOf(ShaConflictError);
+    const landed = fake.file(REPO, MY_LOG)!.text;
+    expect(["a", "b"]).toContain(landed);
+    await expect(gh.putFile({ path: MY_LOG, text: "c", sha: base.sha, message: sync })).rejects.toBeInstanceOf(ShaConflictError);
+    expect(fake.file(REPO, MY_LOG)!.text).toBe(landed);
+    expect(fake.commits).toHaveLength(2);
+  });
+});

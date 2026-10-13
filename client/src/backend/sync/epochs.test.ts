@@ -19,9 +19,7 @@ import { Replica, Rng, deviceId, docText, forEachSeed, testEnv } from "./testkit
 // re-apply; AC14; and the new epoch Lamport exhaustion starts. Fictional
 // data only.
 //
-// Old-bug catalogue (section 13): B1 and B20 are named on their tests. B15
-// (a restore needed a `restoredAt` marker) has no test of its own: epochs
-// replace the marker, and every restore here runs without one.
+// Old-bug catalogue (section 13): B1, B15 and B20 are named on their tests.
 
 const running: SyncEngine[] = [];
 let w: World;
@@ -410,6 +408,29 @@ describe("restore (section 9.2) and switching (section 9.3)", () => {
     // The restorer had seen the delete: the record is back, and nothing is offered.
     expect(remarks(b)).toEqual(["Groceries"]);
     expect(b.engine.leftBehind()).toEqual([]);
+    expectConverged(a2, b);
+  });
+
+  it("B15: a restore needs no restoredAt marker: the epoch alone brings records back over newer stamps and deletes", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam", now: () => w.clock.wall + 30 * 86_400_000 });
+    await a.backend.addEntry(entry("Groceries", 40));
+    await a.backend.addEntry(entry("Bus", 15));
+    await quiesce(w, a, b);
+    const backup = structuredClone(a.engine.current());
+    // Newer than the backup everywhere: an edit stamped a month ahead, and a
+    // delete. The old design needed a marker to tell the restore apart.
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), edits("Groceries", 99));
+    await b.backend.deleteEntry(2026, 5, await row(b, "Bus"));
+    await quiesce(w, a, b);
+    const result = await a.engine.restore(backup);
+    expect(result.kind).toBe("restored");
+    const epoch = (result as { epoch: string }).epoch;
+    const genesis = (await unseal(w.fake.file(FULL, repoPath({ kind: "genesis", epoch }))!.text, w.key)) as Record<string, unknown>;
+    expect(JSON.stringify(genesis)).not.toContain("restoredAt");
+    const a2 = await reload(a);
+    await quiesce(w, a2, b);
+    for (const d of [a2, b]) expect(docText(d.engine.current())).toBe(docText(backup));
     expectConverged(a2, b);
   });
 
