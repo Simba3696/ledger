@@ -12,7 +12,7 @@ import { WriterTokenMismatch, type Mutation, type StoredRecords, type SyncStore 
 import { seal, unseal, type DeviceKey } from "./records";
 import { repoPath } from "./repoFiles";
 import { genesisState, type Op, type SyncState } from "./state";
-import { SyncEngine, type PageEvents, type SyncEngineOptions } from "./SyncEngine";
+import { SyncEngine, type PageEvents, type SyncEngineOptions, type SyncLogLevel } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { docText, emptyDocument } from "./testkit";
 
@@ -196,6 +196,8 @@ export interface Device {
   /** Every wait between PUT retries. */
   delays: number[];
   logs: string[];
+  /** Each logged line with the level the engine gave it. */
+  logged: { level: SyncLogLevel; message: string }[];
   login: string;
 }
 
@@ -220,6 +222,7 @@ export type DeviceOptions = Partial<SyncEngineOptions> & {
 export async function device(w: World, { store = new MemoryStore(), login = "alex", wrapFetch, noSettle, init, ...options }: DeviceOptions = {}): Promise<Device> {
   const delays: number[] = [];
   const logs: string[] = [];
+  const logged: { level: SyncLogLevel; message: string }[] = [];
   let engine: SyncEngine | null = null;
   const tagged: typeof fetch = (input, request) => w.fake.fetchAs(engine?.deviceId ?? "dnone")(input, request);
   const client = createGitHubClient({ owner: OWNER, repo: REPO, token: `github_pat_${login}`, fetch: wrapFetch ? wrapFetch(tagged) : tagged });
@@ -228,7 +231,10 @@ export async function device(w: World, { store = new MemoryStore(), login = "ale
     actor: login,
     store,
     locks: null,
-    log: (message) => logs.push(message),
+    log: (level, message) => {
+      logs.push(message);
+      logged.push({ level, message });
+    },
     remote: { client, branch: "main" },
     events: {},
     random: () => 0.5,
@@ -244,7 +250,7 @@ export async function device(w: World, { store = new MemoryStore(), login = "ale
   if (!noSettle) await engine.sync();
   const host = new SyncedHost(engine);
   const backend = new DocumentBackend({ host, now: options.now ?? (() => w.clock.wall), actor: login, newId: () => crypto.randomUUID() });
-  return { engine, backend, host, store, client, delays, logs, login };
+  return { engine, backend, host, store, client, delays, logs, logged, login };
 }
 
 /** Lets the event loop turn once without moving the fake timers, so

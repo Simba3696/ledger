@@ -634,6 +634,7 @@ describe("forks across compaction (section 10.3)", () => {
     expect(a.engine.pushableOps().at(-1)!.L).toBe(twin.engine.pushableOps().at(-1)!.L);
     await cycle(w, a);
     expect(a.logs.some((l) => l.includes("syncs on as a new device"))).toBe(true);
+    expect(a.logged.find((l) => l.message.includes("syncs on as a new device"))?.level).toBe("warn");
     await quiesce(w, a, twin, x);
     expectConverged(a, twin, x);
     expect(remarks(x).sort()).toEqual(["Before", "Copy", "From x", "Original"]);
@@ -666,6 +667,8 @@ describe("file bounds: a device never publishes an own file every reader would r
     expect(a.store.meta().K).toBe(K);
     expect((await repoLog(a)).ops).toHaveLength(2);
     expect(a.logs.some((l) => l.includes("snapshot would be refused"))).toBe(true);
+    // A real failure: logged as an error, never as routine progress.
+    expect(a.logged.filter((l) => l.message.includes("snapshot would be refused")).map((l) => l.level)).toEqual(["error"]);
     for (const kind of ["log", "snap"] as const) expect(stored(a, kind)!.text.length).toBeLessThanOrEqual(40_000);
     expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
     const c = await open({ ...small, login: "sam" });
@@ -683,6 +686,7 @@ describe("file bounds: a device never publishes an own file every reader would r
     expect(stored(a, "log")).toBeNull();
     expect(a.engine.getState()).toMatchObject({ status: "needsAttention", pendingCount: 1 });
     expect(a.logs.some((l) => l.includes("own log would be refused"))).toBe(true);
+    expect(new Set(a.logged.filter((l) => l.message.includes("own log would be refused")).map((l) => l.level))).toEqual(new Set(["error"]));
     await write(a, "Still saved");
     await write(r, "From sam");
     await cycle(w, r, a);

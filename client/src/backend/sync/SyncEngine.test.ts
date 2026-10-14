@@ -854,21 +854,30 @@ describe("nothing on the device is plaintext (AC15)", () => {
 });
 
 describe("the default log", () => {
-  it("sends a line with no error to console.info, never console.error, and prints no 'undefined'", () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    defaultSyncLog("the restore's genesis e000002-0000000b landed after all");
+  function spies() {
+    return {
+      info: vi.spyOn(console, "info").mockImplementation(() => {}),
+      warn: vi.spyOn(console, "warn").mockImplementation(() => {}),
+      error: vi.spyOn(console, "error").mockImplementation(() => {}),
+    };
+  }
+
+  it("sends routine progress to console.info only, with no 'undefined' after it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("info", "the restore's genesis e000002-0000000b landed after all");
+    expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
-    expect(info).toHaveBeenCalledWith("ledger:sync: the restore's genesis e000002-0000000b landed after all");
-    expect(info.mock.calls[0]).toHaveLength(1);
+    expect(info.mock.calls).toEqual([["ledger:sync: the restore's genesis e000002-0000000b landed after all"]]);
   });
 
-  it("sends a line with an error to console.error, with the error", () => {
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("sends a warning to console.warn, and a failure to console.error, whether or not an error object comes with it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("warn", "the repo refused 4 writes of this device's log in a row; trying again on the next trigger");
+    defaultSyncLog("error", "this device's own log would be refused (too large); it is not sent");
     const err = new Error("boom");
-    defaultSyncLog("sync failed; it will be tried again", err);
+    defaultSyncLog("error", "sync failed; it will be tried again", err);
     expect(info).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith("ledger:sync: sync failed; it will be tried again", err);
+    expect(warn.mock.calls).toEqual([["ledger:sync: the repo refused 4 writes of this device's log in a row; trying again on the next trigger"]]);
+    expect(error.mock.calls).toEqual([["ledger:sync: this device's own log would be refused (too large); it is not sent"], ["ledger:sync: sync failed; it will be tried again", err]]);
   });
 });

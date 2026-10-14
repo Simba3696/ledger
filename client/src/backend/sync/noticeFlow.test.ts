@@ -408,6 +408,7 @@ describe("a stored notice this build can't read (D31)", () => {
     expect(again.engine.getState().noticeCount).toBe(loser === a ? 1 : 0);
     expect(again.engine.notices().map((v) => v.key)).not.toContain(damaged[0][0]);
     expect(again.logs.some((line) => line.includes("a stored notice can't be read"))).toBe(true);
+    expect(again.logged.find((l) => l.message.includes("a stored notice can't be read"))?.level).toBe("warn");
     await quiesce(w, again, b);
     expectConverged(again, b);
     expect(amountOf(b, "Bus")).toBe("3.00");
