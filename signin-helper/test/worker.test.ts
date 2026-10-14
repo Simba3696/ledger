@@ -74,17 +74,40 @@ describe("CORS and request checks", () => {
     expect(res.headers.get("Access-Control-Allow-Headers")).toBe("Content-Type");
   });
 
-  it("answers any method but POST and OPTIONS with 405", async () => {
+  it("answers any method but POST and OPTIONS with 405, readable by an allowed origin only", async () => {
     for (const method of ["GET", "PUT", "DELETE"]) {
       const res = await call("/token", { method });
       expect(res.status).toBe(405);
       expect(res.headers.get("Allow")).toBe("POST, OPTIONS");
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+    }
+    const other = await call("/token", { method: "GET", origin: "https://mallory.example" });
+    expect(other.status).toBe(405);
+    expect(other.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+
+  it("reads ALLOWED_ORIGINS as origins: a path or trailing slash is dropped, and *, null and non-URLs never match", async () => {
+    const env = { ...ENV, ALLOWED_ORIGINS: "https://alex.github.io/ledger/, *, null, not a url" };
+    githubAnswers({ access_token: "ghu_fake", expires_in: 28800, refresh_token: "ghr_fake", refresh_token_expires_in: 15897600 });
+    const ok = await call("/token", { env, body: tokenBody() });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+    for (const origin of ["null", "*"]) {
+      const res = await call("/token", { env, origin, body: tokenBody() });
+      expect(res.status).toBe(403);
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
     }
   });
 
-  it("refuses a body over 4 KB with 413, declared or not", async () => {
+  it("refuses a body over 4 KB with 413: declared so, declared smaller than it is, or not declared", async () => {
     const big = tokenBody({ code: "c".repeat(5000) });
     expect((await call("/token", { body: big })).status).toBe(413);
+    // A Content-Length over the cap is refused before the body is read.
+    const declared = await call("/token", { body: tokenBody(), headers: { "Content-Type": "application/json", "Content-Length": "99999" } });
+    expect(declared.status).toBe(413);
+    // One that understates the body doesn't get it past the cap.
+    const lying = await call("/token", { body: big, headers: { "Content-Type": "application/json", "Content-Length": "10" } });
+    expect(lying.status).toBe(413);
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(big));
@@ -124,8 +147,10 @@ describe("the exchange", () => {
     const res = await call("/token", { body: tokenBody() });
     expect(await res.json()).toEqual({
       access_token: "ghu_fake",
+      expires_in: 28800,
       expires_at: NOW + 28800_000,
       refresh_token: "ghr_fake",
+      refresh_token_expires_in: 15897600,
       refresh_token_expires_at: NOW + 15897600_000,
     });
     const [url, init] = github.mock.calls[0] as [string, RequestInit];
@@ -143,7 +168,14 @@ describe("the exchange", () => {
   it("/refresh sends grant_type=refresh_token and answers the same shape", async () => {
     githubAnswers({ access_token: "ghu_fresh", expires_in: 28800, refresh_token: "ghr_fresh", refresh_token_expires_in: 15897600 });
     const res = await call("/refresh", { body: JSON.stringify({ refresh_token: "ghr_old" }) });
-    expect(await res.json()).toEqual({ access_token: "ghu_fresh", expires_at: NOW + 28800_000, refresh_token: "ghr_fresh", refresh_token_expires_at: NOW + 15897600_000 });
+    expect(await res.json()).toEqual({
+      access_token: "ghu_fresh",
+      expires_in: 28800,
+      expires_at: NOW + 28800_000,
+      refresh_token: "ghr_fresh",
+      refresh_token_expires_in: 15897600,
+      refresh_token_expires_at: NOW + 15897600_000,
+    });
     const sent = Object.fromEntries(new URLSearchParams(String((github.mock.calls[0] as [string, RequestInit])[1].body)));
     expect(sent).toEqual({ client_id: "Iv1.fakeclientid", client_secret: SECRET, grant_type: "refresh_token", refresh_token: "ghr_old" });
   });
@@ -164,6 +196,14 @@ describe("the exchange", () => {
     expect(await offline.json()).toEqual({ error: "upstream_unavailable" });
     github.mockResolvedValueOnce(new Response("<html>unicorn</html>", { status: 503 }));
     expect(await (await call("/token", { body: tokenBody() })).json()).toEqual({ error: "upstream_unavailable" });
+  });
+
+  it("lets an allowed origin read helper_not_configured, so the page can tell it from an outage", async () => {
+    const res = await call("/token", { env: { ...ENV, GITHUB_APP_CLIENT_SECRET: "" }, body: tokenBody() });
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ORIGIN);
+    const other = await call("/token", { env: { ...ENV, GITHUB_APP_CLIENT_SECRET: "" }, origin: "https://mallory.example", body: tokenBody() });
+    expect(other.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("answers every request 500 helper_not_configured while a setting is missing or blank", async () => {

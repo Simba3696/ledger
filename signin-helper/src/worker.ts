@@ -7,9 +7,11 @@
 //   POST /token    { code, code_verifier, redirect_uri }
 //   POST /refresh  { refresh_token }
 //
-// Both answer { access_token, expires_at, refresh_token,
-// refresh_token_expires_at }, times in epoch ms (null when GitHub sent
-// none). It keeps no state and logs nothing: no body, code, token or secret
+// Both answer { access_token, expires_in, expires_at, refresh_token,
+// refresh_token_expires_in, refresh_token_expires_at }: the lifetimes in
+// seconds as GitHub sent them, and the same as epoch ms on this helper's
+// clock (null when GitHub sent none). The page uses the seconds, on its
+// own clock. It keeps no state and logs nothing: no body, code, token or secret
 // is ever written anywhere. A Web-standard fetch handler with no
 // dependencies: Cloudflare Workers is the documented host (README.md), and
 // any runtime that takes a (Request) => Response can run it.
@@ -35,15 +37,26 @@ interface Settings {
   origins: Set<string>;
 }
 
-function settingsOf(env: Env): Settings | null {
+/** ALLOWED_ORIGINS as origins (scheme, host and port: a path or trailing
+ * slash is dropped). "*", "null" and anything that isn't a URL never
+ * match. */
+function originsOf(env: Env): Set<string> {
+  const origins = new Set<string>();
+  for (const entry of (env.ALLOWED_ORIGINS ?? "").split(",")) {
+    let origin: string;
+    try {
+      origin = new URL(entry.trim()).origin;
+    } catch {
+      continue;
+    }
+    if (origin !== "null") origins.add(origin);
+  }
+  return origins;
+}
+
+function settingsOf(env: Env, origins: Set<string>): Settings | null {
   const clientId = env.GITHUB_APP_CLIENT_ID?.trim() ?? "";
   const clientSecret = env.GITHUB_APP_CLIENT_SECRET?.trim() ?? "";
-  const origins = new Set(
-    (env.ALLOWED_ORIGINS ?? "")
-      .split(",")
-      .map((o) => o.trim())
-      .filter((o) => o !== "" && o !== "*"),
-  );
   if (clientId === "" || clientSecret === "" || origins.size === 0) return null;
   return { clientId, clientSecret, origins };
 }
@@ -114,9 +127,14 @@ function originOf(url: string): string | null {
   }
 }
 
+/** A lifetime GitHub sent, in seconds, or null. */
+function lifetime(seconds: unknown): number | null {
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
 /** Epoch ms `seconds` from now, or null when GitHub sent no lifetime. */
-function expiry(seconds: unknown, now: number): number | null {
-  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? now + seconds * 1000 : null;
+function expiry(seconds: number | null, now: number): number | null {
+  return seconds === null ? null : now + seconds * 1000;
 }
 
 /** One call to GitHub's token endpoint, mapped to this helper's answer. */
@@ -141,26 +159,33 @@ async function exchange(params: Record<string, string>, secret: string, headers:
   }
   if (typeof answer.access_token !== "string" || answer.access_token === "") return json(502, { error: "upstream_unavailable" }, headers);
   const now = Date.now();
+  const expiresIn = lifetime(answer.expires_in);
+  const refreshExpiresIn = lifetime(answer.refresh_token_expires_in);
   return json(
     200,
     {
       access_token: answer.access_token,
-      expires_at: expiry(answer.expires_in, now),
+      expires_in: expiresIn,
+      expires_at: expiry(expiresIn, now),
       refresh_token: typeof answer.refresh_token === "string" && answer.refresh_token !== "" ? answer.refresh_token : null,
-      refresh_token_expires_at: expiry(answer.refresh_token_expires_in, now),
+      refresh_token_expires_in: refreshExpiresIn,
+      refresh_token_expires_at: expiry(refreshExpiresIn, now),
     },
     headers,
   );
 }
 
 async function handle(request: Request, env: Env): Promise<Response> {
-  const settings = settingsOf(env);
-  if (!settings) return json(500, { error: "helper_not_configured" });
-  if (request.method !== "POST" && request.method !== "OPTIONS") return json(405, { error: "method_not_allowed" }, { Allow: "POST, OPTIONS" });
-
+  const origins = originsOf(env);
   const origin = request.headers.get("Origin");
-  if (origin === null || !settings.origins.has(origin)) return json(403, { error: "origin_not_allowed" });
-  const headers = cors(origin);
+  const allowed = origin !== null && origins.has(origin);
+  // Only an allowed origin may read any answer, errors included, so its
+  // page can tell a misconfigured helper from one it can't reach.
+  const headers = allowed ? cors(origin) : {};
+  const settings = settingsOf(env, origins);
+  if (!settings) return json(500, { error: "helper_not_configured" }, headers);
+  if (request.method !== "POST" && request.method !== "OPTIONS") return json(405, { error: "method_not_allowed" }, { Allow: "POST, OPTIONS", ...headers });
+  if (!allowed) return json(403, { error: "origin_not_allowed" });
 
   if (request.method === "OPTIONS") {
     return new Response(null, {

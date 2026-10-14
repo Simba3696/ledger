@@ -14,10 +14,14 @@ logs nothing.
 - `POST /token` with `{ code, code_verifier, redirect_uri }` exchanges a
   sign-in code (PKCE, S256).
 - `POST /refresh` with `{ refresh_token }` renews an expired access token.
-- Both answer `{ access_token, expires_at, refresh_token,
-  refresh_token_expires_at }`, times in epoch milliseconds.
+- Both answer `{ access_token, expires_in, expires_at, refresh_token,
+  refresh_token_expires_in, refresh_token_expires_at }`: the lifetimes in
+  seconds as GitHub sent them, and as epoch milliseconds on the helper's
+  clock. Ledger uses the seconds, on the device's own clock.
 - Only origins in `ALLOWED_ORIGINS` may call it (403 otherwise), and a
-  `redirect_uri` must be on one of them.
+  `redirect_uri` must be on one of them. Each entry is read as an origin
+  (scheme, host and port; a path is ignored), and `*` or `null` never
+  match.
 
 The steps below use placeholder names: replace `<owner>` with the GitHub
 account or organization that serves Ledger's Pages site and `<repo>` with
