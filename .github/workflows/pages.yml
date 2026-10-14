@@ -1,7 +1,9 @@
 # The static GitHub storage build (ADR-0007), deployed to GitHub Pages.
 # Every pull request builds both clients and runs the isolation check, which
-# proves the default (Supabase) bundle carries no GitHub-storage code. Pushes
-# to main and manual runs also deploy client/dist-pages. The repo's Pages
+# proves the default (Supabase) bundle carries no GitHub-storage code, and
+# runs the client unit tests and the GitHub storage e2e against a fake GitHub
+# API. Pushes to main and manual runs also deploy client/dist-pages, only once
+# both jobs passed. The repo's Pages
 # source must be set to "GitHub Actions" for the deploy (and configure-pages)
 # to work.
 name: Pages
@@ -53,8 +55,29 @@ jobs:
         with:
           path: client/dist-pages
 
+  # The client unit tests (#4 to #9) and e2e/githubStorage.ts, which builds
+  # the Pages bundle itself and drives it against an in-memory fake of
+  # GitHub's API: no secrets, no Supabase, no real GitHub request.
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Client unit tests
+        run: npm run test:client
+      - name: GitHub storage e2e
+        run: npm run test:e2e:github
+
   deploy:
-    needs: build
+    needs: [build, e2e]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
