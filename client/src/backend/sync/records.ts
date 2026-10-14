@@ -83,7 +83,10 @@ export interface SyncMeta {
   /** The epoch this epoch's genesis is based on (its `basedOn.epoch`), when
    * it has one: kept in `old` while the device stays in this epoch, since
    * another restore of the same number may be based on it with another cut
-   * (section 9.4). Absent on a device that started in this epoch. */
+   * (section 9.4). When this device never joined that epoch (it skipped
+   * it), the epoch it kept that this epoch's line reaches first instead
+   * (#adoptEpoch's anchor). Absent on a device that started in this
+   * epoch. */
   basedOn?: string;
 }
 

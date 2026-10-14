@@ -752,6 +752,13 @@ export class SyncEngine {
   #oldText: string | null = null;
   /** A tidy of hidden groups is queued. */
   #tidying = false;
+  /** Own writes diffed and not yet saved (#commit, #commitOp). */
+  #saving = 0;
+  /** What joins brought in while an own write was diffed and not yet
+   * saved, and the state before the first of them, under the identity
+   * the write was diffed as: #commitOp tells that write's clashes with
+   * them as a join after it would have (section 4.2). */
+  #joinedWhileSaving: { epoch: string; device: string; pre: SyncState; source: SyncState; ops: [string, Op][]; states: Arrivals["states"][number][] } | null = null;
   /** The next epoch being written because no Lamport value is left. */
   #renumbering: Promise<void> | null = null;
   /** restore() is writing its genesis ("writing"), or wrote it ("written",
@@ -1100,7 +1107,14 @@ export class SyncEngine {
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
     const writer = { epoch: meta.epochKey, device: meta.deviceId };
-    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    if (op === null) return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    this.#saving++;
+    const saved = this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    const settle = () => {
+      if (--this.#saving === 0) this.#joinedWhileSaving = null;
+    };
+    void saved.then(settle, settle);
+    return saved;
   }
 
   async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, { resolves, settles }: CommitExtras): Promise<void> {
@@ -1131,7 +1145,23 @@ export class SyncEngine {
     const mine: Tag = [L, me];
     const fenceNotices = notices.map((n): [string, NoticeBody] => [fenceNoticeKey(n, mine), { kind: n.kind, theirs: n.theirs, mine, registers: n.registers }]);
     const settled = settles !== undefined && op !== null ? [settles] : [];
-    const noticeWrites = fenceNotices.length > 0 || settled.length > 0 ? await this.#noticeWrites(fenceNotices, settled) : null;
+    // A join that ran after this op was diffed, and before this save, told
+    // nothing about it: it wasn't applied yet. Its clashes with this op are
+    // told now, as a join after the save would have told them (section 4.2;
+    // harness seed 140353: an edit of a record another device's delete,
+    // joined in between, removed was otherwise lost with no word).
+    const between = op !== null && this.#joinedWhileSaving?.epoch === writer.epoch && this.#joinedWhileSaving.device === writer.device ? this.#joinedWhileSaving : null;
+    let late: [string, NoticeBody][] = [];
+    let afterOwn: SyncState | null = null;
+    if (between !== null && op !== null) {
+      afterOwn = cloneState(between.pre);
+      applyOp(afterOwn, me, op);
+      late = detectNotices(afterOwn, between.source, between, me)
+        .filter((notice) => notice.loser.L === op.L)
+        .map(({ key, ...body }): [string, NoticeBody] => [key, body]);
+    }
+    const told = [...fenceNotices, ...late];
+    const noticeWrites = told.length > 0 || settled.length > 0 ? await this.#noticeWrites(told, settled) : null;
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
@@ -1142,6 +1172,7 @@ export class SyncEngine {
     this.#assertWritable();
     await this.#mutate(nextMeta, writes);
 
+    if (between !== null && afterOwn !== null) between.pre = afterOwn;
     if (op) {
       const changes = applyOp(this.#state!, me, op);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
@@ -1208,6 +1239,12 @@ export class SyncEngine {
       await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text], ...(notices ? { notices: notices.writes } : {}) });
       if (notices) this.#keepNotices(notices.next);
 
+      if (this.#saving > 0) {
+        const between = (this.#joinedWhileSaving ??= { epoch: meta.epochKey, device: meta.deviceId, pre: cloneState(this.#state!), source: emptyState(), ops: [], states: [] });
+        joinInto(between.source, source);
+        between.ops.push(...ops);
+        between.states.push(...states);
+      }
       const changes = this.#fence.join(this.#state!, source);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
       // A re-apply marker joined may resolve a group left behind here.
@@ -3080,7 +3117,8 @@ export class SyncEngine {
    * `basedOn` down through the listed geneses: `basedOn.epoch` with
    * `basedOn.seen`, then the epoch that one's genesis is based on with its
    * cut, and so on. A switch uses only the cuts of `needed` (the epoch it
-   * switches from and the one that epoch is based on), so the walk stops
+   * switches from and meta.basedOn: the one that epoch is based on, or the
+   * kept epoch standing for it), so the walk stops
    * once it reaches one of them (numbers fall down a line, so the other
    * can't follow: an epoch's base has a smaller number) or passes below
    * both. It also stops at a genesis that isn't listed or can't be read (a
@@ -3158,7 +3196,9 @@ export class SyncEngine {
     // projected again with the cut {}: it may offer more than E2b left
     // out, but loses nothing (stage 6 final review).
     // Since stage 8a the cut is read from the skipped epoch's line when it
-    // can be (genesis.line), and is {} only when it can't.
+    // can be (genesis.line), and is {} only when it can't. meta.basedOn is
+    // the anchor (below): when the switch into `from` skipped its base too,
+    // the epoch this device kept in `from`'s line, not that base.
     // A winner whose line passes through `from` holds what `from`'s genesis
     // took in, so the epoch `from` was based on needs no new projection:
     // its groups were projected with that same cut on the switch into
@@ -3176,9 +3216,8 @@ export class SyncEngine {
       // The winner's cut (or {}, for the epoch a skipped one was based
       // on) decides what of this epoch is left behind. Another
       // device's group the losing epoch resolved stays resolved. This
-      // device's own group never is on that word alone: only this device
-      // holds its unpushed changes, and a group shown now stays unless the
-      // projection replaces it under its marker.
+      // device's own group never is on that word alone: a group shown now
+      // stays unless the projection decides it.
       // Never in place of this device's own group under the same marker
       // (its former device id, after a revisit): a projection of what the
       // repo has can hold less than what this device kept unpushed.
@@ -3186,7 +3225,16 @@ export class SyncEngine {
         .filter((group) => group.own || !pre.ra.has(group.marker))
         .filter((group) => group.own || groups.get(group.marker)?.own !== true);
       const replaced = new Set(projected.map((group) => group.marker));
-      for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && !(group.own && !replaced.has(marker))) groups.delete(marker);
+      // The projection decides this device's own group of the epoch when it
+      // read the state that group came from (the same device id): that
+      // state holds every own op there, unpushed ones included, so what it
+      // no longer offers is under the winner's cut, held by the winner's
+      // line. Offering it still would offer a change the restore already
+      // took in, or superseded (#7 follow-up, harness seed 140010). An own
+      // group under a former device id is decided by nothing here, and
+      // stays.
+      const decided = (group: LeftBehindGroup) => !group.own || replaced.has(group.marker) || group.device === entry.device;
+      for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && decided(group)) groups.delete(marker);
       for (const group of projected) groups.set(group.marker, group);
     }
     for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
@@ -3195,11 +3243,23 @@ export class SyncEngine {
     }
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
-    // it behind. So is the epoch this one is based on, for a restore of the
-    // same number based on it with another cut (E1 -> E2a -> E2b -> E2c,
-    // all based on E1). An earlier one is kept only while a group from it is.
+    // it behind. So is the anchor, for a restore of the same number based
+    // on the same epoch with another cut (E1 -> E2a -> E2b -> E2c, all
+    // based on E1). An earlier one is kept only while a group from it is.
+    // The anchor (meta.basedOn from now on) is the epoch this device kept
+    // that the new genesis's line reaches first: the one it is based on,
+    // unless this device never joined that one. A device that skipped it
+    // holds that line only through the epoch it just projected with the
+    // line's cut: `from` when the line passes through it, else the
+    // fallback. A racing restore based on the same skipped epoch leaves
+    // behind what this one's genesis took in, so the anchor is projected
+    // again then, as the fallback (#7 follow-up, harness seed 150178: named
+    // after the skipped epoch, which is never in `old`, it projected
+    // nothing, and an own change only the losing genesis held was offered
+    // nowhere).
+    const anchor = basedOn === null ? undefined : skipped && !genesis.rejoin ? (fallback ?? from) : basedOn.epoch;
     const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
-    const keep = (epoch: string) => epoch !== from && (epoch === basedOn?.epoch || hasGroups(epoch));
+    const keep = (epoch: string) => epoch !== from && (epoch === anchor || hasGroups(epoch));
     const olds: OldEpoch[] = [...kept.filter((entry) => keep(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
 
     const device = newDeviceId();
@@ -3229,7 +3289,7 @@ export class SyncEngine {
       refEtag: null,
       writerToken: meta.writerToken,
       prev: { epoch: from, device: meta.deviceId },
-      ...(basedOn !== null ? { basedOn: basedOn.epoch } : {}),
+      ...(anchor !== undefined ? { basedOn: anchor } : {}),
     };
     const base = await seal(storedState(next), this.#key);
     const oldText = olds.length > 0 ? await seal(storedOld(olds), this.#key) : null;
@@ -3292,7 +3352,8 @@ export class SyncEngine {
 
   /** The `old` record to keep once only the groups `markers` are left:
    * the epoch this device last switched from (meta.prev) and the one its
-   * epoch's genesis is based on (meta.basedOn) are kept even with no group,
+   * epoch's genesis is based on, or the anchor standing for it (meta.basedOn,
+   * see #adoptEpoch), are kept even with no group,
    * since a restore that raced the one switched to may be based on either
    * with another cut, until the device switches again; an earlier epoch
    * only while a group from it is left. Undefined when that changes
