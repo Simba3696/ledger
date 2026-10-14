@@ -105,6 +105,45 @@ function until(engine: SyncEngine, predicate: (state: EngineState) => boolean): 
 
 const remarks = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).map((e) => e.remarks);
 
+
+describe("writing", () => {
+  it("is true from a write's submission until it has settled, so a reload can't cut it off", async () => {
+    let gate = deferred();
+    let holding = false;
+    const { store } = hookedStore(openSyncStore(noWait), { before: async () => (holding ? gate.promise : undefined) });
+    const d = await device({ store });
+    expect(d.engine.writing).toBe(false);
+
+    // Begun, waiting for its turn: nothing diffed or saved yet.
+    const turn = d.engine.beginWrite();
+    expect(d.engine.writing).toBe(true);
+    turn.end();
+    turn.end();
+    expect(d.engine.writing).toBe(false);
+
+    // Diffed and being saved on the device.
+    holding = true;
+    const adding = d.backend.addEntry(ENTRY);
+    expect(d.engine.writing).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(d.engine.writing).toBe(true);
+    gate.resolve();
+    await adding;
+    expect(d.engine.writing).toBe(false);
+
+    // A direct commit (no turn) counts too while it saves.
+    gate = deferred();
+    const next = structuredClone(d.engine.current());
+    next.settings.timeZone = "Europe/London";
+    const committing = d.engine.commit(next);
+    expect(d.engine.writing).toBe(true);
+    gate.resolve();
+    await committing;
+    expect(d.engine.writing).toBe(false);
+    d.engine.stop();
+  });
+});
+
 describe("commit path (section 3.5)", () => {
   it("resolves a write only after its transaction commits; until then nothing is shown or pushable", async () => {
     const { store, calls, held } = holdingStore("before");
