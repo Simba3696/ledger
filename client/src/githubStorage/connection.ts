@@ -1,3 +1,4 @@
+import { clearSignInState } from "../backend/github/appAuth";
 import { forgetThisDevice, takeRestoredEpoch } from "../backend/sync/ledgerRepo";
 import { DeviceStoreUnavailableError, loadConnection, loadKey, saveConnection, saveKey, type Connection, type StoredKey } from "../backend/github/deviceStore";
 
@@ -48,6 +49,24 @@ export async function remember(connection: Connection, key: StoredKey): Promise<
   }
 }
 
+/** A signed-in App session (#10) renewed or lost its tokens: the saved
+ * connection follows, when it is this one. A connection not yet
+ * remembered (onboarding keeps it in memory until a ledger opens) saves
+ * nothing. */
+export async function updateSavedTokens(connection: Connection): Promise<void> {
+  const same = (saved: Connection | null) =>
+    saved !== null && saved.kind === "app" && saved.owner === connection.owner && saved.repo === connection.repo && saved.login === connection.login;
+  if (memory) {
+    if (same(memory.connection)) memory = { ...memory, connection };
+    return;
+  }
+  try {
+    if (same(await loadConnection())) await saveConnection(connection);
+  } catch (err) {
+    if (!(err instanceof DeviceStoreUnavailableError)) throw err;
+  }
+}
+
 /** What a device holds that GitHub doesn't: changes not yet pushed, and
  * groups of its own changes a restore left behind (which no sync sends;
  * only Re-apply does). */
@@ -83,6 +102,8 @@ export async function forget(engine: ForgetEngine, options: { force?: boolean; c
     memory = null;
     // A restore's marker for the reload after it (sessionStorage).
     takeRestoredEpoch();
+    // A sign-in started and not finished (#10): its state and verifier.
+    clearSignInState();
   }
   return done;
 }

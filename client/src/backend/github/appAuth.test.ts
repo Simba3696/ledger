@@ -250,6 +250,10 @@ describe("the App session (token source and one refresh)", () => {
     await expect(clientOver(session, helper.fetch).verifyRepo()).resolves.toEqual({ defaultBranch: "main" });
     expect(helper.calls.map((c) => c.path)).toEqual(["/refresh"]);
     expect(fake.requests.map((r) => r.headers.authorization)).toEqual(["Bearer ghu_alexold", "Bearer ghu_alexnew"]);
+    // Another request sent with the old token, answered 401 after the
+    // refresh landed: retried with the new token, no second refresh.
+    expect(await session.onUnauthorized()).toBe(true);
+    expect(helper.calls).toHaveLength(1);
 
     // A refreshed token that is refused too: one refresh, one retry, then the 401.
     fake.revokeToken("ghu_alexnew");

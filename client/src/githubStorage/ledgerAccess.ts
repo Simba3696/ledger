@@ -3,6 +3,7 @@ import { bytesToBase64 } from "../backend/base64";
 import { DEFAULT_ITERATIONS, deriveKey, newSalt } from "../backend/crypto";
 import { createEmptyDocument } from "../backend/document/createDocument";
 import { DocumentBackend } from "../backend/document/DocumentBackend";
+import { AppNotInstalledError, AppSession, appReaches, signInConfig, type AppTokens, type SignInConfig } from "../backend/github/appAuth";
 import { createGitHubClient, getLogin, type GitHubClient } from "../backend/github/contents";
 import type { Connection } from "../backend/github/deviceStore";
 import { createLedger, findLedger, openGenesis, type CreateResult, type GenesisOpen, type LedgerFound } from "../backend/sync/ledgerRepo";
@@ -13,6 +14,7 @@ import type { SyncStore } from "../backend/sync/persist";
 import { SyncEngine, type SyncRemote } from "../backend/sync/SyncEngine";
 import { SyncedHost } from "../backend/sync/SyncedHost";
 import type { ModuleName } from "../api";
+import { updateSavedTokens } from "./connection";
 
 // What #8's gate does with GitHub, one step per function, so each is
 // tested against the fake GitHub without a browser: connect (who the token
@@ -29,30 +31,78 @@ export interface Deps {
   locks?: LockManager | null;
   /** A clock that never jumps (the PUT spacing): tests move it on. */
   monotonic?: () => number;
+  /** Sign in with GitHub's settings (#10): the dev page and tests pass
+   * their own; the app uses this build's, signInConfig(). */
+  signInConfig?: SignInConfig | null;
+  /** Where startSignIn sends the browser: the dev page's fake GitHub
+   * authorize page. The app goes to github.com. */
+  navigate?: (url: string) => void;
+}
+
+/** The sign-in settings in force: the deps' own, or this build's. */
+export function signInConfigOf(deps: Deps): SignInConfig | null {
+  return deps.signInConfig !== undefined ? deps.signInConfig : signInConfig();
 }
 
 export interface Connected {
   connection: Connection;
   remote: SyncRemote;
   found: LedgerFound;
+  /** What the connection's requests carry, for Replace token to swap in. */
+  token: TokenHolder;
 }
 
-/** The token a running ledger's requests carry: Replace token (a 401)
- * swaps it here, and every later request, the sync engine's included,
- * sends the new one. */
+/** What a running ledger's requests carry: a pasted token, or a signed-in
+ * GitHub App session (#10) whose token refreshes itself. Replace token (a
+ * 401) swaps them here, and every later request, the sync engine's
+ * included, uses the new ones. Both kinds go through the same client. */
 export interface TokenHolder {
   token: string;
+  app: AppSession | null;
 }
 
-function clientFor(connection: Pick<Connection, "owner" | "repo">, token: TokenHolder | string, deps: Deps): GitHubClient {
-  const source = typeof token === "string" ? token : () => Promise.resolve(token.token);
-  return createGitHubClient({ owner: connection.owner, repo: connection.repo, token: source, fetch: deps.fetch });
+const sessions = new WeakMap<Connection, AppSession>();
+
+/** The App session over a kind "app" connection record: one per record,
+ * so every client on it shares one refresh (a refresh token works once).
+ * It updates the record in place, and the saved copy when there is one. */
+export function appSessionFor(connection: Connection, deps: Deps = {}): AppSession {
+  let session = sessions.get(connection);
+  if (!session) {
+    session = new AppSession(connection, {
+      helperUrl: signInConfigOf(deps)?.helperUrl ?? null,
+      fetch: deps.fetch,
+      // A save that fails leaves the old tokens saved: the next start then
+      // asks to sign in again, which loses nothing.
+      onChange: () => void updateSavedTokens(connection).catch(() => {}),
+    });
+    sessions.set(connection, session);
+  }
+  return session;
+}
+
+function holderFor(connection: Connection, deps: Deps): TokenHolder {
+  return { token: connection.token, app: connection.kind === "app" ? appSessionFor(connection, deps) : null };
+}
+
+const tokenOf = (holder: TokenHolder) => (holder.app ? holder.app.token() : Promise.resolve(holder.token));
+
+function clientFor(connection: Pick<Connection, "owner" | "repo">, holder: TokenHolder, deps: Deps): GitHubClient {
+  return createGitHubClient({
+    owner: connection.owner,
+    repo: connection.repo,
+    token: () => tokenOf(holder),
+    // #6's client retries a 401 once when this resolves true: an App
+    // session refreshes its token first; a pasted token has no renewal.
+    onUnauthorized: () => (holder.app ? holder.app.onUnauthorized() : Promise.resolve(false)),
+    fetch: deps.fetch,
+  });
 }
 
 /** The repo a saved connection names, for reads before a ledger is open
  * (Unlock on a later start). */
 export async function remoteFor(connection: Connection, deps: Deps = {}): Promise<SyncRemote> {
-  const client = clientFor(connection, connection.token, deps);
+  const client = clientFor(connection, holderFor(connection, deps), deps);
   return { client, branch: connection.branch ?? (await client.verifyRepo()).defaultBranch };
 }
 
@@ -69,20 +119,32 @@ export class ConnectFailed extends Error {
 }
 
 /** Who the token belongs to, the repo (private, reachable), and what it
- * holds. `owner` null means the token's own login (the personal path).
- * Throws ConnectFailed. */
-export async function connect(token: string, target: { owner: string | null; repo: string }, deps: Deps = {}): Promise<Connected> {
+ * holds. `credentials` is a pasted token, or the tokens a GitHub sign-in
+ * returned (#10), which must also reach the repo through one of the App's
+ * installations (else AppNotInstalledError, the install prompt). `owner`
+ * null means the token's own login (the personal path). Throws
+ * ConnectFailed. */
+export async function connect(credentials: string | AppTokens, target: { owner: string | null; repo: string }, deps: Deps = {}): Promise<Connected> {
   let owner = target.owner;
+  // Built first, so an App session refreshes into the record that is saved.
+  const connection: Connection =
+    typeof credentials === "string"
+      ? { kind: "pat", token: credentials, owner: "", repo: target.repo, path: LEDGER_DIR, login: "" }
+      : { kind: "app", ...credentials, owner: "", repo: target.repo, path: LEDGER_DIR, login: "" };
+  const token = holderFor(connection, deps);
   try {
-    const { login, tokenExpiresAt } = await getLogin({ token, fetch: deps.fetch });
+    const { login, tokenExpiresAt } = await getLogin({ token: () => tokenOf(token), fetch: deps.fetch });
     owner ??= login;
-    const client = clientFor({ owner, repo: target.repo }, token, deps);
+    connection.owner = owner;
+    connection.login = login;
+    if (token.app && !(await appReaches(token.app.token, owner, target.repo, deps.fetch))) throw new AppNotInstalledError(owner, target.repo);
+    const client = clientFor(connection, token, deps);
     const { defaultBranch } = await client.verifyRepo();
     const remote: SyncRemote = { client, branch: defaultBranch };
     const found = await findLedger(remote);
-    const connection: Connection = { kind: "pat", token, owner, repo: target.repo, path: LEDGER_DIR, login, branch: defaultBranch };
-    if (tokenExpiresAt !== null) connection.expiresAt = tokenExpiresAt;
-    return { connection, remote, found };
+    connection.branch = defaultBranch;
+    if (connection.kind === "pat" && tokenExpiresAt !== null) connection.expiresAt = tokenExpiresAt;
+    return { connection, remote, found, token };
   } catch (err) {
     throw new ConnectFailed(err, owner);
   }
@@ -165,7 +227,7 @@ export type Opened =
  * lock. While another tab holds the lock, the engine opens without a first
  * start; the gate runs it once the lock arrives (needsInit). */
 export async function openLedger(connection: Connection, key: DeviceKey, start: Start | null, deps: Deps = {}): Promise<Opened> {
-  const token: TokenHolder = { token: connection.token };
+  const token = holderFor(connection, deps);
   const client = clientFor(connection, token, deps);
   const remote: SyncRemote = { client, branch: connection.branch ?? (await client.verifyRepo()).defaultBranch };
   const engine = new SyncEngine({ key, actor: connection.login, remote, store: deps.store, locks: deps.locks, monotonic: deps.monotonic });

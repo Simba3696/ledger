@@ -24,6 +24,10 @@ const API_BASE = "https://api.github.com";
 const TIMEOUT_MS = 30_000;
 /** Refresh an access token with less than this left. */
 const REFRESH_MARGIN_MS = 5 * 60_000;
+/** A 401 this soon after a refresh came from a request sent with the old
+ * token (one in flight while it refreshed): its retry uses the new token,
+ * and no second refresh is made. The longest a request can be in flight. */
+const STALE_401_MS = TIMEOUT_MS;
 /** The callback's query parameters, all removed from the address bar. */
 const CALLBACK_PARAMS = ["code", "state", "installation_id", "setup_action", "error", "error_description", "error_uri"];
 
@@ -260,6 +264,8 @@ export class AppSession {
   readonly #fetch: typeof fetch;
   readonly #onChange: (record: AppTokens) => void;
   #refreshing: Promise<RefreshOutcome> | null = null;
+  /** When the last refresh landed (Date.now()), or null. */
+  #refreshedAt: number | null = null;
 
   constructor(
     record: AppTokens,
@@ -292,9 +298,12 @@ export class AppSession {
   };
 
   /** A 401 from api.github.com: one refresh. True when the request should
-   * be retried with the new token; false when the sign-in expired. */
+   * be retried with the new token; false when the sign-in expired. A 401
+   * for a request sent just before a refresh landed is retried with the
+   * new token without refreshing again. */
   readonly onUnauthorized = async (): Promise<boolean> => {
     if (this.expired) return false;
+    if (this.#refreshing === null && this.#refreshedAt !== null && Date.now() - this.#refreshedAt < STALE_401_MS) return true;
     const outcome = await this.#refresh();
     if (outcome === "unreachable") throw new GitHubNetworkError(SIGN_IN_UNREACHABLE);
     return outcome === "ok";
@@ -302,7 +311,8 @@ export class AppSession {
 
   /** Ends the session: the record keeps no token. */
   expire(): void {
-    if (this.expired && Object.keys(this.#record).length === 1) return;
+    const r = this.#record;
+    if (r.token === "" && r.expiresAt === undefined && r.refreshToken === undefined && r.refreshTokenExpiresAt === undefined) return;
     this.#record.token = "";
     delete this.#record.expiresAt;
     delete this.#record.refreshToken;
@@ -342,6 +352,7 @@ export class AppSession {
       if (tokens[key] === undefined) delete this.#record[key];
       else this.#record[key] = tokens[key];
     }
+    this.#refreshedAt = Date.now();
     this.#onChange(this.#record);
     return "ok";
   }
