@@ -1,3 +1,4 @@
+import { forgetThisDevice, takeRestoredEpoch } from "../backend/sync/ledgerRepo";
 import { DeviceStoreUnavailableError, loadConnection, loadKey, saveConnection, saveKey, type Connection, type StoredKey } from "../backend/github/deviceStore";
 
 // The GitHub connection and the passphrase key, as #8's gate keeps them: a
@@ -45,6 +46,21 @@ export async function remember(connection: Connection, key: StoredKey): Promise<
     memory = { connection, key };
     return false;
   }
+}
+
+/** Forget this device (#8): its sync state and its connection and key,
+ * on the device and in this tab's memory. Nothing on GitHub changes.
+ * Refused while this device has changes GitHub doesn't have (unsynced, or
+ * its own left behind by a restore), unless `force`: #7's
+ * forgetThisDevice syncs first and says how many. */
+export async function forget(engine: Parameters<typeof forgetThisDevice>[0], options: { force?: boolean } = {}): ReturnType<typeof forgetThisDevice> {
+  const done = await forgetThisDevice(engine, options);
+  if (done.ok) {
+    memory = null;
+    // A restore's marker for the reload after it (sessionStorage).
+    takeRestoredEpoch();
+  }
+  return done;
 }
 
 /** Tests only: back to a fresh tab. */

@@ -147,7 +147,9 @@ export async function startFromRepo(
 }
 
 export type Opened =
-  | { kind: "open"; engine: SyncEngine; token: TokenHolder; remote: SyncRemote }
+  /** `backend`: the one behind api.ts, for what api.ts doesn't carry
+   * (Settings' updateSettings). */
+  | { kind: "open"; engine: SyncEngine; backend: DocumentBackend; token: TokenHolder; remote: SyncRemote }
   /** A first start with no ledger to start from yet, or one the saved key
    * doesn't open: the gate goes back to Create or Unlock. */
   | { kind: "found"; found: LedgerFound }
@@ -184,6 +186,7 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
     engine.stop();
     throw err;
   }
-  installBackend(new DocumentBackend({ host: new SyncedHost(engine), now: Date.now, actor: connection.login, newId: () => crypto.randomUUID() }));
-  return { kind: "open", engine, token, remote };
+  const backend = new DocumentBackend({ host: new SyncedHost(engine), now: Date.now, actor: connection.login, newId: () => crypto.randomUUID() });
+  installBackend(backend);
+  return { kind: "open", engine, backend, token, remote };
 }
