@@ -301,6 +301,23 @@ Design questions left open by stage 7 (the conservative reading is what is built
   A write at 10 years is about 5 times faster, so a phone 3 to 5 times slower than this machine would take an estimated 60 to 100 ms, down from 300 to 450 ms. The cold start gains less than the request count suggests. #8's four requests and the first cycle's ref and tree reads must happen in turn, and opening and checking three 3 MB snapshots is CPU time that parallel reads don't shorten. A diff on a whole clone (the path a host without `draft` takes) is unchanged within the noise.
 - **Still recorded, not changed:** every commit re-seals the whole own log; the chain store is never trimmed; and the snapshot grows towards the write bound (stage 8c, above).
 
+**Stage 8d (real-GitHub smoke test, 2026-10-14).** The engine as the app runs it, over api.github.com instead of the fake, in a throwaway private repo, with a fine-grained token limited to that repo and Contents read/write (spec section 16.5). `realGitHub.smoke.test.ts` runs only when given `LEDGER_SMOKE_REPO` and `LEDGER_SMOKE_TOKEN`; it never prints the token and never deletes anything. On an empty repo it creates the ledger; on one an earlier run left it restores an empty ledger over it as a new epoch, so it can be rerun on the same repo.
+- **What a run does, all through the real engine and `DocumentBackend`:**
+  1. creates the ledger (#8's `createLedger`) on an empty repo, whose `git/*` reads answer 409 "Git Repository is empty.";
+  2. two devices join (`findLedger`, `openGenesis`, `initialize` with the genesis), and add expenses and sync at the same moment, so their PUTs race on the branch ref;
+  3. both edit the same expense before syncing: one value wins on both, and a notice is raised;
+  4. a restore while the other device holds an unsynced change: that device switches to the new epoch, is offered its change back, re-applies it, and both converge;
+  5. writes past a lowered compaction point (6 ops) write a snapshot, and a third device cold-starts from the snapshots and logs on GitHub and converges.
+- **Results:** three runs, all passing; the first failed only on the test's own expectation of an amount's text, which was fixed.
+  - A rerun took 56 s: 136 requests, all within the token's permissions. These were 38 ref reads plus 21 uncounted 304s, 30 trees, 28 blobs, and 18 PUTs (7 creates, 9 updates, and 2 branch-race 409s that were retried and landed).
+  - The third device's cold start took 10 requests and 3.3 s on a real connection.
+  - The repo after the three runs: 6 epochs (a create and 5 restores), 11 logs and 2 snapshots. Its commits carry only the fixed messages ("Create", "Sync", "Snapshot", "Restore").
+- **Settled:** a fine-grained token suffices (github-api-behaviour.md A23). Branch-race 409s happen with real GitHub at ordinary speed and are reconciled. Create, join, restore, left-behind re-apply, snapshots and cold start all work end to end against the real API.
+- **Still open:**
+  - *A keepalive PUT on `pagehide` from iOS Safari and Android Chrome* (A24): needs the owner's phones and a page to close. It is left until #8 mounts the UI. A lost keepalive is only a lost send that the next start recovers.
+  - *Repo size over time* (A25): GitHub computes `size` lazily, so it is read later.
+  - *Two first commits at once on an empty repo*: not run, since it needs another empty repo. The loser's 409 message is still unknown, and the fake answers it as a branch race (github-api-behaviour.md section 19). This goes with the racing-create window that D32 defers to #8.
+
 Stage 8 (#8 join, create and onboarding) acceptance requirements that stage 6 set:
 - **STAGE-8: joining from `epochGone` offers this device's own changes first** (stage 6 final review, finding 8). `epochGone` (with `EPOCH_GONE` and `EPOCH_GONE_EMPTY`) promises that this device's changes are kept on it, but the join #8 offers replaces its sync state. Before that join clears anything, #8 must offer the device's own changes: an export of its current document (`exportBackup`), or carrying them into the joined ledger as an own left-behind group with the cut `{}` (as a switch does), shown prominently (D18). It refuses, unless the person chooses to drop them, as `forgetThisDevice` does for unsynced changes. With no winner (`EPOCH_GONE_EMPTY`), the way on is a restore of this device's export into the empty repo (`createLedger` with reason `restore`), or a new ledger.
 
