@@ -120,3 +120,41 @@
 .gh-card li {
   overflow-wrap: anywhere;
 }
+
+/* Settings (#8). */
+.gh-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.gh-settings-section h3 {
+  margin: 0;
+  font-size: var(--font-size-base);
+}
+
+.gh-warning {
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+}
+
+.gh-invite {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-xs);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.gh-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  align-self: flex-start;
+}
+
+.gh-settings-section .gh-secondary {
+  align-self: flex-start;
+}

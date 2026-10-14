@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ModuleName } from "../api";
 import { Ledger } from "../App";
+import { installBackend } from "../api";
+import { httpBackend } from "../backend/HttpBackend";
 import { checkEnvironment } from "../backend/crypto";
+import { DialogHost } from "../components/Dialog";
 import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
+import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
 import { damagedFileMessage, findLedger, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
 import type { SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
+import { confirmAndForget } from "./forgetFlow";
 import { ConnectFailed, connect, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
 import { readInvite } from "./links";
 import { ConnectStep } from "./onboarding/ConnectStep";
@@ -19,6 +24,8 @@ import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
 import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
+import { HeaderActions } from "./HeaderActions";
+import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
 import { SyncPanel } from "./sync/SyncPanel";
@@ -56,6 +63,7 @@ function targetOf(connection: Connection): Target {
 
 interface OpenLedger {
   engine: SyncEngine;
+  backend: DocumentBackend;
   token: TokenHolder;
   remote: SyncRemote;
   connection: Connection;
@@ -78,10 +86,17 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   const [remembered, setRemembered] = useState(true);
   const [sections, setSections] = useState<readonly ModuleName[]>(SECTIONS);
   const [open, setOpen] = useState<OpenLedger | null>(null);
+  /** Settings shows in the ledger's place (#8); saving there bumps the
+   * revision the ledger is keyed on, so it remounts and reads the sections
+   * again. */
+  const [view, setView] = useState<"ledger" | "settings">("ledger");
+  const [settingsRevision, setSettingsRevision] = useState(0);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
+  /** forgotten(), for the engine watcher (an effect that outlives renders). */
+  const forgottenRef = useRef<() => void>(() => {});
 
   /** A step failed on GitHub: a refused token goes to Replace token (which
    * keeps everything on the device); anything else is told and can be
@@ -101,7 +116,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         if (opened.kind === "open") {
           work.current.remote = opened.remote;
           work.current.connection = connection;
-          setOpen({ engine: opened.engine, token: opened.token, remote: opened.remote, connection });
+          setOpen({ engine: opened.engine, backend: opened.backend, token: opened.token, remote: opened.remote, connection });
           return true;
         }
         work.current.found = opened.found;
@@ -165,6 +180,15 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         joining = true;
         void (async () => {
           try {
+            // Forgotten in another tab meanwhile (it freed the lock this tab
+            // was waiting for): rejoining would write the ledger back to a
+            // device the person just cleared.
+            const saved = await loadSaved();
+            if (saved.remembered && !saved.connection) {
+              engine.stop();
+              forgottenRef.current();
+              return;
+            }
             const from = await startFromRepo(remote, key);
             if (from.kind === "start") return void (await engine.initialize(from.start.epoch, from.start.state, { sha: from.start.sha, state: from.start.state }));
             engine.stop();
@@ -261,14 +285,19 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * while unlocking or on a later start), the gate goes on from where it
    * stopped. */
   async function onReplace(token: string) {
+    const error = await replaceToken(token);
+    if (error) dispatch({ type: "connectFailed", message: error, awaitingApproval: false });
+  }
+
+  /** onReplace's work, shared with Settings: what to tell the person, or
+   * null once the new token is in use. */
+  async function replaceToken(token: string): Promise<string | null> {
     const connection = open?.connection ?? work.current.connection;
-    if (!connection) return;
+    if (!connection) return null;
     const target = targetOf(connection);
     try {
       const connected = await connect(token, { owner: target.owner, repo: target.repo }, deps);
-      if (connected.connection.login.toLowerCase() !== connection.login.toLowerCase()) {
-        return dispatch({ type: "connectFailed", message: otherAccount(connection.login), awaitingApproval: false });
-      }
+      if (connected.connection.login.toLowerCase() !== connection.login.toLowerCase()) return otherAccount(connection.login);
       const next: Connection = { ...connection, token };
       if (connected.connection.expiresAt) next.expiresAt = connected.connection.expiresAt;
       else delete next.expiresAt;
@@ -281,22 +310,43 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         setOpen({ ...open, connection: next });
         dispatch({ type: "tokenReplaced", target: targetOf(next) });
         void open.engine.syncNow();
-        return;
+        return null;
       }
       work.current.remote = connected.remote;
       if (key) {
         setRemembered(await remember(next, key));
         if (await openWith(next, key, null)) dispatch({ type: "opened", target: targetOf(next) });
-        return;
+        return null;
       }
       dispatch({ type: "found", target: targetOf(next), found: foundOf(connected.found) });
+      return null;
     } catch (err) {
       const cause = err instanceof ConnectFailed ? err.cause : err;
       // A token that can't reach this repo was made for another one, or, in
       // an organization, may still wait for an owner's approval.
-      const message = cause instanceof RepoNotFoundError && !target.ownerIsOrg ? OTHER_REPO : connectError(cause, target).message;
-      dispatch({ type: "connectFailed", message, awaitingApproval: false });
+      return cause instanceof RepoNotFoundError && !target.ownerIsOrg ? OTHER_REPO : connectError(cause, target).message;
     }
+  }
+
+  /** Forget this device finished: nothing of it is left here. */
+  function forgotten() {
+    // api.ts lets go of the old ledger's backend (and its document).
+    installBackend(httpBackend);
+    setOpen(null);
+    setView("ledger");
+    work.current = { connection: null, remote: null, found: null, key: null };
+    dispatch({ type: "forgotten" });
+  }
+
+  forgottenRef.current = forgotten;
+
+  /** Forget this device from a screen that can't open the ledger (a dead
+   * token, a ledger that won't open): the open engine, if there is one,
+   * tells what's unsaved. Resolves to an error to show, or null. */
+  async function onForget(): Promise<string | null> {
+    const outcome = await confirmAndForget(open?.engine ?? null);
+    if (outcome.kind === "forgotten") forgotten();
+    return outcome.kind === "failed" ? outcome.message : null;
   }
 
   /** Try again from a blocked screen: with what this device saved, open
@@ -334,9 +384,39 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         </Shell>
       );
     }
+    const target = targetOf(open.connection);
     return (
-      <SyncHost engine={open.engine} bar={<SyncPanel />}>
-        <Ledger key={`${open.connection.owner}/${open.connection.repo}`} session={null} />
+      // Settings goes in the bar, outside the part SyncHost re-keys on
+      // every join, so a change from another device doesn't remount it
+      // (and lose what's typed, or an open dialog).
+      <SyncHost
+        engine={open.engine}
+        bar={
+          <>
+            <SyncPanel />
+            {view === "settings" && (
+              <Shell>
+                <Settings
+              engine={open.engine}
+              backend={open.backend}
+              connection={{ ...target, login: open.connection.login, expiresAt: open.connection.expiresAt }}
+              onDone={(changed) => {
+                if (changed) setSettingsRevision((n) => n + 1);
+                setView("ledger");
+              }}
+              onReplaceToken={replaceToken}
+              onForgotten={forgotten}
+            />
+              </Shell>
+            )}
+          </>
+        }
+      >
+        {view === "ledger" && (
+          // headerActions is read inside Ledger's GitHub-only branch
+          // (App.tsx, #8 decision 16).
+          <Ledger key={`${target.owner}/${target.repo}#${settingsRevision}`} session={null} headerActions={<HeaderActions onSettings={() => setView("settings")} />} />
+        )}
       </SyncHost>
     );
   }
@@ -353,8 +433,9 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       {screen.kind === "step" && screen.step === "connect" && <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} />}
       {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onBack={back} />}
       {screen.kind === "unlock" && <Unlock screen={screen} remembered={remembered} onUnlock={onUnlock} onBack={back} />}
-      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} />}
-      {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} />}
+      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} onForget={work.current.connection ? onForget : undefined} />}
+      {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} onForget={onForget} />}
+      <DialogHost />
     </Shell>
   );
 }

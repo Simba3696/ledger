@@ -4,6 +4,7 @@ import { createFakeGitHub, type FakeGitHub } from "../backend/github/fakeGitHub"
 import { MemoryStore } from "../backend/sync/cycleTestkit";
 import { FakeLocks } from "../backend/sync/localTestkit";
 import { docText } from "../backend/sync/testkit";
+import { forget, loadSaved, remember, resetMemoryForTests } from "./connection";
 import { connect, createNew, keyFor, openLedger, unlock } from "./ledgerAccess";
 
 // #8's connect, create, unlock and open, against the fake GitHub (which
@@ -116,4 +117,64 @@ describe("onboarding against the fake GitHub (#8)", () => {
     expect(opened.engine.getState()).toMatchObject({ needsInit: false, hasDocument: true });
     opened.engine.stop();
   }, 30_000);
+
+  it("a settings change is one push of this device's log, and another device sees it (AC 10)", async () => {
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
+    const created = await createNew(alex, PASSPHRASE, choices);
+    if (created.result.kind !== "created") throw new Error(created.result.kind);
+    const first = await openLedger(alex.connection, created.key, { epoch: created.result.epoch, sha: created.result.sha, state: created.result.state }, { fetch: fake.fetch, store: new MemoryStore() });
+    if (first.kind !== "open") throw new Error(first.kind);
+    const before = puts().length;
+    await first.backend.updateSettings({ modules: ["expenses", "debts"], timeZone: "Europe/London" });
+    await first.engine.syncNow();
+    const sent = puts().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].path).toMatch(/\/contents\/ledger\/e[0-9a-f-]+\.d[0-9a-f]+\.log\.enc$/);
+
+    const sam = await connect("github_pat_sam", { owner: "alex", repo: "ledger-data" }, { fetch: fake.fetch });
+    if (sam.found.kind !== "ledger") throw new Error(sam.found.kind);
+    const opened = await unlock(sam.found, PASSPHRASE);
+    if (!opened.ok) throw new Error(opened.problem);
+    const second = await openLedger(sam.connection, opened.key, opened.start, { fetch: fake.fetch, store: new MemoryStore() });
+    if (second.kind !== "open") throw new Error(second.kind);
+    // It started from the genesis; its first cycle joins Alex's log.
+    await second.engine.syncNow();
+    expect(second.engine.current().settings).toEqual({ modules: ["expenses", "debts"], timeZone: "Europe/London" });
+    first.engine.stop();
+    second.engine.stop();
+  }, 60_000);
+
+  it("Forget this device leaves no ledger: database behind and sends nothing to GitHub (AC 11)", async () => {
+    resetMemoryForTests();
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
+    const created = await createNew(alex, PASSPHRASE, choices);
+    if (created.result.kind !== "created") throw new Error(created.result.kind);
+    await remember(alex.connection, created.key);
+    // The device store as the app uses it: IndexedDB.
+    const opened = await openLedger(alex.connection, created.key, { epoch: created.result.epoch, sha: created.result.sha, state: created.result.state }, { fetch: fake.fetch });
+    if (opened.kind !== "open") throw new Error(opened.kind);
+    await opened.engine.syncNow();
+    const from = fake.requests.length;
+    expect(await forget(opened.engine)).toEqual({ ok: true });
+    const names = (await indexedDB.databases()).map((d) => d.name ?? "");
+    expect(names.filter((n) => n.startsWith("ledger:"))).toEqual([]);
+    expect(fake.requests.slice(from).filter((r) => r.method !== "GET")).toEqual([]);
+    // A later start finds nothing saved (reading opens an empty store).
+    expect(await loadSaved()).toEqual({ connection: null, key: null, remembered: true });
+  }, 60_000);
+
+  it("Forget refuses while a change isn't on GitHub, and says how many, unless forced", async () => {
+    resetMemoryForTests();
+    let offline = false;
+    const flaky: typeof fetch = (input, init) => (offline ? Promise.reject(new TypeError("offline")) : fake.fetch(input, init));
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: flaky });
+    const created = await createNew(alex, PASSPHRASE, choices);
+    if (created.result.kind !== "created") throw new Error(created.result.kind);
+    const opened = await openLedger(alex.connection, created.key, { epoch: created.result.epoch, sha: created.result.sha, state: created.result.state }, { fetch: flaky, store: new MemoryStore() });
+    if (opened.kind !== "open") throw new Error(opened.kind);
+    offline = true;
+    await opened.backend.addEntry({ year: 2026, month: 5, amount: 40, remarks: "Groceries", category: "food", isCard: false });
+    expect(await forget(opened.engine)).toEqual({ ok: false, pendingCount: 1, leftBehindOwnCount: 0 });
+    expect(await forget(opened.engine, { force: true })).toEqual({ ok: true });
+  }, 60_000);
 });
