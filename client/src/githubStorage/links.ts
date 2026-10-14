@@ -24,9 +24,13 @@ function url(path: string, params: Record<string, string> = {}): string {
 const segment = (name: string) => encodeURIComponent(name);
 
 /** github.com/new, for a private ledger-data repo owned by the signed-in
- * person ("@me") or an organization. */
+ * person or an organization. GitHub documents `owner` as an account name;
+ * the person's own is the form's default, so it isn't sent for them
+ * (checked against GitHub's docs, 2026-10-14). */
 export function newRepoUrl(owner: { org: string } | "me", name = DEFAULT_REPO_NAME): string {
-  return url("/new", { owner: owner === "me" ? "@me" : owner.org, name, visibility: "private", description: REPO_DESCRIPTION });
+  const params: Record<string, string> = { name, visibility: "private", description: REPO_DESCRIPTION };
+  if (owner !== "me") params.owner = owner.org;
+  return url("/new", params);
 }
 
 /** The fine-grained token form, prefilled with a name, a description, a

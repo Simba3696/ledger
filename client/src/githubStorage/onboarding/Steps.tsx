@@ -130,17 +130,23 @@ export function StepCard({ screen, onOrg, onBack, onNext }: { screen: StepScreen
         "Token approval",
         <>
           <p>
-            A new organization asks an owner to approve each member's token before it works. Keep that on: it means nobody can reach your household's data without you saying yes.
+            Your organization can require an owner's approval before each member's token works. Turn that on (or leave it on): nobody can then reach your household's data without you saying yes.
           </p>
-          <p>
-            You approve tokens on GitHub under your organization's <strong>Settings</strong>, then <strong>Personal access tokens</strong>, then <strong>Pending requests</strong>.
-          </p>
-          <GitHubLink href={orgPendingTokensUrl(org)} testId="gh-open-pending">
-            Open GitHub: pending token requests
+          <GitHubLink href={orgTokenPolicyUrl(org)} testId="gh-open-policy">
+            Open GitHub: token policy
           </GitHubLink>
-          <p className="gh-note">
-            To check the setting itself: <a href={orgTokenPolicyUrl(org)} target="_blank" rel="noopener noreferrer">token policy</a>.
-          </p>
+          <ol>
+            <li>
+              Under <strong>Fine-grained personal access tokens</strong>, choose <strong>Require administrator approval</strong> and save.
+            </li>
+            <li>
+              Later, approve each member's token under your organization's <strong>Settings</strong>, then <strong>Personal access tokens</strong>, then{" "}
+              <a href={orgPendingTokensUrl(org)} target="_blank" rel="noopener noreferrer">
+                Pending requests
+              </a>
+              . GitHub also emails owners about tokens waiting each day.
+            </li>
+          </ol>
         </>,
       );
     case "members":
@@ -152,7 +158,7 @@ export function StepCard({ screen, onOrg, onBack, onNext }: { screen: StepScreen
           </GitHubLink>
           <ol>
             <li>
-              Press <strong>Invite member</strong> for each person, by their GitHub username or email.
+              Press <strong>Invite member</strong> for each person, by their GitHub username or email. An email invite works only if it matches an email they've verified on GitHub.
             </li>
             <li>
               Then give each of them <strong>Write</strong> on <strong>{repo}</strong>: on the{" "}
@@ -171,7 +177,7 @@ export function StepCard({ screen, onOrg, onBack, onNext }: { screen: StepScreen
       return card(
         "Accept the invitation",
         <>
-          <p>Someone in your household invited you to their GitHub organization. If you don't have a GitHub account yet, create one first.</p>
+          <p>Someone in your household invited you to their GitHub organization: GitHub emailed you the invitation. If you don't have a GitHub account yet, create one first, with that email.</p>
           <OrgName screen={screen} onOrg={onOrg} />
           {screen.org && (
             <>
@@ -197,7 +203,7 @@ export function StepCard({ screen, onOrg, onBack, onNext }: { screen: StepScreen
           {TOKEN_STEPS(repo)}
           {screen.path !== "personal" && (
             <p className="gh-note">
-              <strong>{org}</strong> may need an owner to approve your token first. You can paste it now either way.
+              <strong>{org}</strong> may need an owner to approve your token first. If GitHub asks for a reason, write something like "Ledger, our household's money". You can paste the token now either way.
             </p>
           )}
         </>,

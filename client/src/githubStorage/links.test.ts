@@ -19,7 +19,9 @@ describe("github.com links (#8)", () => {
   it("creates a private ledger-data repo for the signed-in person", () => {
     const url = newRepoUrl("me");
     expect(url.startsWith("https://github.com/new?")).toBe(true);
-    expect(params(url)).toMatchObject({ owner: "@me", name: "ledger-data", visibility: "private" });
+    expect(params(url)).toMatchObject({ name: "ledger-data", visibility: "private" });
+    // The form's default owner is the signed-in person; "@me" isn't documented.
+    expect(params(url).owner).toBeUndefined();
   });
 
   it("creates the repo in a household's organization", () => {
