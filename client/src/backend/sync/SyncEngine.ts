@@ -3176,9 +3176,8 @@ export class SyncEngine {
       // The winner's cut (or {}, for the epoch a skipped one was based
       // on) decides what of this epoch is left behind. Another
       // device's group the losing epoch resolved stays resolved. This
-      // device's own group never is on that word alone: only this device
-      // holds its unpushed changes, and a group shown now stays unless the
-      // projection replaces it under its marker.
+      // device's own group never is on that word alone: a group shown now
+      // stays unless the projection decides it.
       // Never in place of this device's own group under the same marker
       // (its former device id, after a revisit): a projection of what the
       // repo has can hold less than what this device kept unpushed.
@@ -3186,7 +3185,16 @@ export class SyncEngine {
         .filter((group) => group.own || !pre.ra.has(group.marker))
         .filter((group) => group.own || groups.get(group.marker)?.own !== true);
       const replaced = new Set(projected.map((group) => group.marker));
-      for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && !(group.own && !replaced.has(marker))) groups.delete(marker);
+      // The projection decides this device's own group of the epoch when it
+      // read the state that group came from (the same device id): that
+      // state holds every own op there, unpushed ones included, so what it
+      // no longer offers is under the winner's cut, held by the winner's
+      // line. Offering it still would offer a change the restore already
+      // took in, or superseded (#7 follow-up, harness seed 140010). An own
+      // group under a former device id is decided by nothing here, and
+      // stays.
+      const decided = (group: LeftBehindGroup) => !group.own || replaced.has(group.marker) || group.device === entry.device;
+      for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && decided(group)) groups.delete(marker);
       for (const group of projected) groups.set(group.marker, group);
     }
     for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
