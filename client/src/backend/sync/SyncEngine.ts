@@ -771,6 +771,8 @@ export class SyncEngine {
   #tidying = false;
   /** Own writes diffed and not yet saved (#commit, #commitOp). */
   #saving = 0;
+  /** Write turns begun (#turn) and not yet ended. */
+  #openTurns = 0;
   /** What joins brought in while an own write was diffed and not yet
    * saved, and the state before the first of them, under the identity
    * the write was diffed as: #commitOp tells that write's clashes with
@@ -1039,6 +1041,8 @@ export class SyncEngine {
    * restore left behind (reapply, discard) or settle a notice (its action). */
   #turn(): { ready: Promise<void>; commit: (next: LedgerDocument, extras?: CommitExtras) => Promise<void>; end: () => void } {
     const pin = this.#fence.pin();
+    this.#openTurns++;
+    let open = true;
     const ready = this.#writesSettled;
     let ended!: () => void;
     const end = new Promise<void>((resolve) => (ended = resolve));
@@ -1053,10 +1057,21 @@ export class SyncEngine {
         }
       },
       end: () => {
+        if (open) {
+          open = false;
+          this.#openTurns--;
+        }
         pin.release();
         ended();
       },
     };
+  }
+
+  /** A write is under way on this device: submitted and not yet settled,
+   * or diffed and still being saved. A reload now could cut it off, so the
+   * GitHub tree doesn't offer one (SectionLoadBoundary). */
+  get writing(): boolean {
+    return this.#openTurns > 0 || this.#saving > 0;
   }
 
   /** A write made directly on a copy of the document (notice actions and
