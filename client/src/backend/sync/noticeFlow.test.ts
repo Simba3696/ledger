@@ -369,7 +369,9 @@ describe("the cap and the order (section 4.2)", () => {
     await engine.dismissNotice(views[0].key);
     expect(engine.notices()).not.toBe(views);
     expect(engine.notices()).toHaveLength(NOTICE_CAP - 1);
-  });
+    // About half a second alone, but past vitest's 5 s default about once in
+    // five full parallel runs, beside the harness and the performance guard.
+  }, 30_000);
 });
 
 describe("a stored notice this build can't read (D31)", () => {
