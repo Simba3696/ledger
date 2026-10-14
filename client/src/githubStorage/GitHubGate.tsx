@@ -543,8 +543,11 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
           // headerActions and view are read inside Ledger's GitHub-only
           // branches (App.tsx, #8 decision 16).
           // A section that can't be loaded (offline) shows a message, not a
-          // blank screen (SectionLoadBoundary.tsx).
-          <SectionLoadBoundary onHome={() => ledgerViews.goHome()} saving={() => open.engine.writing || open.engine.getState().pendingCount > 0}>
+          // blank screen (SectionLoadBoundary.tsx). Its Try again reloads
+          // unless a write is mid-save: changes not yet synced are kept in
+          // IndexedDB and survive a reload, and one that can never sync (a
+          // refused token) must not block it for good.
+          <SectionLoadBoundary onHome={() => ledgerViews.goHome()} saving={() => open.engine.writing}>
             <Ledger
               key={`${target.owner}/${target.repo}#${settingsRevision}`}
               session={null}
