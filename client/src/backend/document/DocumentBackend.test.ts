@@ -541,6 +541,20 @@ describe("GitHub mode's Settings (#8): updateSettings", () => {
     expect(JSON.stringify(host.current())).toBe(before);
   });
 
+  it("refuses an offset Intl takes but the document's zone rule doesn't", async () => {
+    const { backend } = setup();
+    await expect(backend.updateSettings({ timeZone: "+05:30" })).rejects.toEqual(new ApiError(400, "Unknown time zone: +05:30"));
+  });
+
+  it("keeps a section a newer build added, which this build can't show, and never adds one", async () => {
+    const doc = createEmptyDocument({ modules: ["expenses"], timeZone: "UTC" });
+    doc.settings.modules.push("budgets" as never);
+    const { host, backend } = setup(doc);
+    await backend.updateSettings({ modules: ["debts", "expenses", "budgets" as never] });
+    expect(host.current().settings.modules).toEqual(["expenses", "debts", "budgets"]);
+    await expect(backend.updateSettings({ modules: ["expenses", "savings" as never] })).rejects.toEqual(new ApiError(400, "Unknown section: savings"));
+  });
+
   it("works with every section turned off but one, as a disabled section's calls don't", async () => {
     const { backend } = setup(createEmptyDocument({ modules: ["debts"], timeZone: "UTC" }));
     await expect(backend.updateSettings({ modules: ["expenses"] })).resolves.toEqual({ modules: ["expenses"], timeZone: "UTC" });

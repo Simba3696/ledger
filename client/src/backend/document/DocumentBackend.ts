@@ -42,6 +42,7 @@ import {
   wireBody,
 } from "./coerce";
 import { RowHandles } from "./handles";
+import { isTimeZoneName } from "./validate";
 import { assertModuleEnabled, canonicalModules } from "./modules";
 import * as ops from "./operations";
 import type { LedgerDocument } from "./types";
@@ -214,15 +215,24 @@ export class DocumentBackend implements LedgerBackend {
    * zone the browser knows, since every "today" is reckoned in it. A
    * write like any other, so the sync engine sends it as one op. */
   async updateSettings(patch: Partial<LedgerDocument["settings"]>): Promise<LedgerDocument["settings"]> {
-    const modules = patch.modules === undefined ? undefined : canonicalModules(patch.modules);
-    if (patch.modules !== undefined) {
-      const unknown = patch.modules.filter((m) => !modules!.includes(m));
-      if (unknown.length > 0) return Promise.reject(new ApiError(400, `Unknown section: ${unknown.join(", ")}`));
-      if (modules!.length === 0) return Promise.reject(new ApiError(400, "Choose at least one section"));
-    }
-    if (patch.timeZone !== undefined && !knownTimeZone(patch.timeZone)) return Promise.reject(new ApiError(400, `Unknown time zone: ${patch.timeZone}`));
+    // The document's own rule for a zone name, and one the browser can
+    // reckon a date in: Intl also takes offsets ("+05:30") the codec
+    // refuses, which would fail the write at the sync engine instead.
+    if (patch.timeZone !== undefined && !(isTimeZoneName(patch.timeZone) && knownTimeZone(patch.timeZone))) return Promise.reject(new ApiError(400, `Unknown time zone: ${patch.timeZone}`));
     return this.#session.write(null, ({ doc }) => {
-      doc.settings = { modules: modules ?? doc.settings.modules, timeZone: patch.timeZone ?? doc.settings.timeZone };
+      let modules = doc.settings.modules;
+      if (patch.modules !== undefined) {
+        const known = canonicalModules(patch.modules);
+        // A name this build doesn't know is a newer build's section: kept
+        // when the ledger already has it, never added, never dropped
+        // because this build can't show it.
+        const other = [...new Set(patch.modules.filter((m) => !known.includes(m)))];
+        const added = other.filter((m) => !doc.settings.modules.includes(m));
+        if (added.length > 0) throw new LedgerError(`Unknown section: ${added.join(", ")}`, 400);
+        if (known.length === 0) throw new LedgerError("Choose at least one section", 400);
+        modules = [...known, ...other];
+      }
+      doc.settings = { modules, timeZone: patch.timeZone ?? doc.settings.timeZone };
       return doc.settings;
     });
   }
