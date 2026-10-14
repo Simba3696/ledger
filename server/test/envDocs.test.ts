@@ -93,4 +93,12 @@ describe("environment variable documentation", () => {
     expect(local).toEqual(expect.arrayContaining([...LOCAL_ONLY]));
     expect(local.filter((n) => !mentions("docs/architecture/LLD.md", n))).toEqual([]);
   });
+
+  it("docs/DEPLOY-github.md names every variable the GitHub storage build reads", () => {
+    // Fixed on purpose: a name added to the GitHub build is added here too.
+    const GITHUB_MODE = new Set(["VITE_DEFAULT_MODULES"]);
+    // Each is still read by the client or its Vite config (a stale list fails).
+    expect([...GITHUB_MODE].filter((n) => !clientReads.has(n))).toEqual([]);
+    expect([...GITHUB_MODE].filter((n) => !mentions("docs/DEPLOY-github.md", n))).toEqual([]);
+  });
 });
