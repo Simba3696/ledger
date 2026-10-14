@@ -158,3 +158,10 @@
 .gh-settings-section .gh-secondary {
   align-self: flex-start;
 }
+
+/* The way on when this device's ledger version is gone (#8, D34, D35). */
+.gh-epoch-gone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

@@ -93,8 +93,12 @@ function isVisible(state: SyncState, rk: string): boolean {
 /** The groups device `me` (on epoch `epoch`) is left with when a restore
  * replaces `old`, its state there, cut at `cut`: one per device with
  * anything above its cut entry that the restored state lacks, `me`'s own
- * first, then by device id. */
-export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto, context: { epoch: string; me: string }): LeftBehindGroup[] {
+ * first, then by device id. `all` (#8's rejoin, owner decision D36):
+ * everything above the cut, whether `into` holds it or not. A rejoin's
+ * `into` is a long-lived ledger's genesis, far behind what its logs hold,
+ * so "held" can't be told from it; offering more loses nothing, as
+ * Re-apply of what's already there changes nothing. */
+export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto, context: { epoch: string; me: string }, { all = false }: { all?: boolean } = {}): LeftBehindGroup[] {
   const restored = into.state;
   const above = (device: string, L: number) => device !== GENESIS_TAG[1] && L > (Object.hasOwn(cut, device) ? cut[device] : 0);
   const byDevice = new Map<string, { set: Map<string, unknown>; del: Set<string>; records: Set<string>; who: string | null }>();
@@ -114,7 +118,7 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
     const fields = new Set<string>();
     for (const [field, reg] of regs) {
       if (field === STAMP || !above(reg.t[1], reg.t[0])) continue;
-      if (field === CREATE ? theirs?.has(CREATE) === true : sameValue(reg.v, theirs?.get(field)?.v)) continue;
+      if (!all && (field === CREATE ? theirs?.has(CREATE) === true : sameValue(reg.v, theirs?.get(field)?.v))) continue;
       fields.add(field);
     }
     // A field group (an EMI's balance pair) is set whole, as its writer set
@@ -131,7 +135,7 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
   }
   for (const [key, reg] of old.unit) {
     if (key === "cat" || !above(reg.t[1], reg.t[0])) continue;
-    if (sameValue(readValue(key, reg), readValue(key, restored.unit.get(key)))) continue;
+    if (!all && sameValue(readValue(key, reg), readValue(key, restored.unit.get(key)))) continue;
     group(reg.t[1]).set.set(key, reg.v);
   }
   for (const [rk, deletion] of old.del) {
@@ -139,7 +143,7 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
     // Nothing to delete in the restored ledger. A record created above the
     // cut too is no exception: a backup is any document, one exported
     // between the create and the delete included (stage 8a, E1).
-    if (!restored.rec.get(rk)?.has(CREATE)) continue;
+    if (!all && !restored.rec.get(rk)?.has(CREATE)) continue;
     const g = group(deletion.by);
     g.del.add(rk);
     g.records.add(rk);

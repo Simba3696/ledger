@@ -371,7 +371,22 @@ export type CreateResult =
 export async function createLedger(
   remote: Remote,
   key: DeviceKey,
-  { doc, by, at, reason = "create" }: { doc: LedgerDocument; by: string; at: number; reason?: GenesisContent["reason"] },
+  {
+    doc,
+    by,
+    at,
+    reason = "create",
+    basedOn = null,
+  }: {
+    doc: LedgerDocument;
+    by: string;
+    at: number;
+    reason?: GenesisContent["reason"];
+    /** #8's create from a device whose epoch is gone: that epoch, so the
+     * device keeps its state there and a later switch (another device's
+     * create won a race) projects it again instead of losing it. */
+    basedOn?: GenesisContent["basedOn"];
+  },
 ): Promise<CreateResult> {
   if (!isWritableDocument(doc)) throw new Error("A ledger can only be created from a writable document");
   const listing = await listNow(remote);
@@ -396,7 +411,7 @@ export async function createLedger(
       if (damagedFile !== null) return { kind: "failed", detail: damagedFileMessage(damagedFile), damagedFile };
     }
   }
-  const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn: null, doc }, key);
+  const written = await writeGenesis(remote, { epoch, reason, by, at, basedOn, doc }, key);
   // It may still land: the next try finds it, or not, and goes on from there.
   if (written.kind === "unknown") return { kind: "unknown" };
   if (written.kind !== "written") return written;
