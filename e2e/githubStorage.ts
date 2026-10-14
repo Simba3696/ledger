@@ -13,7 +13,8 @@
  * live server on SERVER_PORT or CLIENT_PORT.
  *
  * The stored files are seeded and inspected in Node with the sync engine's
- * own modules (crypto, epoch, repoFiles, codec, state, materialize), never
+ * own modules (crypto, epoch, repoFiles, codec, state, materialize, and the
+ * pure ten-year plan in tenYearPlan.ts), never
  * deviceStore.ts. Fictional data only: logins alex-e2e and sam-e2e, the
  * organization household-e2e, the repo ledger-data, passphrases made per
  * run.
@@ -209,11 +210,14 @@ const TOKEN = {
 const passphrase = (label: string) => `${label} ${randomBytes(9).toString("base64url")}`;
 const PASS = { personal: passphrase("personal"), household: passphrase("household"), other: passphrase("other"), tenYear: passphrase("ten year") };
 
+const SECTION_IDS = ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"];
 const ALLOWED_KEYS = new Set(["ledger-theme", "ledger-upcoming-collapsed", "ledger-emi-projection-scale"]);
 const LOCKED_TAIL = "is locked. Unlock it first from the app if you really need to add an entry there.";
 
+/** A console error or warning (or an uncaught page error). */
 interface ConsoleError {
   context: string;
+  level: "error" | "warning";
   text: string;
 }
 
@@ -246,10 +250,13 @@ async function main() {
   const allRequestUrls: string[] = [];
   let browser: Browser | undefined;
   let serviceWorkers = -1;
+  /** Every simulated device's page, for screenshots when a step fails. */
+  const pages = new Map<string, Page>();
 
-  /** Console errors a step provokes on purpose (a status GitHub answers it
-   * with, the browser going offline), dropped as e2e/auth.ts drops its
-   * 400s: only from those contexts, only while the step runs. */
+  /** Console errors and warnings a step provokes on purpose (a status
+   * GitHub answers it with, the browser going offline), dropped as
+   * e2e/auth.ts drops its 400s: only from those contexts, only while the
+   * step runs. */
   async function provoking<T>(context: string | string[], patterns: RegExp[], step: () => Promise<T>): Promise<T> {
     const contexts = Array.isArray(context) ? context : [context];
     const from = consoleErrors.length;
@@ -260,14 +267,14 @@ async function main() {
       for (let i = consoleErrors.length - 1; i >= from; i--) {
         if (contexts.includes(consoleErrors[i].context) && patterns.some((p) => p.test(consoleErrors[i].text))) {
           const [dropped] = consoleErrors.splice(i, 1);
-          const text = dropped.text.replace(/https?:\/\/\S+/g, "<url>");
+          const text = `${dropped.level}: ${dropped.text}`.replace(/https?:\/\/\S+/g, "<url>");
           provoked.set(text, (provoked.get(text) ?? 0) + 1);
         }
       }
     }
   }
   const status = (...codes: number[]) => new RegExp(`status of (${codes.join("|")})\\b`);
-  const OFFLINE_ERRORS = /ERR_INTERNET_DISCONNECTED|Failed to fetch/;
+  const OFFLINE_ERRORS = /net::ERR_INTERNET_DISCONNECTED/;
 
   async function device(name: string, { insecure = false }: { insecure?: boolean } = {}): Promise<{ context: BrowserContext; page: Page }> {
     const context = await browser!.newContext({ timezoneId: TIME_ZONE, acceptDownloads: true, viewport: { width: 1280, height: 900 } });
@@ -283,10 +290,15 @@ async function main() {
       if (response.url().startsWith(preview.origin)) previewResponses.push({ url: response.url(), status: response.status() });
     });
     const page = await context.newPage();
+    pages.set(name, page);
     page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push({ context: name, text: msg.text() });
+      const type = msg.type();
+      if (type === "error" || type === "warning") {
+        consoleErrors.push({ context: name, level: type, text: msg.text() });
+        if (type === "warning") console.log(`      console warning (${name}): ${msg.text()}`);
+      }
     });
-    page.on("pageerror", (err) => consoleErrors.push({ context: name, text: `pageerror: ${err.message}` }));
+    page.on("pageerror", (err) => consoleErrors.push({ context: name, level: "error", text: `pageerror: ${err.message}` }));
     return { context, page };
   }
 
@@ -482,7 +494,10 @@ async function main() {
     await page.fill('[data-testid="gh-token"]', token);
     await page.click('[data-testid="gh-connect"]');
   }
+  /** Every section ticked, whatever this build ticks by default, so the
+   * sections checks start from all six. */
   async function createLedger(page: Page, pass: string, confirm = pass) {
+    for (const section of SECTION_IDS) await page.check(`[data-testid="gh-section-${section}"]`);
     await page.fill('[data-testid="gh-passphrase"]', pass);
     await page.fill('[data-testid="gh-passphrase-confirm"]', confirm);
     await page.check('[data-testid="gh-passphrase-saved"]');
@@ -536,6 +551,7 @@ async function main() {
       await connectWith(personal.page, TOKEN.alexPersonal);
       await waitHeading(personal.page, "Create your ledger");
     });
+    const personalNamed = (await personal.page.locator("strong", { hasText: PERSONAL_REPO }).count()) === 1;
     const putsBeforePersonalCreate = putsOf("personal").length;
     const personalMark = adapter.log.length;
     await provoking("personal", [status(404, 409)], async () => {
@@ -548,13 +564,14 @@ async function main() {
       const files = ledgerFiles(PERSONAL_REPO);
       check(
         "3. Personal: connects to the private alex-e2e/ledger-data, writes nothing before the passphrase, then creates ledger/<epoch>.genesis.enc with one PUT without sha and opens the app",
-        putsBeforePersonalCreate === 0 &&
+        personalNamed &&
+          putsBeforePersonalCreate === 0 &&
           genesisPuts.length === 1 &&
           puts[0] === genesisPuts[0] &&
           genesisPuts[0].put!.hadSha === false &&
           genesisPuts[0].status === 201 &&
           files.some((f) => f.file.kind === "genesis"),
-        { putsBeforePersonalCreate, puts },
+        { personalNamed, putsBeforePersonalCreate, puts },
       );
     }
 
@@ -577,9 +594,10 @@ async function main() {
       await A.page.locator(".error", { hasText: "Can't find" }).waitFor();
     });
     check(
-      "4. Household: a token without access to the repo shows the can't-reach-this-repo message (404)",
+      "4. Household: a token without access to the repo shows the can't-reach-this-repo message with the approval hint (404), and offers Check again",
       (await heading(A.page, "Paste your token").count()) === 1 &&
-        (await errorText(A.page)).some((t) => t.startsWith(`Can't find ${HOUSEHOLD_REPO}, or this token wasn't given access to it.`)) &&
+        (await errorText(A.page)).includes(`Can't find ${HOUSEHOLD_REPO}, or this token wasn't given access to it. Your token may be waiting for approval by an owner of ${ORG}.`) &&
+        (await A.page.locator('[data-testid="gh-check-again"]').count()) === 1 &&
         logOf("A").some((r) => r.status === 404),
       await errorText(A.page),
     );
@@ -783,14 +801,16 @@ async function main() {
     const forgetQuestion = await A.page.locator(".dialog-card").innerText();
     await A.page.click(".dialog-confirm");
     await waitHeading(A.page, "Set up Ledger");
+    // Read without opening the database, which would create it again.
+    const keyAfterForget = await A.page.evaluate(async () => (await indexedDB.databases()).some((d) => d.name === "ledger:github"));
     adapter.newDevice("A");
     await walkToConnect(A.page, "household");
     await connectWith(A.page, TOKEN.alexHousehold);
     await waitHeading(A.page, "Enter your passphrase");
     check(
-      "6. Forget this device (nothing unsynced) returns to Welcome, and reconnecting with the token asks for the passphrase",
-      forgetQuestion.includes("Forget this device?") && (await A.page.locator('[data-testid="gh-unlock-passphrase"]').count()) === 1,
-      forgetQuestion,
+      "6. Forget this device (nothing unsynced) removes the stored key and returns to Welcome, and reconnecting with the token asks for the passphrase",
+      forgetQuestion.includes("Forget this device?") && !keyAfterForget && (await A.page.locator('[data-testid="gh-unlock-passphrase"]').count()) === 1,
+      { forgetQuestion, keyAfterForget },
     );
     const wrongMark = adapter.log.length;
     await unlockWith(A.page, PASS.other);
@@ -806,6 +826,10 @@ async function main() {
     );
 
     // ================= 7. Sections =================
+    // The checks below start from every section on (createLedger ticks all
+    // six, whatever this build's VITE_DEFAULT_MODULES ticks).
+    const allOn = (await fold(HOUSEHOLD_REPO, PASS.household)).doc.settings.modules;
+    if (SECTION_IDS.some((section) => !(allOn as readonly string[]).includes(section))) throw new Error(`section checks need every section on; the ledger has ${allOn.join(",")}`);
     await openSettings(A.page);
     await A.page.uncheck('[data-testid="gh-settings-section-debts"]');
     await A.page.click('[data-testid="gh-settings-save"]');
@@ -868,7 +892,8 @@ async function main() {
       const offlineMark = adapter.log.length;
       await addExpense(A.page, "50", "E2E Offline A");
       await addExpense(B.page, "60", "E2E Offline B");
-      await sleep(3000);
+      // Each tried to send its change and found itself offline.
+      await waitUntil(async () => (await statusText(A.page)).startsWith("Offline") && (await statusText(B.page)).startsWith("Offline"), 30_000);
       const whileOffline = adapter.log.slice(offlineMark).filter((r) => r.context === "A" || r.context === "B");
       check(
         "8. Offline, each device adds an expense, lists it, and nothing reaches GitHub",
@@ -940,7 +965,7 @@ async function main() {
       await adapter.setOffline(B.context, "B", true);
       await editExpense(A.page, "E2E Groceries Edited", "150");
       await editExpense(B.page, "E2E Groceries Edited", "160");
-      await sleep(3000);
+      await waitUntil(async () => (await statusText(A.page)).startsWith("Offline") && (await statusText(B.page)).startsWith("Offline"), 30_000);
       await adapter.setOffline(A.context, "A", false);
       await adapter.setOffline(B.context, "B", false);
     });
@@ -948,7 +973,6 @@ async function main() {
       async () => {
         await nudge(A.page);
         await nudge(B.page);
-        await sleep(500);
         const a = await shownAmount(A.page, "E2E Groceries Edited").catch(() => "?a");
         const b = await shownAmount(B.page, "E2E Groceries Edited").catch(() => "?b");
         const notices = (await A.page.locator(".sync-status-review").count()) + (await B.page.locator(".sync-status-review").count());
@@ -957,25 +981,34 @@ async function main() {
       90_000,
       3000,
     );
-    // Settled: another round of syncing changes neither side.
-    await sleep(6000);
-    await nudge(A.page);
-    await nudge(B.page);
-    await sleep(2000);
+    // Settled: one more sync cycle on each side, then both saved.
+    {
+      const mark = adapter.log.length;
+      await nudge(A.page);
+      await nudge(B.page);
+      await waitUntil(
+        async () =>
+          ["A", "B"].every((name) => adapter.log.slice(mark).some((r) => r.context === name && r.method === "GET")) &&
+          (await statusText(A.page)) === "Saved" &&
+          (await statusText(B.page)) === "Saved",
+        45_000,
+      );
+    }
     {
       const a = await shownAmount(A.page, "E2E Groceries Edited");
       const b = await shownAmount(B.page, "E2E Groceries Edited");
       const aNotice = await A.page.locator(".sync-status-review").count();
       const bNotice = await B.page.locator(".sync-status-review").count();
-      const loser = aNotice === 1 ? A.page : B.page;
+      // The device whose value lost holds the notice, naming its value.
+      const [loser, lost] = a === "₹150.00" ? [B.page, "160.00"] : [A.page, "150.00"];
       let noticeText = "";
-      if (aNotice + bNotice === 1) {
+      if ((await loser.locator(".sync-status-review").count()) === 1) {
         await loser.locator(".sync-status-review").click();
         noticeText = (await loser.locator(".sync-review-text").first().innerText()).trim();
       }
       check(
-        "8. Both edit one expense's amount offline: afterwards both show the same amount, exactly one (the loser) shows an overwrite notice, the winner none",
-        converged && a === b && ["₹150.00", "₹160.00"].includes(a) && aNotice + bNotice === 1 && /was replaced\.$/.test(noticeText),
+        "8. Both edit one expense's amount offline: afterwards both show the same amount, only the device whose value lost shows an overwrite notice naming its value, the winner none",
+        converged && a === b && ["₹150.00", "₹160.00"].includes(a) && aNotice + bNotice === 1 && noticeText.endsWith(`your ${lost} was replaced.`),
         { a, b, aNotice, bNotice, noticeText },
       );
     }
@@ -998,6 +1031,17 @@ async function main() {
     await deleteExpense(A.page, "E2E Offline B");
     await waitUntil(async () => !(await remoteHas(HOUSEHOLD_REPO, PASS.household, "E2E Offline B")), 45_000, 1000);
     await waitSaved(A.page);
+    // B has the delete too, so seeing the expense again on B can only come
+    // from the restore.
+    const bHadDelete = await waitUntil(
+      async () => {
+        await nudge(B.page);
+        return !(await listed(B.page)).includes("E2E Offline B");
+      },
+      90_000,
+      3000,
+    );
+    const epochBefore = winningEpoch(ledgerFiles(HOUSEHOLD_REPO).map((f) => f.name));
     await openSettings(A.page);
     await A.page.setInputFiles('[data-testid="gh-restore-file"]', backupPath);
     await A.page.locator('[data-testid="gh-restore-summary"]').waitFor();
@@ -1007,6 +1051,7 @@ async function main() {
     await A.page.locator('[data-testid="gh-restore-note"]').waitFor({ timeout: 60_000 });
     const restoreNote = (await A.page.locator('[data-testid="gh-restore-note"]').innerText()).trim();
     const restoredOnA = await listed(A.page);
+    const epochAfter = winningEpoch(ledgerFiles(HOUSEHOLD_REPO).map((f) => f.name));
     const bSwitched = await waitUntil(
       async () => {
         await nudge(B.page);
@@ -1015,13 +1060,24 @@ async function main() {
       90_000,
       3000,
     );
+    // B moved epochs: its next own file is written in the restored one.
+    const bMark = adapter.log.length;
+    await addExpense(B.page, "5", "E2E After Restore B");
+    const bWroteInNewEpoch = await waitUntil(
+      () => putsOf("B", bMark).some((r) => r.put?.path.startsWith(`${LEDGER_DIR}/${epochAfter}.`) && (r.status === 200 || r.status === 201)),
+      45_000,
+    );
     check(
-      "9. Restore on A after a delete: the expense is back, the commit says \"Restore from backup\", and B switches to the restored ledger on its next sync",
+      "9. Restore on A after a delete: the expense is back, the commit says \"Restore from backup\", and B, which had the delete, switches to the restored ledger (new epoch) on its next sync",
       restoreNote.startsWith("Restored from the backup.") &&
         restoredOnA.includes("E2E Offline B") &&
         fake.commits.some((c) => c.repo === HOUSEHOLD_REPO && c.message === "Restore from backup") &&
-        bSwitched,
-      { restoreNote, restoredOnA, bSwitched },
+        bHadDelete &&
+        epochAfter !== epochBefore &&
+        bSwitched &&
+        bWroteInNewEpoch &&
+        putsOf("B", bMark).every((r) => !r.put || r.put.path.startsWith(`${LEDGER_DIR}/${epochAfter}.`)),
+      { restoreNote, restoredOnA, bHadDelete, epochBefore, epochAfter, bSwitched, bWroteInNewEpoch, bPuts: putsOf("B", bMark).map((r) => r.put?.path) },
     );
 
     const C = await device("C");
@@ -1058,9 +1114,11 @@ async function main() {
       await A.page.fill('[data-testid="gh-restore-passphrase"]', PASS.household);
       await A.page.click('[data-testid="gh-restore-open"]');
       await A.page.locator(".error", { hasText: "Wrong passphrase" }).waitFor({ timeout: 30_000 });
+      // A restore writes a genesis; A's own sync may write its log meanwhile.
+      const restorePuts = putsOf("A", mark).filter((r) => r.put && /.genesis.enc$/.test(r.put.path));
       check(
-        "9. A wrong passphrase for a backup made under another passphrase shows Wrong passphrase and sends no PUT",
-        putsOf("A", mark).length === 0 && (await A.page.locator('[data-testid="gh-restore"]').count()) === 0,
+        "9. A wrong passphrase for a backup made under another passphrase shows Wrong passphrase and writes no genesis (nothing restored)",
+        restorePuts.length === 0 && (await A.page.locator('[data-testid="gh-restore"]').count()) === 0,
       );
       await closeSettings(A.page);
     }
@@ -1092,7 +1150,7 @@ async function main() {
     );
 
     // ================= 11. Ten-year dataset (AC7) =================
-    const { planLedger, runOnDocument } = await import("../client/src/backend/sync/tenYearLedger.js");
+    const { planLedger, runOnDocument } = await import("../client/src/backend/sync/tenYearPlan.js");
     const tenYears = runOnDocument(planLedger());
     const tenSalt = newSalt();
     const tenKey = await deriveKey(PASS.tenYear, tenSalt, DEFAULT_ITERATIONS);
@@ -1141,6 +1199,14 @@ async function main() {
     // A step that couldn't go on: what was checked so far still prints.
     console.error(err);
     check("The run went through every step", false, err instanceof Error ? err.message : String(err));
+    // CI sets E2E_ARTIFACT_DIR and uploads it: what each device showed.
+    const artifacts = process.env.E2E_ARTIFACT_DIR;
+    if (artifacts) {
+      fs.mkdirSync(artifacts, { recursive: true });
+      for (const [name, page] of pages) {
+        if (!page.isClosed()) await page.screenshot({ path: path.join(artifacts, `${name}.png`), fullPage: true }).catch(() => {});
+      }
+    }
   } finally {
     await browser?.close();
     preview.stop();
@@ -1165,9 +1231,14 @@ async function main() {
 
   // ================= 12. Console =================
   check(
-    "12. No console or page errors in any context (CSP violations included), except those a check provokes on purpose",
-    consoleErrors.length === 0,
-    consoleErrors,
+    "12. No console errors or page errors in any context (CSP violations included), except those a check provokes on purpose",
+    consoleErrors.filter((e) => e.level === "error").length === 0,
+    consoleErrors.filter((e) => e.level === "error"),
+  );
+  check(
+    "12. No console warnings in any context (the sync engine's included), except those a check provokes on purpose",
+    consoleErrors.filter((e) => e.level === "warning").length === 0,
+    consoleErrors.filter((e) => e.level === "warning"),
   );
 
   const failed = results.filter((r) => !r.ok);
