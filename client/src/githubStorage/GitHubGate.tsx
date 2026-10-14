@@ -29,6 +29,9 @@ import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
 import { readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
+import { LedgerViewMemory } from "./ledgerView";
+import { SectionLoadBoundary } from "./SectionLoadBoundary";
+import { warmSections } from "./sectionLoading";
 import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
@@ -95,6 +98,9 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * again. */
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  // The Ledger's open tab and month, kept across the remount a change from
+  // another device causes, and across Settings (ledgerView.ts).
+  const [ledgerViews] = useState(() => new LedgerViewMemory());
   /** After a reload that followed a restore: whether it landed (#9). */
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
   /** Settings' backup was interrupted by a refused token (#9). */
@@ -182,6 +188,11 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   // It depends on the engine alone: Replace token swaps the connection
   // while the engine still reports the refusal, and re-running here then
   // would forget it was already told.
+  // Once a ledger is open, every section is loaded while online, so each
+  // one opens offline later (sectionLoading.ts).
+  const ledgerOpen = open !== null;
+  useEffect(() => (ledgerOpen ? warmSections() : undefined), [ledgerOpen]);
+
   const engine = open?.engine ?? null;
   const remote = open?.remote ?? null;
   useEffect(() => {
@@ -400,6 +411,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   function forgotten() {
     // api.ts lets go of the old ledger's backend (and its document).
     installBackend(httpBackend);
+    ledgerViews.forget();
     setOpen(null);
     setView("ledger");
     work.current = { connection: null, remote: null, found: null, key: null };
@@ -476,6 +488,13 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       );
     }
     const target = targetOf(open.connection);
+    const viewSlot = ledgerViews.slot(`${target.owner}/${target.repo}`, () => {
+      try {
+        return open.engine.current().settings.modules;
+      } catch {
+        return null;
+      }
+    });
     return (
       // Settings goes in the bar, outside the part SyncHost re-keys on
       // every join, so a change from another device doesn't remount it
@@ -521,9 +540,21 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         }
       >
         {view === "ledger" && (
-          // headerActions is read inside Ledger's GitHub-only branch
-          // (App.tsx, #8 decision 16).
-          <Ledger key={`${target.owner}/${target.repo}#${settingsRevision}`} session={null} headerActions={<HeaderActions onSettings={() => setView("settings")} />} />
+          // headerActions and view are read inside Ledger's GitHub-only
+          // branches (App.tsx, #8 decision 16).
+          // A section that can't be loaded (offline) shows a message, not a
+          // blank screen (SectionLoadBoundary.tsx). Its Try again reloads
+          // unless a write is mid-save: changes not yet synced are kept in
+          // IndexedDB and survive a reload, and one that can never sync (a
+          // refused token) must not block it for good.
+          <SectionLoadBoundary onHome={() => ledgerViews.goHome()} saving={() => open.engine.writing}>
+            <Ledger
+              key={`${target.owner}/${target.repo}#${settingsRevision}`}
+              session={null}
+              headerActions={<HeaderActions onSettings={() => setView("settings")} />}
+              view={viewSlot}
+            />
+          </SectionLoadBoundary>
         )}
       </SyncHost>
     );
