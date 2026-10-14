@@ -10,21 +10,21 @@ import { SECTION_LOADERS, isChunkLoadError, warmSections, type WarmEnv } from ".
 
 afterEach(() => vi.restoreAllMocks());
 
-/** An environment that is online or not, and fires "online" on request. */
+/** An environment that is online or not, and fires "online" on request.
+ * `restyled` counts the times failed stylesheets were fetched afresh. */
 function env(online: boolean) {
   const listeners = new Set<() => void>();
-  const stale: { replaced: number }[] = [];
-  const e: WarmEnv & { goOnline(): void; listeners: Set<() => void>; stale: typeof stale } = {
+  const e: WarmEnv & { goOnline(): void; listeners: Set<() => void>; restyled: number } = {
     onLine: () => online,
     addEventListener: (_type, fn) => listeners.add(fn),
     removeEventListener: (_type, fn) => listeners.delete(fn),
-    reloadFailedStyles: () => stale.forEach((s) => s.replaced++),
+    reloadFailedStyles: () => void e.restyled++,
     goOnline() {
       online = true;
       for (const fn of [...listeners]) fn();
     },
     listeners,
-    stale,
+    restyled: 0,
   };
   return e;
 }
@@ -71,20 +71,55 @@ describe("warmSections", () => {
     stop();
   });
 
-  it("tries a section that failed again at the next 'online', with its stylesheet fetched afresh", async () => {
+  it("tries a section that failed again at the next 'online', with failed stylesheets fetched afresh", async () => {
     const [ok, flaky] = [loader(), loader(1)];
     const e = env(true);
-    e.stale.push({ replaced: 0 });
     const stop = warmSections(e, [ok, flaky]);
     await settle();
     expect(flaky).toHaveBeenCalledTimes(1);
+    expect(e.restyled).toBe(0);
     e.goOnline();
     await settle();
     expect(ok).toHaveBeenCalledTimes(1);
     expect(flaky).toHaveBeenCalledTimes(2);
-    expect(e.stale[0].replaced).toBe(1);
-    // All loaded: nothing listens any more.
-    expect(e.listeners.size).toBe(0);
+    expect(e.restyled).toBe(1);
+    stop();
+  });
+
+  it("fetches a stylesheet that failed again afresh at every later 'online', once every section has loaded", async () => {
+    // The section's module loaded, but its stylesheet (fetched afresh)
+    // failed again: Vite's helper won't ask for it, so this must.
+    const load = loader();
+    const e = env(true);
+    const stop = warmSections(e, [load]);
+    await settle();
+    e.goOnline();
+    await settle();
+    e.goOnline();
+    await settle();
+    expect(e.restyled).toBe(2);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(e.listeners.size).toBe(1);
+    stop();
+  });
+
+  it("runs again after a batch when 'online' fires while it is running", async () => {
+    // The connection drops and comes back while a batch is loading: the
+    // batch fails, and the "online" that came during it must not be lost.
+    let fail!: (err: Error) => void;
+    const load = vi.fn((): Promise<unknown> => (load.mock.calls.length === 1 ? new Promise((_resolve, reject) => (fail = reject)) : Promise.resolve({})));
+    const e = env(true);
+    const stop = warmSections(e, [load]);
+    await settle();
+    expect(load).toHaveBeenCalledTimes(1);
+    e.goOnline();
+    await settle();
+    expect(load).toHaveBeenCalledTimes(1);
+    fail(new TypeError("Failed to fetch dynamically imported module: Debts.js"));
+    await settle();
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(e.restyled).toBe(1);
     stop();
   });
 

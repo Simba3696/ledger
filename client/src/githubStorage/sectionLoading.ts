@@ -59,31 +59,42 @@ function browserEnv(): WarmEnv {
   };
 }
 
-/** Loads every section now if online, else once back online. A section that
- * fails to load is tried again at the next "online". Returns stop. */
+/** Loads every section now if online, else once back online. At each
+ * "online" until stopped, stylesheets that failed are fetched afresh (one
+ * fetched afresh may fail again) and the sections not yet loaded are tried
+ * again; an "online" while a batch is loading runs another after it.
+ * Returns stop. */
 export function warmSections(env: WarmEnv = browserEnv(), loaders: readonly (() => Promise<unknown>)[] = SECTION_LOADERS): () => void {
   const pending = new Set(loaders);
-  let failed = false;
   let running = false;
+  let again = false;
   let stopped = false;
-  const run = async () => {
-    if (stopped || running || pending.size === 0 || !env.onLine()) return;
+  const load = async () => {
+    if (stopped || !env.onLine() || pending.size === 0) return;
+    if (running) return void (again = true);
     running = true;
-    if (failed) env.reloadFailedStyles();
     const batch = [...pending];
-    const results = await Promise.allSettled(batch.map((load) => load()));
+    const results = await Promise.allSettled(batch.map((loadOne) => loadOne()));
     running = false;
     results.forEach((result, i) => {
       if (result.status === "fulfilled") pending.delete(batch[i]);
     });
-    failed = pending.size > 0;
-    if (!failed) env.removeEventListener("online", run);
+    if (again) {
+      again = false;
+      online();
+    }
   };
-  env.addEventListener("online", run);
-  void run();
+  const online = () => {
+    if (stopped || !env.onLine()) return;
+    if (running) return void (again = true);
+    env.reloadFailedStyles();
+    void load();
+  };
+  env.addEventListener("online", online);
+  void load();
   return () => {
     stopped = true;
-    env.removeEventListener("online", run);
+    env.removeEventListener("online", online);
   };
 }
 
