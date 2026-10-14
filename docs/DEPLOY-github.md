@@ -284,8 +284,49 @@ your private `ledger-data` repository; it never lived in the fork.
 
 ## 9. Sign in with GitHub (optional)
 
-In this build, every person connects by pasting a token, as in
-[part 2](#2-one-person).
+Out of the box, every person connects by pasting a token, as in
+[part 2](#2-one-person). Whoever runs the site can also turn on a **Sign in
+with GitHub** button, so people sign in instead of making a token. It needs
+two things only the site's owner can set up: a GitHub App, and a tiny
+sign-in helper that holds the App's secret. Pasting a token keeps working
+either way.
+
+**For the site's owner** (the person who runs the fork, part 8):
+
+1. Register a GitHub App and deploy the sign-in helper to a free Cloudflare
+   account, following [`signin-helper/README.md`](../signin-helper/README.md).
+   Give the App only **Contents: Read and write** on repositories. Its
+   **Callback URL** is the site's address exactly, for example
+   `https://<your-username>.github.io/<fork-name>/`.
+2. In your fork, open **Settings**, then **Secrets and variables**, then
+   **Actions**, then the **Variables** tab (not Secrets: all three are
+   public). Add:
+   - `VITE_GITHUB_APP_CLIENT_ID`: the App's Client ID.
+   - `VITE_GITHUB_APP_SLUG`: the App's short name, as in
+     `https://github.com/apps/<slug>`.
+   - `VITE_GITHUB_SIGNIN_HELPER_URL`: the helper's address that
+     `npx wrangler deploy` printed.
+3. Open **Actions**, pick the **Pages** workflow and press **Run workflow**.
+   The new site shows the button. If any of the three variables is missing,
+   the site is built without the button, as before.
+
+**For everyone using the site:**
+
+1. On **Paste your token**, press **Sign in with GitHub** instead, and
+   approve Ledger on GitHub's page. Pick the repository first under
+   **Different repository?** if it isn't your own `ledger-data`.
+2. If Ledger says **Give Ledger access to** your repository, press **Open
+   GitHub: give access**, install the App on the account that owns
+   `ledger-data` (for a household, the organization's owner does this once),
+   choose **Only select repositories** and pick `ledger-data`. Then come
+   back and press **Check again**.
+3. Carry on as in part 2 or 3: create the ledger, or type the passphrase.
+
+Signing in lasts as long as GitHub allows (Ledger renews it by itself). If
+it ever ends, Ledger shows **Your GitHub sign-in expired. Sign in again.**
+Your changes on that device are kept, and they reach GitHub once you sign
+in again or paste a token. To take Ledger's access away, open GitHub's
+**Settings**, then **Applications**, then **Authorized GitHub Apps**.
 
 ## 10. Troubleshooting
 
