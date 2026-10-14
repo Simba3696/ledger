@@ -152,6 +152,13 @@ describe("starting a sign-in", () => {
     expect(new URL(sent[1]).searchParams.get("state")).not.toBe(stored.state);
   });
 
+  it("returns to the site's directory when the page was opened as index.html", async () => {
+    const storage = memoryStorage();
+    const sent: string[] = [];
+    await startSignIn(CONFIG, RESUME, { page: { origin: PAGE.origin, pathname: "/ledger/index.html" }, storage, navigate: (url) => sent.push(url) });
+    expect(new URL(sent[0]).searchParams.get("redirect_uri")).toBe("https://alex.github.io/ledger/");
+  });
+
   it("clearSignInState() removes the stored entry", async () => {
     const storage = memoryStorage();
     await startSignIn(CONFIG, RESUME, { page: PAGE, storage, navigate: () => {} });

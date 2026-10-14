@@ -36,6 +36,12 @@ settings → GitHub Apps**).
 - **Callback URL:** the Pages site's base URL, exactly as people open it,
   for example `https://<owner>.github.io/<repo>/`. A fork serving its own
   copy adds its own callback URL here (or registers its own App).
+  Ledger sends the page's own address as the `redirect_uri`, with a
+  trailing `index.html` taken off, and GitHub accepts only a registered
+  callback URL or a path under it. So register the directory, with its
+  trailing slash (`/<repo>/`, not `/<repo>` or `/<repo>/index.html`), and
+  the scheme and host exactly as served (a custom domain is its own
+  callback URL).
 - **Expire user authorization tokens:** leave it **on** (GitHub's default).
   Access tokens then last 8 hours and come with a refresh token, which
   Ledger renews through `/refresh`.

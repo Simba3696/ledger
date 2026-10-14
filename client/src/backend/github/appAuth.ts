@@ -154,7 +154,8 @@ function takeEntry(storage: Storage | null): Entry | null {
 
 /** Starts a sign-in: keeps a fresh state and PKCE verifier for this tab,
  * then sends the browser to GitHub's authorize page. The redirect URI is
- * the page's own address, as #8 builds links. */
+ * the page's own address, as #8 builds links, with a trailing index.html
+ * taken off so it matches the site's registered callback URL. */
 export async function startSignIn(
   config: SignInConfig,
   resume: SignInResume,
@@ -166,7 +167,7 @@ export async function startSignIn(
 ): Promise<void> {
   const state = randomString();
   const verifier = randomString();
-  const redirectUri = `${page.origin}${page.pathname}`;
+  const redirectUri = `${page.origin}${page.pathname.replace(/\/index\.html$/, "/")}`;
   const entry: Entry = { state, verifier, redirectUri, resume };
   storage?.setItem(STATE_KEY, JSON.stringify(entry));
   navigate(authorizeUrl({ clientId: config.clientId, redirectUri, state, codeChallenge: await codeChallenge(verifier) }));
