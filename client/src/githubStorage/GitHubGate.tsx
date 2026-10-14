@@ -30,6 +30,7 @@ import { Welcome } from "./onboarding/Welcome";
 import { readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
 import { LedgerViewMemory } from "./ledgerView";
+import { warmSections } from "./sectionLoading";
 import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
@@ -186,6 +187,11 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   // It depends on the engine alone: Replace token swaps the connection
   // while the engine still reports the refusal, and re-running here then
   // would forget it was already told.
+  // Once a ledger is open, every section is loaded while online, so each
+  // one opens offline later (sectionLoading.ts).
+  const ledgerOpen = open !== null;
+  useEffect(() => (ledgerOpen ? warmSections() : undefined), [ledgerOpen]);
+
   const engine = open?.engine ?? null;
   const remote = open?.remote ?? null;
   useEffect(() => {
