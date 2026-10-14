@@ -46,6 +46,8 @@ const FORBIDDEN_IN_DEFAULT = [
   'It was already added back as a new entry',
   'That changed since it was shown',
   'It changed again since: now',
+  'personal-access-tokens/new',
+  'ledger-data',
 ]
 
 // No file in the default build may have these in its name.
@@ -53,7 +55,7 @@ const FORBIDDEN_IN_DEFAULT_FILE_NAMES = ['github', 'DocumentBackend']
 
 // Literals the GitHub build must contain (client/src/backend/github), behind
 // the dynamic import: present in a non-entry chunk, absent from the entry.
-const POSITIVE_CONTROL = ['ledger.json.enc', 'api.github.com', 'PBKDF2', 'ledger:github', 'ledger:document-backend']
+const POSITIVE_CONTROL = ['.genesis.enc', 'api.github.com', 'PBKDF2', 'ledger:github', 'ledger:document-backend']
 
 // GitHub Pages can't send headers, so the GitHub build carries its
 // Content-Security-Policy as a meta tag (client/vite.config.ts). The default
@@ -183,7 +185,7 @@ function checkPagesBuild() {
     }
   })
   check('GitHub build index.html names no data file', () => {
-    if (html.includes('ledger.json.enc')) failures.push(`${rel(indexPath)}: contains "ledger.json.enc"`)
+    if (html.includes('.genesis.enc')) failures.push(`${rel(indexPath)}: contains ".genesis.enc"`)
   })
   check('GitHub build index.html carries the CSP meta before any script or link', () => {
     const metas = html.match(CSP_META) ?? []

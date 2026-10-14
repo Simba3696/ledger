@@ -147,8 +147,10 @@ const cases: Case[] = [
   ["getOverview", () => api.getOverview(), { url: "/api/overview" }],
 ];
 
+// installBackend is where GitHub mode swaps the backend in (#8), not one of
+// the backend's calls.
 const apiFunctionNames = Object.keys(api)
-  .filter((name) => typeof api[name as keyof typeof api] === "function" && name !== "ApiError")
+  .filter((name) => typeof api[name as keyof typeof api] === "function" && name !== "ApiError" && name !== "installBackend")
   .sort();
 
 describe("request shape (one case per api.ts export)", () => {

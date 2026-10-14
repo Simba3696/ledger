@@ -36,6 +36,10 @@ export interface Connection {
   expiresAt?: string;
   refreshToken?: string;
   refreshTokenExpiresAt?: string;
+  /** The repo's default branch, as verifyRepo found it when connecting
+   * (#8). Kept so a device starts offline, from what it saved, without
+   * asking GitHub first. */
+  branch?: string;
 }
 
 /** This browser has no usable IndexedDB (some private windows). The caller

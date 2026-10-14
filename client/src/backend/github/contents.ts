@@ -375,14 +375,14 @@ export type RefRead =
   | { kind: "head"; commitSha: string; etag: string | null };
 
 /** One file directly in the listed directory. */
-export interface ListedFile {
+interface ListedFile {
   name: string;
   /** Its git blob sha: readBlob(sha) returns exactly this version. */
   sha: string;
   size: number;
 }
 
-export interface DirListing {
+interface DirListing {
   files: ListedFile[];
   /** GitHub cut the tree short (over 100,000 entries or 7 MB). The listing
    * is then incomplete, and no absence may be read into it. */
@@ -410,7 +410,7 @@ export function putFileBody({ text, sha, message }: Pick<FileWrite, "text" | "sh
   return JSON.stringify(body);
 }
 
-export interface PutResult {
+interface PutResult {
   /** The file's new blob sha (equal to gitBlobSha(text)). */
   sha: string;
   /** The commit the PUT made. */

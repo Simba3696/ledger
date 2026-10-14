@@ -9,7 +9,7 @@ const start = (over: Partial<Extract<FlowEvent, { type: "start" }>> = {}): FlowE
 const run = (events: FlowEvent[], from: Screen = initialScreen()) => events.reduce(flow, from);
 const walk = (path: "personal" | "household" | "member") => {
   const events: FlowEvent[] = [start(), { type: "choose", path }];
-  if (path === "household") events.push({ type: "org", org: "smith-household" });
+  if (path !== "personal") events.push({ type: "org", org: "smith-household" });
   for (let i = 1; i < STEPS[path].length; i++) events.push({ type: "next" });
   return run(events);
 };
@@ -50,31 +50,31 @@ describe("the GitHub gate's flow (#8)", () => {
 
   it("no ledger in the repo goes to Create; one goes to Unlock", () => {
     const at = walk("personal");
-    expect(run([{ type: "found", target: alex, found: { kind: "none" } }], at)).toEqual({ kind: "create", target: alex, error: null });
-    expect(run([{ type: "found", target: alex, found: { kind: "ledger" } }], at)).toEqual({ kind: "unlock", target: alex, reason: "existing", error: null });
+    expect(run([{ type: "found", target: alex, found: { kind: "none" } }], at)).toEqual({ kind: "create", target: alex, path: "personal", error: null });
+    expect(run([{ type: "found", target: alex, found: { kind: "ledger" } }], at)).toEqual({ kind: "unlock", target: alex, path: "personal", reason: "existing", error: null });
   });
 
   it("a newer ledger, a damaged genesis or a cut listing blocks, with a retry where it can help", () => {
     const at = walk("personal");
-    expect(run([{ type: "found", target: alex, found: { kind: "needsUpdate" } }], at)).toEqual({ kind: "blocked", target: alex, message: NEEDS_UPDATE, retry: false });
+    expect(run([{ type: "found", target: alex, found: { kind: "needsUpdate" } }], at)).toEqual({ kind: "blocked", target: alex, path: "personal", message: NEEDS_UPDATE, retry: false });
     expect(run([{ type: "found", target: alex, found: { kind: "damaged", message: "Delete ledger/e000002-1.genesis.enc" } }], at)).toMatchObject({ kind: "blocked", retry: true });
     const cut = run([{ type: "found", target: alex, found: { kind: "unknown" } }], at);
-    expect(cut).toEqual({ kind: "blocked", target: alex, message: LISTING_CUT, retry: true });
+    expect(cut).toEqual({ kind: "blocked", target: alex, path: "personal", message: LISTING_CUT, retry: true });
     expect(run([{ type: "retry" }], cut)).toMatchObject({ kind: "step", step: "connect", owner: "alex" });
   });
 
   it("creating: created opens the app; a create that lost a race, or found one made meanwhile, goes to Unlock", () => {
     const create = run([{ type: "found", target: household, found: { kind: "none" } }], walk("household"));
     expect(run([{ type: "created", created: { kind: "created" } }], create)).toEqual({ kind: "app", target: household });
-    expect(run([{ type: "created", created: { kind: "replaced" } }], create)).toEqual({ kind: "unlock", target: household, reason: "raceLost", error: null });
+    expect(run([{ type: "created", created: { kind: "replaced" } }], create)).toEqual({ kind: "unlock", target: household, path: "household", reason: "raceLost", error: null });
     expect(run([{ type: "created", created: { kind: "exists" } }], create)).toMatchObject({ kind: "unlock", reason: "createdMeanwhile" });
-    expect(run([{ type: "created", created: { kind: "unknown" } }], create)).toEqual({ kind: "blocked", target: household, message: CREATE_UNKNOWN, retry: true });
+    expect(run([{ type: "created", created: { kind: "unknown" } }], create)).toEqual({ kind: "blocked", target: household, path: "household", message: CREATE_UNKNOWN, retry: true });
   });
 
   it("a wrong passphrase stays on Unlock; the right one opens the app", () => {
     const unlock = run([{ type: "found", target: alex, found: { kind: "ledger" } }], walk("personal"));
     const wrong = run([{ type: "wrongPassphrase" }], unlock);
-    expect(wrong).toEqual({ kind: "unlock", target: alex, reason: "existing", error: WRONG_PASSPHRASE });
+    expect(wrong).toEqual({ kind: "unlock", target: alex, path: "personal", reason: "existing", error: WRONG_PASSPHRASE });
     expect(run([{ type: "unlocked" }], wrong)).toEqual({ kind: "app", target: alex });
   });
 
@@ -90,5 +90,24 @@ describe("the GitHub gate's flow (#8)", () => {
     expect(run([{ type: "tokenReplaced", target: { ...alex, repo: "other" } }], replace)).toEqual({ kind: "replaceToken", target: alex, error: OTHER_REPO });
     expect(run([{ type: "tokenReplaced", target: { ...alex, owner: "ALEX" } }], replace)).toEqual({ kind: "app", target: alex });
     expect(run([{ type: "forgotten" }], replace)).toEqual({ kind: "welcome" });
+  });
+  it("Back from Create, Unlock or a blocked screen returns to the connect card of the path that led there", () => {
+    const create = run([{ type: "found", target: household, found: { kind: "none" } }], walk("household"));
+    expect(run([{ type: "back" }], create)).toMatchObject({ kind: "step", path: "household", step: "connect", org: "smith-household" });
+    const later = run([start({ saved: { target: household, hasKey: true } }), { type: "found", target: household, found: { kind: "unknown" } }]);
+    expect(run([{ type: "back" }], later)).toMatchObject({ kind: "step", path: "member", step: "connect", owner: "smith-household" });
+  });
+
+  it("joining a household without an invite link waits for the organization's name", () => {
+    const accept = run([start(), { type: "choose", path: "member" }]);
+    expect(run([{ type: "next" }], accept)).toMatchObject({ step: "accept" });
+    expect(run([{ type: "org", org: "smith-household" }, { type: "next" }], accept)).toMatchObject({ step: "token", org: "smith-household", owner: "smith-household" });
+  });
+
+  it("a refusal while Replace token already shows keeps its error; the gate opening the ledger goes to the app", () => {
+    const shown = run([start({ saved: { target: alex, hasKey: true } }), { type: "tokenRejected" }, { type: "connectFailed", message: OTHER_REPO, awaitingApproval: false }]);
+    expect(run([{ type: "tokenRejected" }], shown)).toEqual(shown);
+    const blocked = run([{ type: "found", target: alex, found: { kind: "unknown" } }], run([start({ saved: { target: alex, hasKey: true } })]));
+    expect(run([{ type: "opened", target: alex }], blocked)).toEqual({ kind: "app", target: alex });
   });
 });

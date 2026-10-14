@@ -62,10 +62,12 @@ export type Screen =
        * so the card offers "Check again". */
       awaitingApproval: boolean;
     }
-  | { kind: "create"; target: Target; error: string | null }
-  | { kind: "unlock"; target: Target; reason: UnlockReason; error: string | null }
+  /** `path`: the walkthrough path that led here (Back returns to its
+   * connect card), or null on a later start. */
+  | { kind: "create"; target: Target; path: Path | null; error: string | null }
+  | { kind: "unlock"; target: Target; path: Path | null; reason: UnlockReason; error: string | null }
   /** Nothing to do here but read, and perhaps try again. */
-  | { kind: "blocked"; target: Target | null; message: string; retry: boolean }
+  | { kind: "blocked"; target: Target | null; path: Path | null; message: string; retry: boolean }
   | { kind: "replaceToken"; target: Target; error: string | null }
   | { kind: "app"; target: Target };
 
@@ -114,6 +116,8 @@ export type FlowEvent =
   | { type: "keyChanged" }
   | { type: "tokenRejected" }
   | { type: "tokenReplaced"; target: Target }
+  /** The gate opened the ledger itself (a retry with what was saved). */
+  | { type: "opened"; target: Target }
   | { type: "retry" }
   | { type: "forgotten" };
 
@@ -126,10 +130,17 @@ function stepScreen(path: Path, step: Step, from: Partial<Extract<Screen, { kind
   return { kind: "step", path, step, org: null, owner: null, repo: DEFAULT_REPO_NAME, ...from, error: null, awaitingApproval: false };
 }
 
-/** The connect card again, for the repo connecting was aimed at. */
-function backToConnect(target: Target | null): Screen {
+/** The connect card again, on the path that led here, for the repo
+ * connecting was aimed at. A later start has no path: the owner tells. */
+function backToConnect(target: Target | null, path: Path | null): Screen {
   if (target === null) return { kind: "welcome" };
-  return stepScreen(target.ownerIsOrg ? "member" : "personal", "connect", { owner: target.owner, repo: target.repo, org: target.ownerIsOrg ? target.owner : null });
+  const on = path ?? (target.ownerIsOrg ? "member" : "personal");
+  return stepScreen(on, "connect", { owner: target.owner, repo: target.repo, org: target.ownerIsOrg ? target.owner : null });
+}
+
+/** The walkthrough path of the screen an outcome arrives on. */
+function pathOf(screen: Screen): Path | null {
+  return screen.kind === "step" || screen.kind === "create" || screen.kind === "unlock" || screen.kind === "blocked" ? screen.path : null;
 }
 
 const sameRepo = (a: Target, b: Target) => a.owner.toLowerCase() === b.owner.toLowerCase() && a.repo.toLowerCase() === b.repo.toLowerCase();
@@ -143,7 +154,7 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
     case "start":
       if (!event.environment.ok) return { kind: "unsupported", message: event.environment.message };
       if (!event.defaults.ok) return { kind: "misconfigured", message: event.defaults.message };
-      if (event.saved !== null) return event.saved.hasKey ? { kind: "app", target: event.saved.target } : { kind: "unlock", target: event.saved.target, reason: "existing", error: null };
+      if (event.saved !== null) return event.saved.hasKey ? { kind: "app", target: event.saved.target } : { kind: "unlock", target: event.saved.target, path: null, reason: "existing", error: null };
       if (event.invite !== null) return stepScreen("member", "accept", { org: event.invite.owner, owner: event.invite.owner, repo: event.invite.repo });
       return { kind: "welcome" };
 
@@ -159,9 +170,9 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
       if (screen.kind !== "step") return screen;
       const steps = STEPS[screen.path];
       const at = steps.indexOf(screen.step);
-      // The household path can't go on without its organization's name:
-      // every later link is built from it.
-      if (screen.step === "org" && !screen.org) return screen;
+      // A household path can't go on without its organization's name:
+      // every later link, and the repo joined, are built from it.
+      if ((screen.step === "org" || screen.step === "accept") && !screen.org) return screen;
       return at < steps.length - 1 ? { ...screen, step: steps[at + 1], error: null, awaitingApproval: false } : screen;
     }
 
@@ -171,7 +182,7 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
         const at = steps.indexOf(screen.step);
         return at > 0 ? { ...screen, step: steps[at - 1], error: null, awaitingApproval: false } : { kind: "welcome" };
       }
-      if (screen.kind === "create" || screen.kind === "unlock" || screen.kind === "blocked") return backToConnect(screen.target);
+      if (screen.kind === "create" || screen.kind === "unlock" || screen.kind === "blocked") return backToConnect(screen.target, screen.path);
       return screen;
     }
 
@@ -180,35 +191,37 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
       if (screen.kind === "replaceToken") return { ...screen, error: event.message };
       return screen;
 
-    case "found":
+    case "found": {
+      const path = pathOf(screen);
       switch (event.found.kind) {
         case "none":
-          return { kind: "create", target: event.target, error: null };
+          return { kind: "create", target: event.target, path, error: null };
         case "ledger":
-          return { kind: "unlock", target: event.target, reason: "existing", error: null };
+          return { kind: "unlock", target: event.target, path, reason: "existing", error: null };
         case "needsUpdate":
-          return { kind: "blocked", target: event.target, message: NEEDS_UPDATE, retry: false };
+          return { kind: "blocked", target: event.target, path, message: NEEDS_UPDATE, retry: false };
         case "damaged":
-          return { kind: "blocked", target: event.target, message: event.found.message, retry: true };
+          return { kind: "blocked", target: event.target, path, message: event.found.message, retry: true };
         case "unknown":
-          return { kind: "blocked", target: event.target, message: LISTING_CUT, retry: true };
+          return { kind: "blocked", target: event.target, path, message: LISTING_CUT, retry: true };
       }
       return screen;
+    }
 
     case "created": {
       if (screen.kind !== "create") return screen;
-      const { target } = screen;
+      const { target, path } = screen;
       switch (event.created.kind) {
         case "created":
           return { kind: "app", target };
         case "exists":
-          return { kind: "unlock", target, reason: "createdMeanwhile", error: null };
+          return { kind: "unlock", target, path, reason: "createdMeanwhile", error: null };
         case "replaced":
-          return { kind: "unlock", target, reason: "raceLost", error: null };
+          return { kind: "unlock", target, path, reason: "raceLost", error: null };
         case "unknown":
-          return { kind: "blocked", target, message: CREATE_UNKNOWN, retry: true };
+          return { kind: "blocked", target, path, message: CREATE_UNKNOWN, retry: true };
         case "failed":
-          return { kind: "blocked", target, message: event.created.message, retry: true };
+          return { kind: "blocked", target, path, message: event.created.message, retry: true };
       }
       return screen;
     }
@@ -223,11 +236,13 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
       return screen.kind === "unlock" ? { ...screen, error: WRONG_PASSPHRASE } : screen;
 
     case "keyChanged":
-      return screen.kind === "app" ? { kind: "unlock", target: screen.target, reason: "keyChanged", error: null } : screen;
+      return screen.kind === "app" ? { kind: "unlock", target: screen.target, path: null, reason: "keyChanged", error: null } : screen;
 
     case "tokenRejected": {
       // A 401 anywhere a connection exists. Before one exists, connecting
-      // reports it as connectFailed instead.
+      // reports it as connectFailed instead. Already on Replace token, what
+      // it shows (an error) stays.
+      if (screen.kind === "replaceToken") return screen;
       const target = "target" in screen ? screen.target : null;
       return target ? { kind: "replaceToken", target, error: null } : screen;
     }
@@ -236,8 +251,11 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
       if (screen.kind !== "replaceToken") return screen;
       return sameRepo(screen.target, event.target) ? { kind: "app", target: screen.target } : { ...screen, error: OTHER_REPO };
 
+    case "opened":
+      return { kind: "app", target: event.target };
+
     case "retry":
-      return screen.kind === "blocked" && screen.retry ? backToConnect(screen.target) : screen;
+      return screen.kind === "blocked" && screen.retry ? backToConnect(screen.target, screen.path) : screen;
 
     case "forgotten":
       return { kind: "welcome" };
