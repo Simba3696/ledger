@@ -1,6 +1,7 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 import type { ModuleName } from "../../api";
 import { defaultTimeZone, SECTION_LABELS, SECTIONS, timeZones } from "../defaults";
+import { useFocusOnError } from "../focusOnError";
 import { Card, ErrorText } from "../Shell";
 import { createProblem } from "./createForm";
 import type { Screen } from "./flow";
@@ -53,6 +54,8 @@ export function CreateLedger({
   }
 
   const error = shown ?? screen.error;
+  const firstField = useRef<HTMLInputElement>(null);
+  useFocusOnError(screen.error, busy, firstField);
   return (
     <Card title="Create your ledger" focusKey="create">
       <p>
@@ -64,7 +67,7 @@ export function CreateLedger({
         <fieldset disabled={busy}>
           <label>
             Passphrase
-            <input type="password" name="new-passphrase" autoComplete="new-password" value={passphrase} data-testid="gh-passphrase" onChange={(e) => setPassphrase(e.target.value)} />
+            <input ref={firstField} type="password" name="new-passphrase" autoComplete="new-password" value={passphrase} data-testid="gh-passphrase" onChange={(e) => setPassphrase(e.target.value)} />
           </label>
           <label>
             Passphrase again

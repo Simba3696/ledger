@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
+import { useFocusOnError } from "../focusOnError";
 import { Card, ErrorText } from "../Shell";
 import { checkPastedToken } from "../token";
 import type { Screen } from "./flow";
@@ -52,6 +53,8 @@ export function ReplaceToken({
   }
 
   const error = pasteError ?? screen.error;
+  const field = useRef<HTMLInputElement>(null);
+  useFocusOnError(error, busy, field);
   return (
     <Card title="Replace your token" focusKey="replace-token">
       <p>{TOKEN_EXPIRED}</p>
@@ -62,7 +65,7 @@ export function ReplaceToken({
         <fieldset disabled={busy}>
           <label>
             New token
-            <input type="password" name="token" autoComplete="off" autoCapitalize="none" spellCheck={false} value={token} data-testid="gh-replace-token" onChange={(e) => setToken(e.target.value)} />
+            <input ref={field} type="password" name="token" autoComplete="off" autoCapitalize="none" spellCheck={false} value={token} data-testid="gh-replace-token" onChange={(e) => setToken(e.target.value)} />
           </label>
           {error && <ErrorText>{error}</ErrorText>}
           <button type="submit" className="submit-btn" disabled={busy || token.trim() === ""} data-testid="gh-replace">
