@@ -119,13 +119,30 @@ export class ConnectFailed extends Error {
   }
 }
 
+/** Credentials for another GitHub account than the one this device joined
+ * with (Replace token): found from the login alone, before the repo. */
+export class OtherAccountError extends Error {
+  readonly login: string;
+  constructor(login: string) {
+    super(`The token belongs to ${login}.`);
+    this.name = "OtherAccountError";
+    this.login = login;
+  }
+}
+
 /** Who the token belongs to, the repo (private, reachable), and what it
  * holds. `credentials` is a pasted token, or the tokens a GitHub sign-in
  * returned (#10), which must also reach the repo through one of the App's
  * installations (else AppNotInstalledError, the install prompt). `owner`
- * null means the token's own login (the personal path). Throws
- * ConnectFailed. */
-export async function connect(credentials: string | AppTokens, target: { owner: string | null; repo: string }, deps: Deps = {}): Promise<Connected> {
+ * null means the token's own login (the personal path). With `login`
+ * (Replace token), credentials for another account are OtherAccountError
+ * before anything about the repo is asked. Throws ConnectFailed. */
+export async function connect(
+  credentials: string | AppTokens,
+  target: { owner: string | null; repo: string },
+  deps: Deps = {},
+  expect: { login?: string } = {},
+): Promise<Connected> {
   let owner = target.owner;
   // Built first, so an App session refreshes into the record that is saved.
   const connection: Connection =
@@ -135,6 +152,7 @@ export async function connect(credentials: string | AppTokens, target: { owner: 
   const token = holderFor(connection, deps);
   try {
     const { login, tokenExpiresAt } = await getLogin({ token: () => tokenOf(token), fetch: deps.fetch });
+    if (expect.login !== undefined && login.toLowerCase() !== expect.login.toLowerCase()) throw new OtherAccountError(login);
     owner ??= login;
     connection.owner = owner;
     connection.login = login;
