@@ -17,9 +17,11 @@ import {
   type GitHubClient,
   type RefRead,
 } from "../github/contents";
+import { BlobReads } from "./blobReads";
 import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
+import { draftOf, settleDraft } from "./draft";
 import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
 import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
@@ -500,8 +502,11 @@ interface ColdJoin {
 /** Where #readStreams reads the epoch's device streams from. */
 interface StreamSource {
   listing: Listing;
-  /** The epoch's genesis state, which every snap is checked against. */
-  genesis: () => Promise<SyncState>;
+  /** The epoch's genesis state, which every snap is checked against, read
+   * through `blobs` if it has to be read. */
+  genesis: (blobs: BlobReads) => Promise<SyncState>;
+  /** The genesis version genesis() reads, when it reads one. */
+  genesisRead?: { name: string; listed: Listed };
   /** Per device, the last L of its log that the state being built holds,
    * and the `through` of the version of its snapshot last joined (the one
    * `joined` names), as read from that device's own files (meta.logReach
@@ -660,6 +665,16 @@ class OwnLogTooLarge extends Error {}
  * as a new epoch at Lamport exhaustion does: what the cycle read and would
  * record belongs to the epoch and device id it started with. */
 class IdentityChanged extends Error {}
+
+/** The devices in `devices` with no file in `epoch` in `listing`. A
+ * device's ops reach another only through its log, and nothing is ever
+ * deleted, so every device an honest snapshot has seen has a file in any
+ * listing that holds that snapshot. A cut listing proves no absence. */
+function unlistedOf(listing: Listing, epoch: string): (devices: string[]) => string[] {
+  const listed = new Set<string>();
+  for (const { file } of listing.files.values()) if (file.kind !== "genesis" && file.epoch === epoch) listed.add(file.device);
+  return (devices) => (listing.truncated ? [] : devices.filter((device) => !listed.has(device)));
+}
 
 export class SyncEngine {
   readonly #key: DeviceKey;
@@ -899,8 +914,12 @@ export class SyncEngine {
 
   /** A first start: saves `state` (a genesis or a cold join of the epoch)
    * as this device's base under a new device id. Refused unless nothing is
-   * saved, and the transaction itself refuses if anything was saved since. */
-  initialize(epochKey: string, state: SyncState): Promise<void> {
+   * saved, and the transaction itself refuses if anything was saved since.
+   * `genesis` is the epoch's genesis the caller has just opened (#8's join:
+   * openGenesis), by its blob sha and its state, which `state` holds: the
+   * first cycle then doesn't read that version again. Without it, the first
+   * cycle reads the listed genesis. */
+  initialize(epochKey: string, state: SyncState, genesis?: { sha: string; state: SyncState }): Promise<void> {
     if (!this.#needsInit || this.#stopped || this.#superseded || !this.#lockHeld) return Promise.reject(new Error("This device's sync state is not empty, or this tab can't write it"));
     if (!isEpochKey(epochKey)) return Promise.reject(new Error(`Not an epoch key: ${epochKey}`));
     return this.#enqueue(async () => {
@@ -922,7 +941,7 @@ export class SyncEngine {
         ownSnapSha: null,
         lastSentSnapSha: null,
         lastSentSnapThrough: 0,
-        joined: {},
+        joined: genesis ? { [repoFileName({ kind: "genesis", epoch: epochKey })]: genesis.sha } : {},
         seen: vectorOf(state.seen),
         logReach: {},
         snapReach: {},
@@ -933,6 +952,9 @@ export class SyncEngine {
       const base = await seal(storedState(state), this.#key);
       await this.#mutate(meta, { base, clearChain: true });
       this.#adopt({ meta: this.#meta!, state: cloneState(state), doc: materialize(state), ownLog: [], chainHead: CHAIN_START, tailCount: 0, leftBehind: new Map(), notices: new Map(), unreadNotices: new Set(), old: null }, true);
+      // What a snapshot is checked against (#epochGenesis), as if the cycle
+      // had read it.
+      if (genesis) this.#genesis = { name: repoFileName({ kind: "genesis", epoch: epochKey }), sha: genesis.sha, state: cloneState(genesis.state) };
     }).then(() => this.#begin());
   }
 
@@ -968,7 +990,10 @@ export class SyncEngine {
    * was before that write, and win with the later L. */
   beginWrite(): HostWrite & { ready: Promise<void> } {
     const turn = this.#turn();
-    return { ready: turn.ready, commit: (next) => turn.commit(next), end: turn.end };
+    // The write's copy is made as the write reads it (draft.ts), and its
+    // unread parts are current()'s own once settled: current() is never
+    // changed, only replaced, and the diff passes over them by identity.
+    return { ready: turn.ready, draft: draftOf, commit: (next) => turn.commit(settleDraft(next)), end: turn.end };
   }
 
   /** A write's turn (beginWrite), whose commit may also resolve a group a
@@ -1623,9 +1648,16 @@ export class SyncEngine {
       if (file.kind === "log") logs.push(name);
       else if (file.kind === "snap") snaps.push(name);
     }
+    let genesisRead: StreamSource["genesisRead"];
+    try {
+      genesisRead = this.#genesisVersion(listing) ?? undefined;
+    } catch {
+      // Named by nothing: genesis() throws when a snapshot needs it.
+    }
     const streams = await this.#readStreams({
       listing,
-      genesis: () => this.#epochGenesis(listing),
+      genesis: (blobs) => this.#epochGenesis(listing, blobs),
+      genesisRead,
       logReach: new Map(Object.entries(meta.logReach)),
       snapReach: new Map(Object.entries(meta.snapReach)),
       held: this.#state,
@@ -1676,8 +1708,54 @@ export class SyncEngine {
    * files read. The only ops left out are those whose join would change
    * nothing in the state already held, looked for only at or below the last
    * L of the version of the same log joined before: an op a later version
-   * inserted or changed there is joined, as a cold start joins it. */
+   * inserted or changed there is joined, as a cold start joins it.
+   *
+   * The blobs it is sure to download are read ahead, BLOB_READS_AT_ONCE at
+   * a time (design section 7), and each is handed over at its turn, so every
+   * decision is taken in the same order on the same bytes as when they were
+   * read one by one (#plannedReads). */
   async #readStreams(src: StreamSource): Promise<Streams> {
+    const blobs = new BlobReads((sha) => this.#remote!.client.readBlob(sha));
+    blobs.plan(this.#plannedReads(src));
+    try {
+      return await this.#joinStreams(src, blobs);
+    } finally {
+      blobs.close();
+    }
+  }
+
+  /** The blobs #joinStreams is sure to download, in the order it downloads
+   * them: only first attempts (a snapshot not joined at its first version
+   * and not refused for the listing, the genesis its check reads first, a
+   * log not joined and not waiting for its snapshot), and none that #read
+   * refuses without downloading. A read it may or may not make (a later
+   * version, a snapshot a gap needs again) is not planned: it is read when
+   * asked for, so no request is made that reading one by one wouldn't. */
+  #plannedReads(src: StreamSource): string[] {
+    const unlistedIn = unlistedOf(src.listing, this.#meta!.epochKey);
+    const downloads = (name: string, listed: Listed) => !this.#refused.has(`${name}@${listed.sha}`) && listed.size <= this.#bounds.read.bytes;
+    const planned: string[] = [];
+    let checksSnap = false;
+    for (const name of src.snaps) {
+      const first = src.versions(name)[0];
+      if (!first || src.joined[name] === first.sha) continue;
+      const named = this.#unlistedSeen.get(`${name}@${first.sha}`);
+      if (named && unlistedIn(named).length > 0) continue;
+      checksSnap = true;
+      if (downloads(name, first)) planned.push(first.sha);
+    }
+    const genesis = src.genesisRead;
+    if (checksSnap && genesis && downloads(genesis.name, genesis.listed)) planned.unshift(genesis.listed.sha);
+    for (const name of src.logs) {
+      const first = src.versions(name)[0];
+      if (parseRepoFileName(name)?.kind !== "log" || !first || src.joined[name] === first.sha || this.#waitingLogs.has(`${name}@${first.sha}`)) continue;
+      if (downloads(name, first)) planned.push(first.sha);
+    }
+    return planned;
+  }
+
+  /** #readStreams, its downloads read through `blobs`. */
+  async #joinStreams(src: StreamSource, blobs: BlobReads): Promise<Streams> {
     const epoch = this.#meta!.epochKey;
     const out: Streams = {
       states: [],
@@ -1707,13 +1785,6 @@ export class SyncEngine {
       return current ? (src.snapReach.get(device) ?? 0) : 0;
     };
     const heldOf = (device: string) => Math.max(logOf(device), snapOf(device));
-    // The devices with a file in the epoch. A device's ops reach another
-    // only through its log, and nothing is ever deleted, so every device an
-    // honest snapshot has seen has a file in any listing that holds that
-    // snapshot. A cut listing proves no absence.
-    const listedDevices = new Set<string>();
-    for (const { file } of src.listing.files.values()) if (file.kind !== "genesis" && file.epoch === epoch) listedDevices.add(file.device);
-
     // A seen entry joined is carried in every later own op's vv and own
     // snapshot. Entries for devices with no file would let one small file
     // make every later own op too large to push. Whether a device has a
@@ -1721,7 +1792,7 @@ export class SyncEngine {
     // refusal is never remembered as final (#refused): it is checked again
     // against every listing, and a device listed later lets every device
     // join the snapshot alike.
-    const unlistedIn = (devices: string[]) => (src.listing.truncated ? [] : devices.filter((device) => !listedDevices.has(device)));
+    const unlistedIn = unlistedOf(src.listing, epoch);
     const unlistedRefusal = (count: number) =>
       ({ ok: false, problem: "malformed", detail: `its seen names ${count} devices with no file in the repo` }) satisfies FileRead;
 
@@ -1732,7 +1803,7 @@ export class SyncEngine {
         const still = unlistedIn(named);
         if (still.length > 0) return unlistedRefusal(still.length);
       }
-      const read = await this.#read(name, listed, await src.genesis());
+      const read = await this.#read(name, listed, await src.genesis(blobs), undefined, blobs);
       if (!read.ok) return read;
       const { file, state } = read.read;
       if (!state || file.kind !== "snap") return { ok: false, problem: "malformed", detail: "it is not a snapshot" };
@@ -1786,7 +1857,7 @@ export class SyncEngine {
           break;
         }
         const at = `${name}@${version.sha}`;
-        const read = this.#waitingLogs.get(at) ?? (await this.#read(name, version));
+        const read = this.#waitingLogs.get(at) ?? (await this.#read(name, version, undefined, undefined, blobs));
         if (!read.ok || read.read.file.kind !== "log") {
           if (listed) out.halted.set(name, haltOf(read));
           continue;
@@ -1836,15 +1907,16 @@ export class SyncEngine {
    * remembered by name and sha (and the bounds it was read within): the
    * sha names its bytes for good, and the name is what they are checked
    * against (with the epoch's genesis, which the name fixes). One listed
-   * larger than `bounds` allow is refused without being downloaded. */
-  async #read(name: string, listed: Listed, genesis?: SyncState, bounds: FileBounds = this.#bounds.read): Promise<FileRead> {
+   * larger than `bounds` allow is refused without being downloaded. It is
+   * downloaded through `blobs` when given (#readStreams). */
+  async #read(name: string, listed: Listed, genesis?: SyncState, bounds: FileBounds = this.#bounds.read, blobs?: BlobReads): Promise<FileRead> {
     const at = bounds === this.#bounds.read ? `${name}@${listed.sha}` : `${name}@${listed.sha}@${bounds.bytes}`;
     const known = this.#refused.get(at);
     if (known) return known;
     const read: FileRead =
       listed.size > bounds.bytes
         ? { ok: false, problem: "malformed", detail: `the file is listed at ${listed.size} bytes, larger than ${bounds.bytes}` }
-        : await openRepoFile(listed.file, await this.#remote!.client.readBlob(listed.sha), this.#key, genesis, bounds);
+        : await openRepoFile(listed.file, await (blobs ? blobs.read(listed.sha) : this.#remote!.client.readBlob(listed.sha)), this.#key, genesis, bounds);
     if (!read.ok) {
       this.#refused.set(at, read);
       this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);
@@ -2210,18 +2282,28 @@ export class SyncEngine {
    * one this device joined). Throws when it can't be read, which ends the
    * cycle as `pending`: the cycle already refused a genesis that can't be
    * joined, so this is a failed read. */
-  async #epochGenesis(listing?: Listing): Promise<SyncState> {
+  async #epochGenesis(listing?: Listing, blobs?: BlobReads): Promise<SyncState> {
+    const version = this.#genesisVersion(listing);
+    if (version === null) return this.#genesis!.state;
+    const { name, listed } = version;
+    const read = await this.#read(name, listed, undefined, undefined, blobs);
+    if (!read.ok || read.read.file.kind !== "genesis") throw new Error(`The epoch's genesis can't be read${read.ok ? "" : `: ${read.detail}`}`);
+    const state = genesisState(read.read.file.doc);
+    this.#genesis = { name, sha: listed.sha, state };
+    return state;
+  }
+
+  /** The version of the epoch's genesis #epochGenesis reads (the listed one,
+   * or else the one this device joined), or null when the one it holds is
+   * that version. Throws when this device names none. */
+  #genesisVersion(listing?: Listing): { name: string; listed: Listed } | null {
     const meta = this.#meta!;
     const name = repoFileName({ kind: "genesis", epoch: meta.epochKey });
     const listed = listing?.files.get(name);
     const sha = listed?.sha ?? meta.joined[name];
-    if (this.#genesis?.name === name && (sha === undefined || this.#genesis.sha === sha)) return this.#genesis.state;
+    if (this.#genesis?.name === name && (sha === undefined || this.#genesis.sha === sha)) return null;
     if (sha === undefined) throw new Error("This device hasn't joined its epoch's genesis");
-    const read = await this.#read(name, listed ?? { file: { kind: "genesis", epoch: meta.epochKey }, sha, size: 0 });
-    if (!read.ok || read.read.file.kind !== "genesis") throw new Error(`The epoch's genesis can't be read${read.ok ? "" : `: ${read.detail}`}`);
-    const state = genesisState(read.read.file.doc);
-    this.#genesis = { name, sha, state };
-    return state;
+    return { name, listed: listed ?? { file: { kind: "genesis", epoch: meta.epochKey }, sha, size: 0 } };
   }
 
   /** Saves sync bookkeeping in meta alone, in one transaction. */

@@ -5,7 +5,7 @@ import type { LedgerDocument } from "../document/types";
 import { diffDocuments, UnrepresentableChange } from "./diff";
 import { createOrderKey } from "./keys";
 import type { Op } from "./state";
-import { Replica, deviceId, emptyDocument, fingerprint } from "./testkit";
+import { Replica, Rng, deviceId, emptyDocument, fingerprint, forEachSeed, randomWrite } from "./testkit";
 
 // The diff (design sections 3.2 and 3.3): each write through DocumentBackend
 // becomes exactly the op section 3.2 lists, a write that changes nothing (or
@@ -376,5 +376,107 @@ describe("re-apply (section 9.4)", () => {
     expect(keysOf(op ?? undefined)).toContain(`e/${R}/_c`);
     expect(r.doc.expenses["2026-05"].map((e) => [e.id, e.amount])).toEqual([[R, "40.00"]]);
     expect(r.state.ra).toEqual(new Set(ra));
+  });
+});
+
+// A write's copy of the document may share with current() every part the
+// write didn't touch (stage 8c-2): the diff must give the same op, or refuse
+// for the same reason, whether `next` shares those parts or copies them.
+describe("a next document sharing the parts it didn't change with current", () => {
+  const MONTH_MAPS = ["expenses", "monthLocks", "financeMonths", "cardBills"] as const;
+  const PARTS = ["settings", "categories", "debts", "emis", "subscriptions", "tombstones"] as const;
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+  /** `next`, with every part (and every month of a month map) that reads
+   * exactly as current's replaced by current's own object. */
+  function sharing(current: LedgerDocument, next: LedgerDocument): LedgerDocument {
+    const out = { ...next } as Record<string, unknown>;
+    for (const name of PARTS) if (same(current[name], next[name])) out[name] = current[name];
+    for (const name of MONTH_MAPS) {
+      const before = current[name] as Record<string, unknown>;
+      const after = next[name] as Record<string, unknown>;
+      if (after === null || typeof after !== "object") continue;
+      const map: Record<string, unknown> = {};
+      for (const [month, value] of Object.entries(after)) map[month] = Object.hasOwn(before, month) && same(before[month], value) ? before[month] : value;
+      out[name] = map;
+    }
+    return out as unknown as LedgerDocument;
+  }
+
+  function outcome(run: () => unknown): unknown {
+    try {
+      return { op: run() };
+    } catch (err) {
+      return { refused: (err as Error).message };
+    }
+  }
+
+  /** Diffs `next` against `r`'s document both ways. */
+  function bothWays(r: Replica, next: LedgerDocument): void {
+    const writer = { L: r.state.maxL + 1, device: r.device };
+    const copied = outcome(() => diffDocuments(r.state, r.doc, next, writer));
+    expect(outcome(() => diffDocuments(r.state, r.doc, sharing(r.doc, next), writer))).toEqual(copied);
+  }
+
+  it("gives the same op for random writes of every kind", async () => {
+    let checked = 0;
+    await forEachSeed(40, async (seed) => {
+      const rng = new Rng(seed);
+      const r = replica();
+      const commit = r.commit.bind(r);
+      r.commit = async (next) => {
+        bothWays(r, next);
+        checked++;
+        return commit(next);
+      };
+      for (let i = 0; i < 60; i++) await randomWrite(rng, r.backend);
+    });
+    expect(checked).toBeGreaterThan(40 * 25);
+  }, 60_000);
+
+  it("refuses what it refuses for the same reason", async () => {
+    const r = replica();
+    for (let month = 1; month <= 6; month++) for (const remarks of ["Bus", "Tea", "Rent"]) await r.backend.addEntry({ ...ENTRY, month, remarks });
+    await r.backend.addDebt({ name: "Sam", amount: 1 });
+    await r.backend.addDebt({ name: "Alex", amount: 2 });
+    await r.backend.setMonthIncome(2026, 5, { salary: 50000, otherIncome: null, savings: [] });
+    const changes: ((doc: LedgerDocument) => void)[] = [
+      (doc) => doc.expenses["2026-05"].push(doc.expenses["2026-02"].splice(1, 1)[0]),
+      (doc) => doc.expenses["2026-05"].push(doc.expenses["2026-02"][1]),
+      (doc) => doc.expenses["2026-02"].push(doc.expenses["2026-05"][1]),
+      (doc) => doc.expenses["2026-05"].push({ ...doc.expenses["2026-02"][1], note: "x" } as never),
+      (doc) => doc.expenses["2026-05"].push({ ...doc.expenses["2026-05"][0] }),
+      (doc) => {
+        doc.expenses["2026-01"].push(doc.expenses["2026-02"].pop()!);
+        (doc.expenses["2026-06"][0] as unknown as Record<string, unknown>).note = "x";
+      },
+      // A month listing a shared month's record, then a later failure of
+      // another kind before that shared month is reached.
+      (doc) => {
+        doc.expenses["2026-01"].push(doc.expenses["2026-05"][0]);
+        (doc.expenses["2026-03"][0] as unknown as Record<string, unknown>).note = "x";
+      },
+      (doc) => {
+        doc.expenses["2026-06"].push(doc.expenses["2026-05"][0]);
+        (doc.expenses["2026-03"][0] as unknown as Record<string, unknown>).note = "x";
+      },
+      (doc) => (doc.expenses["2026-03"] = []),
+      (doc) => (doc.expenses["2026-07"] = doc.expenses["2026-03"].splice(0)),
+      (doc) => {
+        doc.expenses["2026-07"] = doc.expenses["2026-03"];
+        delete doc.expenses["2026-03"];
+      },
+      (doc) => doc.debts.reverse(),
+      (doc) => (doc.debts[0].amount = "1"),
+      (doc) => (doc.categories[0].label = "Groceries"),
+      (doc) => ((doc.monthLocks as Record<string, unknown>)["2026-05"] = "yes"),
+      (doc) => ((doc.financeMonths as Record<string, unknown>)["2026-05"] = null),
+      (doc) => ((doc as unknown as Record<string, unknown>).restoredAt = 1),
+    ];
+    for (const change of changes) {
+      const next = structuredClone(r.doc);
+      change(next);
+      bothWays(r, next);
+    }
   });
 });
