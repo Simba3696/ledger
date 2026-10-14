@@ -191,3 +191,57 @@ describe("old-bug catalogue (design section 13)", () => {
     expect(fake.commits).toHaveLength(2);
   });
 });
+
+describe("fake GitHub App installations (#10)", () => {
+  const APP = "ghu_alexapp";
+  const HOUSEHOLD = "smith-household/ledger-data";
+
+  function appFake() {
+    return createFakeGitHub({
+      repos: [
+        { owner: "alex", name: "ledger-data", private: true },
+        { owner: "smith-household", name: "ledger-data", private: true },
+      ],
+      tokens: {
+        [APP]: { login: "alex", repos: [REPO, HOUSEHOLD], permission: "write" },
+        [WRITE]: { login: "alex", repos: [REPO], permission: "write" },
+      },
+      installations: [{ id: 7, account: "alex", repos: [REPO] }],
+    });
+  }
+
+  const get = async (f: FakeGitHub, path: string, token = APP) => {
+    const res = await f.fetch(`https://api.github.com${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+
+  it("lists the installations and repos an App user token reaches, and an App token reaches only installed repos", async () => {
+    const f = appFake();
+    expect(await get(f, "/user/installations")).toMatchObject({ status: 200, body: { total_count: 1, installations: [{ id: 7, account: { login: "alex" } }] } });
+    expect(await get(f, "/user/installations/7/repositories")).toMatchObject({
+      status: 200,
+      body: { total_count: 1, repositories: [{ full_name: REPO, owner: { login: "alex" }, private: true }] },
+    });
+    expect((await get(f, "/repos/alex/ledger-data")).status).toBe(200);
+    // The household's repo: the person can reach it, the App isn't on it.
+    expect((await get(f, "/repos/smith-household/ledger-data")).status).toBe(404);
+    expect((await get(f, "/user/installations/8/repositories")).status).toBe(404);
+
+    // Installing on the org's account ("all") makes it reachable at once.
+    f.install({ id: 8, account: "smith-household", repos: "all" });
+    expect((await get(f, "/repos/smith-household/ledger-data")).status).toBe(200);
+    expect(await get(f, "/user/installations/8/repositories")).toMatchObject({ body: { repository_selection: "all", repositories: [{ full_name: HOUSEHOLD }] } });
+    expect(f.unhandled).toEqual([]);
+  });
+
+  it("pages the lists by per_page and page, and refuses a token not made by an App", async () => {
+    const f = appFake();
+    f.install({ id: 8, account: "smith-household", repos: "all" });
+    expect(await get(f, "/user/installations?per_page=1&page=2")).toMatchObject({ body: { total_count: 2, installations: [{ id: 8 }] } });
+    const pat = await get(f, "/user/installations", WRITE);
+    expect(pat.status).toBe(403);
+    expect(pat.body.message).toMatch(/authorized to a GitHub App/);
+    // A fine-grained token is not limited by installations.
+    expect((await get(f, "/repos/alex/ledger-data", WRITE)).status).toBe(200);
+  });
+});

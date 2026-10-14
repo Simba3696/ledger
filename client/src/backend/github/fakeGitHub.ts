@@ -14,12 +14,18 @@ import { parseRepoFileName } from "../sync/epoch";
 //     listing, at the branch head or ?ref=),
 //   GET /repos/{o}/{r}/git/ref/heads/{branch},
 //   GET /repos/{o}/{r}/git/trees/{sha|branch}[?recursive=1],
-//   GET /repos/{o}/{r}/git/blobs/{sha}.
+//   GET /repos/{o}/{r}/git/blobs/{sha},
+//   GET /user/installations and /user/installations/{id}/repositories
+//     (#10's sign-in: which repos a GitHub App installation covers).
 // Repos are pre-seeded (standing in for the person creating one on
 // github.com), have one branch, `main`, and start empty; there is no
 // repo-create endpoint, and any request it doesn't model fails with 501 and
 // is recorded in `unhandled`: the `{commitSha}:{path}` tree form, and a PUT
-// onto a directory or under a file (GitHub's answer not recorded), included. Tokens are an allow-list. Blob and tree shas
+// onto a directory or under a file (GitHub's answer not recorded), included. Tokens are an allow-list. A token starting `ghu_` is a GitHub
+// App user token (#10): it reaches a repo only when its grant does and an
+// installation (`installations`, `install`) covers the repo, as GitHub
+// intersects the person's access with the App's; it alone may list
+// installations, which any other token gets a 403 for. Blob and tree shas
 // are real git object ids (a tree is hashed as git hashes it), commits form
 // a history the branch ref moves along, and contents come back as base64
 // with a newline every 60 characters.
@@ -63,6 +69,14 @@ export interface FakeToken {
    * github-authentication-token-expiration header (which CORS hides from a
    * browser); after it, 401. */
   expiresAt?: string;
+}
+
+/** A GitHub App installation (#10) on an account: every repo it owns
+ * ("all") or the ones named ("owner/name"). */
+export interface FakeInstallation {
+  id: number;
+  account: string;
+  repos: string[] | "all";
 }
 
 interface RecordedRequest {
@@ -131,6 +145,9 @@ export interface FakeGitHub {
   addRepo(repo: FakeRepo): void;
   setToken(token: string, grant: FakeToken): void;
   revokeToken(token: string): void;
+  /** Installs the App (#10), or changes an installation with the same id:
+   * a person finishing the install page on github.com. */
+  install(installation: FakeInstallation): void;
   /** Stores a file as one commit on `main`, without a request. Returns its
    * blob sha. */
   seedFile(repo: string, path: string, text: string): Promise<string>;
@@ -271,9 +288,17 @@ const DOCS = {
   ref: "https://docs.github.com/rest/git/refs#get-a-reference",
   trees: "https://docs.github.com/rest/git/trees#get-a-tree",
   blobs: "https://docs.github.com/rest/git/blobs#get-a-blob",
+  installations: "https://docs.github.com/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token",
+  installationRepos: "https://docs.github.com/rest/apps/installations#list-repositories-accessible-to-the-user-access-token",
 };
 
 const EMPTY_REPO = "Git Repository is empty.";
+/** What GitHub answers a token not made by a GitHub App on
+ * /user/installations. */
+const NOT_AN_APP_TOKEN = "You must authenticate with an access token authorized to a GitHub App in order to list installations";
+/** GitHub's page size for list endpoints, and its largest. */
+const PER_PAGE = 30;
+const PER_PAGE_MAX = 100;
 /** git's id for "no object". */
 const NULL_SHA = "0".repeat(40);
 
@@ -316,6 +341,8 @@ interface CommitObject {
 
 interface RepoState {
   info: FakeRepo;
+  /** GitHub's numeric repository id. */
+  id: number;
   blobs: Map<string, Uint8Array>;
   trees: Map<string, TreeEntry[]>;
   commitObjects: Map<string, CommitObject>;
@@ -483,6 +510,7 @@ export function createFakeGitHub({
   apiBase = "https://api.github.com",
   repos = [],
   tokens = {},
+  installations = [],
   cors = true,
   branchRace = "conflict",
   putLatencyMs = 0,
@@ -493,6 +521,8 @@ export function createFakeGitHub({
   apiBase?: string;
   repos?: FakeRepo[];
   tokens?: Record<string, FakeToken>;
+  /** The GitHub App's installations (#10), which `ghu_` tokens go through. */
+  installations?: FakeInstallation[];
   cors?: boolean;
   /** What a PUT does when another commit moved the branch since it
    * arrived and its own file is unchanged: "conflict" (409 "is at … but
@@ -518,6 +548,7 @@ export function createFakeGitHub({
   const base = apiBase.replace(/\/+$/, "");
   const repoStates = new Map<string, RepoState>();
   const grants = new Map<string, FakeToken>();
+  const installs = new Map<number, FakeInstallation>(installations.map((i) => [i.id, i]));
   const budgets = new Map<string, Budget>();
   /** Requests with no token. GitHub counts them by IP; the fake has one. */
   const anonymous: Counter = { used: 0, reset: 0 };
@@ -534,6 +565,7 @@ export function createFakeGitHub({
   const addRepo = (info: FakeRepo) => {
     repoStates.set(repoKey(`${info.owner}/${info.name}`), {
       info: { ...info },
+      id: 1000 + repoStates.size,
       blobs: new Map(),
       trees: new Map(),
       commitObjects: new Map(),
@@ -669,10 +701,25 @@ export function createFakeGitHub({
   const counterHeaders = (counter: Counter) =>
     rateLimitHeaders(Math.max(0, rateLimit - counter.used), counter.used, counter.reset, rateLimit);
 
+  const tokenOf = (authorization: string | undefined) => authorization?.match(/^(?:Bearer|token)\s+(.+)$/i)?.[1];
+
+  /** Whether an installation covers the repo. */
+  const covers = (installation: FakeInstallation, fullName: string) =>
+    installation.repos === "all"
+      ? repoKey(fullName.split("/")[0]) === repoKey(installation.account)
+      : installation.repos.some((r) => repoKey(r) === repoKey(fullName));
+
+  /** Whether a grant reaches the repo: its own list says so, and for an
+   * App user token an installation also covers it. */
+  function reaches(grant: FakeToken, app: boolean, fullName: string): boolean {
+    if (!grant.repos.some((r) => repoKey(r) === repoKey(fullName))) return false;
+    return !app || [...installs.values()].some((i) => covers(i, fullName));
+  }
+
   /** The grant behind an Authorization header, unless the token is
    * unknown, revoked or expired. */
   function validGrant(authorization: string | undefined): FakeToken | undefined {
-    const token = authorization?.match(/^(?:Bearer|token)\s+(.+)$/i)?.[1];
+    const token = tokenOf(authorization);
     const grant = token === undefined ? undefined : grants.get(token);
     return grant && !(grant.expiresAt && Date.parse(grant.expiresAt) <= now()) ? grant : undefined;
   }
@@ -753,6 +800,8 @@ export function createFakeGitHub({
 
   type Route =
     | { kind: "user" }
+    | { kind: "installations" }
+    | { kind: "installationRepos"; id: string }
     | { kind: "repo"; repo: string }
     | { kind: "contents"; repo: string; path: string }
     | { kind: "blob"; repo: string; sha: string }
@@ -765,6 +814,10 @@ export function createFakeGitHub({
     const segments = path.split("/").slice(1).map(decodeURIComponent);
     const method = request.method;
     if (method === "GET" && path === "/user") return { kind: "user" };
+    if (method === "GET" && path === "/user/installations") return { kind: "installations" };
+    if (method === "GET" && segments[0] === "user" && segments[1] === "installations" && segments[3] === "repositories" && segments.length === 4) {
+      return { kind: "installationRepos", id: segments[2] };
+    }
     if (segments[0] !== "repos" || segments.length < 3) return null;
     const repo = `${segments[1]}/${segments[2]}`;
     if (method === "GET" && segments.length === 3) return { kind: "repo", repo };
@@ -831,7 +884,7 @@ export function createFakeGitHub({
       budget.writes.push(at);
     }
 
-    const reply = answer(request, target, grant, arrivalHead);
+    const reply = answer(request, target, grant, tokenOf(authorization)!.startsWith("ghu_"), arrivalHead);
     const ifNoneMatch = request.headers["if-none-match"];
     if (method === "GET" && reply.status === 200 && reply.etag && ifNoneMatch !== undefined && etagMatches(ifNoneMatch, reply.etag)) {
       // Uncounted, with no body, and the ETag in its strong form.
@@ -849,12 +902,67 @@ export function createFakeGitHub({
     return toResponse(reply, { ...common, ...counterHeaders(counter) });
   }
 
-  function answer(request: RecordedRequest, target: Route, grant: FakeToken, arrivalHead: (repo: string) => string | null): Reply {
+  /** One page of `items`, by the request's per_page and page. */
+  function page<T>(request: RecordedRequest, items: T[]): T[] {
+    const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+    const perPage = Math.min(PER_PAGE_MAX, Math.max(1, Number(query.get("per_page")) || PER_PAGE));
+    const at = Math.max(1, Number(query.get("page")) || 1);
+    return items.slice((at - 1) * perPage, at * perPage);
+  }
+
+  /** GET /user/installations: the installations covering a repo the person
+   * can reach. GET /user/installations/{id}/repositories: those repos. Only
+   * an App user token may ask. */
+  function installationReply(request: RecordedRequest, target: Extract<Route, { kind: "installations" | "installationRepos" }>, grant: FakeToken, app: boolean): Reply {
+    if (!app) return error(403, NOT_AN_APP_TOKEN, DOCS.installations);
+    const reachable = (installation: FakeInstallation) =>
+      [...repoStates.values()]
+        .filter((state) => {
+          const fullName = `${state.info.owner}/${state.info.name}`;
+          return covers(installation, fullName) && grant.repos.some((r) => repoKey(r) === repoKey(fullName));
+        })
+        .sort((a, b) => a.id - b.id);
+    if (target.kind === "installations") {
+      const visible = [...installs.values()].filter((i) => reachable(i).length > 0).sort((a, b) => a.id - b.id);
+      return {
+        status: 200,
+        json: {
+          total_count: visible.length,
+          installations: page(request, visible).map((i) => ({
+            id: i.id,
+            account: { login: i.account },
+            app_slug: "ledger",
+            repository_selection: i.repos === "all" ? "all" : "selected",
+          })),
+        },
+      };
+    }
+    const installation = installs.get(Number(target.id));
+    const repos = installation ? reachable(installation) : [];
+    if (!installation || repos.length === 0) return error(404, "Not Found", DOCS.installationRepos);
+    return {
+      status: 200,
+      json: {
+        total_count: repos.length,
+        repository_selection: installation.repos === "all" ? "all" : "selected",
+        repositories: page(request, repos).map((state) => ({
+          id: state.id,
+          name: state.info.name,
+          full_name: `${state.info.owner}/${state.info.name}`,
+          owner: { login: state.info.owner },
+          private: state.info.private,
+        })),
+      },
+    };
+  }
+
+  function answer(request: RecordedRequest, target: Route, grant: FakeToken, app: boolean, arrivalHead: (repo: string) => string | null): Reply {
     if (target.kind === "user") return { status: 200, json: { login: grant.login } };
+    if (target.kind === "installations" || target.kind === "installationRepos") return installationReply(request, target, grant, app);
 
     // A repo the token can't reach looks exactly like a missing one.
     const state = repoStates.get(repoKey(target.repo));
-    if (!state || !grant.repos.some((r) => repoKey(r) === repoKey(target.repo))) {
+    if (!state || !reaches(grant, app, target.repo)) {
       return error(404, "Not Found", docsFor(target, request.method));
     }
     const fullName = `${state.info.owner}/${state.info.name}`;
@@ -1193,6 +1301,9 @@ export function createFakeGitHub({
     },
     revokeToken(token) {
       grants.delete(token);
+    },
+    install(installation) {
+      installs.set(installation.id, installation);
     },
     async seedFile(repo, path, text) {
       return seed(repo, { [path]: text })[path];
