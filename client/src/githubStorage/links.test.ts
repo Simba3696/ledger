@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  appInstallUrl,
+  authorizeUrl,
   inviteLink,
   isGitHubName,
   newOrgUrl,
@@ -70,5 +72,18 @@ describe("github.com links (#8)", () => {
     expect(readInvite("?owner=a%20b&repo=ledger-data")).toBeNull();
     expect(readInvite("?owner=..&repo=ledger-data")).toBeNull();
     expect(isGitHubName("smith.household_2")).toBe(true);
+  });
+
+  it("builds the GitHub App's authorize URL with PKCE and its install page (#10)", () => {
+    const url = authorizeUrl({ clientId: "Iv1.fakeclientid", redirectUri: "https://alex.github.io/ledger/", state: "s".repeat(43), codeChallenge: "c".repeat(43) });
+    expect(url.startsWith("https://github.com/login/oauth/authorize?")).toBe(true);
+    expect(params(url)).toEqual({
+      client_id: "Iv1.fakeclientid",
+      redirect_uri: "https://alex.github.io/ledger/",
+      state: "s".repeat(43),
+      code_challenge: "c".repeat(43),
+      code_challenge_method: "S256",
+    });
+    expect(appInstallUrl("ledger-fake")).toBe("https://github.com/apps/ledger-fake/installations/new");
   });
 });

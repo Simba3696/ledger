@@ -1,5 +1,6 @@
 // Every github.com link the onboarding walkthrough and Settings open (#8),
-// and the household invite link. The only builder of github.com URLs: each
+// the GitHub App's sign-in and install pages (#10), and the household
+// invite link. The only builder of github.com URLs: each
 // is a new-tab navigation for the person to finish on GitHub, never a
 // request the app makes. Prefilled where GitHub's forms accept it; what a
 // form can't take (picking the repository for a token) the walkthrough
@@ -77,6 +78,25 @@ export function orgPendingTokensUrl(org: string): string {
 /** The repo's "Collaborators and teams" page, where members get Write. */
 export function repoAccessUrl(owner: string, repo = DEFAULT_REPO_NAME): string {
   return url(`/${segment(owner)}/${segment(repo)}/settings/access`);
+}
+
+/** GitHub's authorize page for a GitHub App's sign-in (#10): the web flow
+ * with PKCE (S256) and `state`, returning to `redirectUri`. The one
+ * navigation here that the app makes itself, in the same tab. */
+export function authorizeUrl({ clientId, redirectUri, state, codeChallenge }: { clientId: string; redirectUri: string; state: string; codeChallenge: string }): string {
+  return url("/login/oauth/authorize", {
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+  });
+}
+
+/** Where a person installs the GitHub App (#10) on their account or an
+ * organization, choosing the repositories it may reach. */
+export function appInstallUrl(slug: string): string {
+  return url(`/apps/${segment(slug)}/installations/new`);
 }
 
 /** The household invite link: this page, with the repo to join. Only the
