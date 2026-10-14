@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
+import { useFocusOnError } from "../focusOnError";
 import { Card, ErrorText } from "../Shell";
 import type { Screen } from "./flow";
 
@@ -29,6 +30,8 @@ export function Unlock({
 }) {
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
+  useFocusOnError(screen.error, busy, field);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -48,7 +51,7 @@ export function Unlock({
         <fieldset disabled={busy}>
           <label>
             Passphrase
-            <input type="password" name="passphrase" autoComplete="current-password" value={passphrase} data-testid="gh-unlock-passphrase" onChange={(e) => setPassphrase(e.target.value)} />
+            <input ref={field} type="password" name="passphrase" autoComplete="current-password" value={passphrase} data-testid="gh-unlock-passphrase" onChange={(e) => setPassphrase(e.target.value)} />
           </label>
           {screen.error && <ErrorText>{screen.error}</ErrorText>}
           <div className="gh-actions">

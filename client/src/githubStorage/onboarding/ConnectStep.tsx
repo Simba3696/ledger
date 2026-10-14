@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { isGitHubName } from "../links";
+import { useFocusOnError } from "../focusOnError";
 import { Card, ErrorText } from "../Shell";
 import { checkPastedToken } from "../token";
 import { STEPS, type Screen } from "./flow";
@@ -46,6 +47,8 @@ export function ConnectStep({
 
   const repoValid = isGitHubName(repo.trim()) && (owner.trim() === "" || isGitHubName(owner.trim()));
   const error = pasteError ?? screen.error;
+  const tokenField = useRef<HTMLInputElement>(null);
+  useFocusOnError(error, busy, tokenField);
   return (
     <Card title="Paste your token" focusKey={`${screen.path}-connect`}>
       <p className="gh-step-count">{`Step ${steps.length} of ${steps.length}`}</p>
@@ -59,6 +62,7 @@ export function ConnectStep({
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
+              ref={tokenField}
               value={token}
               data-testid="gh-token"
               onChange={(e) => setToken(e.target.value)}
