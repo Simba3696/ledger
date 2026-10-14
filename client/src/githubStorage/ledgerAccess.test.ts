@@ -2,6 +2,7 @@ import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createFakeGitHub, type FakeGitHub } from "../backend/github/fakeGitHub";
 import { MemoryStore } from "../backend/sync/cycleTestkit";
+import { FakeLocks } from "../backend/sync/localTestkit";
 import { docText } from "../backend/sync/testkit";
 import { connect, createNew, keyFor, openLedger, unlock } from "./ledgerAccess";
 
@@ -102,5 +103,17 @@ describe("onboarding against the fake GitHub (#8)", () => {
     const key = await keyFor(PASSPHRASE);
     expect(await openLedger(alex.connection, key, null, { fetch: fake.fetch, store: new MemoryStore() })).toEqual({ kind: "found", found: { kind: "none" } });
     expect(puts()).toEqual([]);
+  }, 30_000);
+  it("an open that fails gives up the tab's lock, so the next one in the tab opens", async () => {
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
+    const created = await createNew(alex, PASSPHRASE, choices);
+    const deps = { fetch: fake.fetch, store: new MemoryStore(), locks: new FakeLocks().asLockManager() };
+    // A token GitHub refuses: finding the ledger fails after the engine
+    // has started and taken the lock.
+    await expect(openLedger({ ...alex.connection, token: "github_pat_revoked" }, created.key, null, deps)).rejects.toThrow();
+    const opened = await openLedger(alex.connection, created.key, null, deps);
+    if (opened.kind !== "open") throw new Error(opened.kind);
+    expect(opened.engine.getState()).toMatchObject({ needsInit: false, hasDocument: true });
+    opened.engine.stop();
   }, 30_000);
 });

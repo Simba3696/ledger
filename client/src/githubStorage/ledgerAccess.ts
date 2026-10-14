@@ -21,11 +21,12 @@ import type { ModuleName } from "../api";
 // behind api.ts). The redesigned sync (#7, ADR-0008) decides what a ledger
 // is: findLedger, createLedger and openGenesis, then initialize.
 
-/** What tests swap in: the fake GitHub, and a device store of its own per
- * simulated device. The app passes nothing. */
+/** What tests swap in: the fake GitHub, and a device store and tab locks
+ * of their own per simulated device. The app passes nothing. */
 export interface Deps {
   fetch?: typeof fetch;
   store?: SyncStore;
+  locks?: LockManager | null;
 }
 
 export interface Connected {
@@ -128,8 +129,25 @@ export async function unlock(
   return { ok: true, key, start: { epoch: opened.epoch, sha: opened.sha, state: opened.state } };
 }
 
+/** Where a first start begins when the gate has opened no genesis itself
+ * (a later start after Forget or a restore cleared this device, or the tab
+ * lock arriving late): the ledger in the repo now, opened with the saved
+ * key, with no passphrase prompt. A restore writes its genesis under the
+ * household key, so this is the normal way back after one. */
+export async function startFromRepo(
+  remote: SyncRemote,
+  key: DeviceKey,
+): Promise<{ kind: "start"; start: Start } | { kind: "found"; found: LedgerFound } | { kind: "keyChanged"; found: Extract<LedgerFound, { kind: "ledger" }> }> {
+  const found = await findLedger(remote);
+  if (found.kind !== "ledger") return { kind: "found", found };
+  if (found.salt !== key.salt || found.iter !== key.iter) return { kind: "keyChanged", found };
+  const opened = await openGenesis(found, key);
+  if (!opened.ok) return opened.problem === "wrongPassphrase" ? { kind: "keyChanged", found } : { kind: "found", found };
+  return { kind: "start", start: { epoch: opened.epoch, sha: opened.sha, state: opened.state } };
+}
+
 export type Opened =
-  | { kind: "open"; engine: SyncEngine; token: TokenHolder }
+  | { kind: "open"; engine: SyncEngine; token: TokenHolder; remote: SyncRemote }
   /** A first start with no ledger to start from yet, or one the saved key
    * doesn't open: the gate goes back to Create or Unlock. */
   | { kind: "found"; found: LedgerFound }
@@ -137,38 +155,35 @@ export type Opened =
 
 /** Starts the sync engine on this device's saved state and puts a
  * DocumentBackend over its document behind api.ts. A device with nothing
- * saved (a first start, or after Forget or a restore cleared it) starts
- * from `start` when the gate has just opened the genesis, or else finds the
- * ledger and opens it with the saved key, with no passphrase prompt: a
- * restore writes its genesis under the household key. */
+ * saved starts from `start` when the gate has just opened the genesis, or
+ * else from the repo (startFromRepo). An engine that can't be opened is
+ * stopped before this returns or throws, so it never keeps the tab's
+ * lock. While another tab holds the lock, the engine opens without a first
+ * start; the gate runs it once the lock arrives (needsInit). */
 export async function openLedger(connection: Connection, key: DeviceKey, start: Start | null, deps: Deps = {}): Promise<Opened> {
   const token: TokenHolder = { token: connection.token };
   const client = clientFor(connection, token, deps);
   const remote: SyncRemote = { client, branch: connection.branch ?? (await client.verifyRepo()).defaultBranch };
-  const engine = new SyncEngine({ key, actor: connection.login, remote, store: deps.store });
+  const engine = new SyncEngine({ key, actor: connection.login, remote, store: deps.store, locks: deps.locks });
   await engine.start();
-  const state = engine.getState();
-  if (state.needsInit && state.status !== "locked") {
-    let from = start;
-    if (from === null) {
-      const found = await findLedger(remote);
-      if (found.kind !== "ledger") {
-        engine.stop();
-        return { kind: "found", found };
+  try {
+    const state = engine.getState();
+    if (state.needsInit && state.status !== "locked") {
+      let from = start;
+      if (from === null) {
+        const found = await startFromRepo(remote, key);
+        if (found.kind !== "start") {
+          engine.stop();
+          return found;
+        }
+        from = found.start;
       }
-      if (found.salt !== key.salt || found.iter !== key.iter) {
-        engine.stop();
-        return { kind: "keyChanged", found };
-      }
-      const opened = await openGenesis(found, key);
-      if (!opened.ok) {
-        engine.stop();
-        return opened.problem === "wrongPassphrase" ? { kind: "keyChanged", found } : { kind: "found", found };
-      }
-      from = { epoch: opened.epoch, sha: opened.sha, state: opened.state };
+      await engine.initialize(from.epoch, from.state, { sha: from.sha, state: from.state });
     }
-    await engine.initialize(from.epoch, from.state, { sha: from.sha, state: from.state });
+  } catch (err) {
+    engine.stop();
+    throw err;
   }
   installBackend(new DocumentBackend({ host: new SyncedHost(engine), now: Date.now, actor: connection.login, newId: () => crypto.randomUUID() }));
-  return { kind: "open", engine, token };
+  return { kind: "open", engine, token, remote };
 }
