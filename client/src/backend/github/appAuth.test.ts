@@ -9,6 +9,7 @@ import {
   SIGN_IN_INCOMPLETE,
   signInConfig,
   startSignIn,
+  isSignInReturn,
   type AppTokens,
   type SignInConfig,
   type TokenStore,
@@ -174,6 +175,12 @@ describe("returning from github.com", () => {
     await startSignIn(CONFIG, RESUME, { page: PAGE, storage, navigate: (url) => (sent = url) });
     return { storage, state: new URL(sent).searchParams.get("state")!, entry: JSON.parse(storage.getItem(KEY)!) as { verifier: string } };
   }
+
+  it("isSignInReturn() tells a return from github.com from a plain load", () => {
+    expect(isSignInReturn("https://alex.github.io/ledger/?code=c&state=s")).toBe(true);
+    expect(isSignInReturn("https://alex.github.io/ledger/?error=access_denied&state=s")).toBe(true);
+    expect(isSignInReturn("https://alex.github.io/ledger/?owner=alex&repo=ledger-data")).toBe(false);
+  });
 
   it("strips code and state from the address bar before calling the helper, exchanges the code, and removes the entry", async () => {
     const { storage, state, entry } = await started();

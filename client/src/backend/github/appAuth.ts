@@ -109,6 +109,13 @@ function sessionStore(): Storage | null {
   }
 }
 
+/** Whether `href` is a return from github.com (a sign-in or an App
+ * install), so the page can say "Signing in" while it is finished. */
+export function isSignInReturn(href: string): boolean {
+  const params = new URL(href).searchParams;
+  return CALLBACK_PARAMS.some((name) => params.has(name));
+}
+
 /** Removes the in-progress sign-in's state and verifier, if any. */
 export function clearSignInState(storage: Storage | null = sessionStore()): void {
   try {
