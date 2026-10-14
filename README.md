@@ -14,6 +14,9 @@ owner's sign-in. A copy can show every section or only some of them
 - **Self-hosting:** to stand up your own copy, follow
   **[docs/DEPLOY.md](docs/DEPLOY.md)**. It assumes no prior Netlify or
   Supabase experience.
+- **No server at all:** the GitHub storage mode keeps the data encrypted
+  in a private GitHub repository and needs only a GitHub account; follow
+  **[docs/DEPLOY-github.md](docs/DEPLOY-github.md)**.
 - For how it's built, see [ARCHITECTURE.md](ARCHITECTURE.md), and for the
   design detail (schema, API contract, auth, configuration) the
   [HLD](docs/architecture/HLD.md), [LLD](docs/architecture/LLD.md) and
@@ -31,6 +34,7 @@ Contents:
 - [Configuring categories](#configuring-categories)
 - [Choosing sections (ENABLED_MODULES)](#choosing-sections-enabled_modules)
 - [Deploying](#deploying)
+- [GitHub storage mode (no server)](#github-storage-mode-no-server)
 - [Testing](#testing)
 - [Notes / gotchas](#notes--gotchas)
 
@@ -527,6 +531,21 @@ explains the packaging. Coming from the Excel edition with data to keep?
 [Moving from the Excel edition](docs/DEPLOY.md#moving-from-the-excel-edition)
 covers the one-time import. A new copy with no Excel history doesn't need it.
 
+## GitHub storage mode (no server)
+
+A second, opt-in build (`npm run build:pages -w client`, published to
+GitHub Pages by `.github/workflows/pages.yml`) runs the same app with no
+server and no Supabase: each household's data lives in its own private
+GitHub repository, encrypted in the browser with a passphrase only they
+know, and devices sync through it. A person needs only a GitHub account,
+and one shared site serves everyone. The default build (what Netlify
+publishes) contains none of this code.
+
+[docs/DEPLOY-github.md](docs/DEPLOY-github.md) is the guide for using it
+and for running your own copy. Why it exists and how it's shaped:
+[ADR-0007](docs/adr/0007-serverless-github-storage-mode.md), and for the
+sync, [ADR-0008](docs/adr/0008-sync-github-storage-with-per-device-op-logs.md).
+
 ## Testing
 
 Everything runs against the **local** Supabase stack. The test helpers
@@ -568,6 +587,18 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   error before the first expense, expense add/edit/delete, a Dashboard with no card from a disabled section, and a
   disabled section's API answering 404. Both fail on any browser console
   error. Run it after any client or server change.
+- **`npm run test:e2e:github`**: `e2e/githubStorage.ts`, the GitHub
+  storage mode end to end. Unlike the scripts above it needs no Supabase
+  stack, no `server/.env` and no network: it builds the Pages bundle into
+  `client/dist-pages` with `--base /ledger/`, serves it with `vite preview`
+  on the client port + 1 (5174 by default), and drives it in Chromium
+  against an in-memory fake of GitHub's API (`e2e/fakeGithub.ts`, over the
+  client tests' `fakeGitHub.ts`), with two simulated devices: onboarding
+  (one person and a household), expenses, the key on the device, sections,
+  offline sync and concurrent edits, backup and restore, a revoked token,
+  and a ten-year ledger whose encrypted size and load time it prints. It
+  starts and stops only its own preview server. CI runs it, after
+  `npm run test:client`, before every Pages deploy.
 - **`npm run screenshots`**: `e2e/screenshots.ts` regenerates every image
   in `docs/screenshots/` (the Dashboard at 1280×960, and each tab as a
   full-page shot 720px wide, all in light and dark) from a fixed fictional

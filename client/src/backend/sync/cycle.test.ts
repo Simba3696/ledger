@@ -50,6 +50,8 @@ describe("the sync cycle (section 7)", () => {
     expectConverged(a, b);
     for (const d of [a, b]) expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0, noticeCount: 0 });
     expect(w.fake.violations).toEqual([]);
+    // A sync that went well logs no warning or error.
+    expect([...a.logged, ...b.logged].filter((l) => l.level !== "info")).toEqual([]);
   });
 
   it("an idle visible cycle is exactly one request, a 304 GitHub doesn't count (AC9)", async () => {

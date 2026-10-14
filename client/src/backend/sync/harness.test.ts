@@ -234,7 +234,7 @@ async function open(h: Harness, slot: Slot, store: MemoryStore, init?: { epoch: 
     actor: slot.login,
     store: gate,
     locks: null,
-    log: (message, err) => h.log.push(`${slot.name}: ${message}${err ? ` (${err instanceof Error ? err.message : String(err)})` : ""}`),
+    log: (level, message, err) => h.log.push(`${slot.name}: ${level}: ${message}${err ? ` (${err instanceof Error ? err.message : String(err)})` : ""}`),
     remote: { client: client(h, slot, life, () => engine), branch: "main" },
     events: {},
     random: () => 0.5,

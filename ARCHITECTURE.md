@@ -315,6 +315,17 @@ full coverage list, and README's **Testing** section the commands.
   in through the real form as the seeded owner (`e2e/auth.ts`, which refuses
   a non-local Supabase URL or `AUTH_DISABLED`), and drive the whole app;
   the second script runs with `ENABLED_MODULES=expenses`.
+- **`e2e/githubStorage.ts` (`npm run test:e2e:github`)**: the GitHub
+  storage mode end to end, with no database, server or network. It builds
+  the Pages bundle (`build:pages -- --base /ledger/`, into
+  `client/dist-pages`), serves it with `vite preview` on `CLIENT_PORT + 1`
+  and stops only that process. Each simulated device is a Playwright
+  browser context; `e2e/fakeGithub.ts` routes their `api.github.com`
+  requests into one shared `backend/github/fakeGitHub.ts` (the fake the
+  client unit tests use), with a request log, per-context offline and
+  every other host refused. The stored files are seeded and folded in Node
+  with the sync engine's own modules. Its `buildAndPreview` helper is
+  exported for other GitHub-mode e2e scripts.
 - **`e2e/screenshots.ts`**: regenerates every image in `docs/screenshots/`
   (Dashboard and each tab, light and dark) from a fixed fictional dataset
   with the same isolation, asserting every tab is empty before writing
@@ -330,6 +341,12 @@ full coverage list, and README's **Testing** section the commands.
   variables ([LLD §9](docs/architecture/LLD.md#9-configuration)); the
   `VITE_*` ones are build-time, the rest are read by the function at
   startup. Step by step: [docs/DEPLOY.md](docs/DEPLOY.md).
+- **GitHub Pages (GitHub storage mode, ADR-0007):** `.github/workflows/pages.yml`
+  builds `npm run build:pages -w client -- --base <the Pages base path>`
+  into `client/dist-pages` (never `client/dist`), checks storage isolation,
+  runs `npm run test:client` and `npm run test:e2e:github` in its `e2e`
+  job, and deploys only when both jobs pass. No server and no secrets.
+  Step by step, for users and forks: [docs/DEPLOY-github.md](docs/DEPLOY-github.md).
 - **Local:** `npm run dev` runs the server (`tsx watch`) and Vite with hot
   reload. `npm run build` + `npm start` serve the built client and API from
   one process on `PORT`.
@@ -379,6 +396,8 @@ supabase/
   seed.sql            Local only: default categories + the test owner
 e2e/
   regression.ts, expensesOnly.ts, screenshots.ts
+  githubStorage.ts    GitHub storage mode e2e (Pages bundle + fake GitHub)
+  fakeGithub.ts       Routes a browser context's GitHub requests into the shared fake
   devServer.ts, auth.ts, localDb.ts   Shared helpers
 scripts/
   kill-ports.js       Frees this checkout's dev ports (PORT / VITE_DEV_PORT)
@@ -386,6 +405,7 @@ scripts/
   legacy-excel/       The Excel edition's readers, plus importer.ts (the import itself)
 docs/
   DEPLOY.md           Standing up a copy on Netlify + Supabase
+  DEPLOY-github.md    Using GitHub storage mode, and running a copy on GitHub Pages
   architecture/       HLD.md, LLD.md
   adr/                Decision records
   screenshots/        Images embedded in README.md

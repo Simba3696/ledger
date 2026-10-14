@@ -362,6 +362,23 @@ export interface PageEvents {
   window?: EventTarget;
 }
 
+/** How much a log line matters: "info" for routine progress, "warn" for
+ * something unusual the engine recovers from by itself (it tries again, or
+ * goes on as a new device), "error" for a failure the person may have to
+ * deal with (a file that can't be read or sent, a save that failed). Each
+ * call site says which; an error object coming with a line doesn't decide
+ * it. */
+export type SyncLogLevel = "info" | "warn" | "error";
+
+/** The engine's log when none is given: console.info, console.warn or
+ * console.error by level, with the error when there is one (and nothing,
+ * not "undefined", when there isn't). */
+export function defaultSyncLog(level: SyncLogLevel, message: string, err?: unknown): void {
+  const line = `ledger:sync: ${message}`;
+  if (err === undefined) console[level](line);
+  else console[level](line, err);
+}
+
 export interface SyncEngineOptions {
   key: DeviceKey;
   /** The signed-in login: each op's display `by`. */
@@ -370,7 +387,7 @@ export interface SyncEngineOptions {
   /** Web Locks; null runs without the one-tab lock. Default navigator.locks. */
   locks?: LockManager | null;
   now?: () => number;
-  log?: (message: string, err?: unknown) => void;
+  log?: (level: SyncLogLevel, message: string, err?: unknown) => void;
   /** Called after each own op commits on the device: the push trigger. */
   onCommitted?: () => void;
   /** The repo to sync with. Without one the engine is local only: no cycle
@@ -697,7 +714,7 @@ export class SyncEngine {
   readonly #store: SyncStore;
   readonly #locks: LockManager | null;
   readonly #now: () => number;
-  readonly #log: (message: string, err?: unknown) => void;
+  readonly #log: (level: SyncLogLevel, message: string, err?: unknown) => void;
   readonly #onCommitted: () => void;
 
   #meta: SyncMeta | null = null;
@@ -868,7 +885,7 @@ export class SyncEngine {
     this.#store = options.store ?? openSyncStore();
     this.#locks = options.locks === undefined ? (globalThis.navigator?.locks ?? null) : options.locks;
     this.#now = options.now ?? Date.now;
-    this.#log = options.log ?? ((message, err) => console.error(`ledger:sync: ${message}`, err));
+    this.#log = options.log ?? defaultSyncLog;
     this.#onCommitted = options.onCommitted ?? (() => {});
     this.#remote = options.remote ?? null;
     this.#events = options.events ?? {
@@ -1482,7 +1499,7 @@ export class SyncEngine {
       const file = parseRepoFileName(name);
       if (file) files.set(name, { file, sha, size });
     }
-    if (listing.truncated) this.#log("GitHub cut the file listing short; files it left out are read once it lists them");
+    if (listing.truncated) this.#log("warn", "GitHub cut the file listing short; files it left out are read once it lists them");
     return { commit, etag, files, truncated: listing.truncated };
   }
 
@@ -1500,7 +1517,7 @@ export class SyncEngine {
       // device's file sorts before its epoch's genesis), so it can't say
       // there is no ledger, that the repo is older than what this device
       // joined, or which newer epoch wins. Pending: the next poll lists again.
-      this.#log("the cut listing doesn't name this device's epoch as the winner; trying again later");
+      this.#log("warn", "the cut listing doesn't name this device's epoch as the winner; trying again later");
       return null;
     }
     if (winner === null) {
@@ -1522,7 +1539,7 @@ export class SyncEngine {
       // offer joining the ledger that's there now, and a restore is refused.
       // (A cut listing never gets here: it stopped above.)
       this.#noteGone(epoch, winner);
-      this.#log(`the repo listing is older than what this device has joined, or its epoch ${epoch} is gone (the winner is ${winner}); trying again later`);
+      this.#log("info", `the repo listing is older than what this device has joined, or its epoch ${epoch} is gone (the winner is ${winner}); trying again later`);
       return null;
     }
     if (move === "switch") {
@@ -1548,7 +1565,7 @@ export class SyncEngine {
     // its answer was lost moves K, which the own log's check reads.
     const snap = await this.#ownSnapCheck(listing);
     if (snap.fork !== undefined) {
-      this.#log(`this device's own snapshot in the repo is not its history (${snap.fork}); it syncs on as a new device`);
+      this.#log("warn", `this device's own snapshot in the repo is not its history (${snap.fork}); it syncs on as a new device`);
       await this.#rehome(listing);
       return { listedOwn: undefined };
     }
@@ -1558,7 +1575,7 @@ export class SyncEngine {
     const listedOwn = listing.files.get(ownName);
     const own = await this.#ownCheck(ownName, listedOwn);
     if (own.fork !== undefined) {
-      this.#log(`this device's own log in the repo is not its history (${own.fork}); it syncs on as a new device`);
+      this.#log("warn", `this device's own log in the repo is not its history (${own.fork}); it syncs on as a new device`);
       await this.#rehome(listing);
       return { listedOwn: undefined };
     }
@@ -1607,12 +1624,12 @@ export class SyncEngine {
     const epoch = this.#restoreUnknown;
     if (epoch === null) return;
     if (listing.files.has(repoFileName({ kind: "genesis", epoch }))) {
-      this.#log(`the restore's genesis ${epoch} landed after all`);
+      this.#log("info", `the restore's genesis ${epoch} landed after all`);
       this.#restoreUnknown = null;
       this.#restore = "written";
       this.#restoreState = { state: "landed", epoch };
     } else if (!listing.truncated) {
-      this.#log(`the restore's genesis ${epoch} isn't in the repo; writes go on`);
+      this.#log("info", `the restore's genesis ${epoch} isn't in the repo; writes go on`);
       this.#restoreUnknown = null;
       this.#restoreState = null;
       // The reload after it has no restore to report (takeRestoredEpoch).
@@ -1863,7 +1880,7 @@ export class SyncEngine {
       if (unlisted.length > 0) {
         const refused = unlistedRefusal(unlisted.length);
         this.#unlistedSeen.set(at, unlisted);
-        this.#log(`${name} can't be joined while the listing stays as it is (malformed): ${refused.detail}`);
+        this.#log("error", `${name} can't be joined while the listing stays as it is (malformed): ${refused.detail}`);
         return refused;
       }
       this.#unlistedSeen.delete(at);
@@ -1971,7 +1988,7 @@ export class SyncEngine {
         : await openRepoFile(listed.file, await (blobs ? blobs.read(listed.sha) : this.#remote!.client.readBlob(listed.sha)), this.#key, genesis, bounds);
     if (!read.ok) {
       this.#refused.set(at, read);
-      this.#log(`${name} can't be joined (${read.problem}): ${read.detail}`);
+      this.#log("error", `${name} can't be joined (${read.problem}): ${read.detail}`);
     }
     return read;
   }
@@ -2029,7 +2046,7 @@ export class SyncEngine {
       } catch (err) {
         if (!(err instanceof ShaConflictError)) throw err;
         if (put >= MAX_PUTS) {
-          this.#log(`the repo refused ${MAX_PUTS} writes of this device's log in a row; trying again on the next trigger`);
+          this.#log("warn", `the repo refused ${MAX_PUTS} writes of this device's log in a row; trying again on the next trigger`);
           return false;
         }
         await this.#sleep(SYNC_TIMING.retryMs[put - 1] + Math.floor(this.#random() * SYNC_TIMING.jitterMs));
@@ -2043,7 +2060,7 @@ export class SyncEngine {
         const listed = listing.files.get(name);
         const own = await this.#ownCheck(name, listed);
         if (own.fork !== undefined) {
-          this.#log(`this device's own log in the repo is not its history (${own.fork}); it syncs on as a new device`);
+          this.#log("warn", `this device's own log in the repo is not its history (${own.fork}); it syncs on as a new device`);
           await this.#rehome(listing);
           this.#again = true;
           return true;
@@ -2116,7 +2133,7 @@ export class SyncEngine {
     if (!check.ok) return Promise.reject(new Error(`This device's own log would be refused: ${check.detail}`));
     const bounds = this.#bounds.write;
     const tooLarge = (detail: string) => {
-      this.#log(`this device's own log would be refused (${detail}); it is not sent`);
+      this.#log("error", `this device's own log would be refused (${detail}); it is not sent`);
       return new OwnLogTooLarge(`This device's own log would be refused: ${detail}`);
     };
     let entry: { key: string; value: Promise<LogText> } | undefined;
@@ -2196,7 +2213,7 @@ export class SyncEngine {
       } catch (err) {
         if (!(err instanceof ShaConflictError)) throw err;
         if (put >= MAX_PUTS) {
-          this.#log(`the repo refused ${MAX_PUTS} writes of this device's snapshot in a row; trying again on the next trigger`);
+          this.#log("warn", `the repo refused ${MAX_PUTS} writes of this device's snapshot in a row; trying again on the next trigger`);
           return false;
         }
         await this.#sleep(SYNC_TIMING.retryMs[put - 1] + Math.floor(this.#random() * SYNC_TIMING.jitterMs));
@@ -2206,7 +2223,7 @@ export class SyncEngine {
         if (listing === null) return false;
         const check = await this.#ownSnapCheck(listing);
         if (check.fork !== undefined) {
-          this.#log(`this device's own snapshot in the repo is not its history (${check.fork}); it syncs on as a new device`);
+          this.#log("warn", `this device's own snapshot in the repo is not its history (${check.fork}); it syncs on as a new device`);
           await this.#rehome(listing);
           this.#again = true;
           return true;
@@ -2309,7 +2326,7 @@ export class SyncEngine {
       // Never publish what every other device would refuse: invalid, or
       // past the bounds this device writes within.
       const refused = (detail: string) => {
-        this.#log(`this device's snapshot would be refused (${detail}); its log is not compacted`);
+        this.#log("error", `this device's snapshot would be refused (${detail}); its log is not compacted`);
         return null;
       };
       const check = checkRepoFile(file, content, genesis);
@@ -2386,7 +2403,7 @@ export class SyncEngine {
     } else if (this.#stopped || this.#superseded) {
       // Closed or taken over mid-cycle: nothing more to do here.
     } else {
-      if (!(err instanceof GitHubNetworkError)) this.#log("sync failed; it will be tried again", err);
+      if (!(err instanceof GitHubNetworkError)) this.#log("error", "sync failed; it will be tried again", err);
       this.#trouble = true;
     }
   }
@@ -2624,7 +2641,7 @@ export class SyncEngine {
       if ((pendingCount > 0 || leftBehindOwnCount > 0) && !discardUnsynced) return { kind: "unsynced", pendingCount, leftBehindOwnCount };
       const written = await this.#writeRestore(structuredClone(doc));
       if (written.kind === "unknown") {
-        this.#log(`the restore's genesis got no answer (${written.detail}); it may still land`);
+        this.#log("warn", `the restore's genesis got no answer (${written.detail}); it may still land`);
         this.#restoreUnknown = written.epoch;
         this.#restoreState = { state: "pending", epoch: written.epoch };
         this.#emit();
@@ -2649,7 +2666,7 @@ export class SyncEngine {
       try {
         now = await winningEpochNow(remote);
       } catch (err) {
-        this.#log("the repo couldn't be listed after the restore landed; the reload finds the winner", err);
+        this.#log("warn", "the repo couldn't be listed after the restore landed; the reload finds the winner", err);
         return { kind: "restored", epoch, winnerUnknown: true };
       }
       if (now.winner !== null && compareEpochKeys(now.winner, epoch) > 0) {
@@ -2668,7 +2685,7 @@ export class SyncEngine {
       }
       // A cut listing may leave out a greater epoch (ADR-0008).
       if (now.truncated) {
-        this.#log("GitHub cut the listing after the restore landed; the reload finds the winner");
+        this.#log("warn", "GitHub cut the listing after the restore landed; the reload finds the winner");
         return { kind: "restored", epoch, winnerUnknown: true };
       }
       return { kind: "restored", epoch };
@@ -2688,7 +2705,7 @@ export class SyncEngine {
       const { reason, by, at } = read.read.file;
       return { reason, by, at };
     } catch (err) {
-      this.#log("the winning restore's genesis couldn't be read", err);
+      this.#log("error", "the winning restore's genesis couldn't be read", err);
       return {};
     }
   }
@@ -2990,7 +3007,7 @@ export class SyncEngine {
       if (read.ok) return read.read.file.kind === "genesis" ? null : damagedGenesis(epoch, "malformed", epochJoined(names, epoch));
       return read.problem === "needsUpdate" ? "needsUpdate" : damagedGenesis(epoch, read.problem, epochJoined(names, epoch));
     } catch (err) {
-      this.#log(`the winning genesis ${epoch} couldn't be read`, err);
+      this.#log("error", `the winning genesis ${epoch} couldn't be read`, err);
       return null;
     }
   }
@@ -3009,18 +3026,18 @@ export class SyncEngine {
       try {
         if (this.#remote === null) throw new ApiError(503, NEEDS_NEW_EPOCH);
         const from = this.#meta!.epochKey;
-        this.#log("no Lamport value is left in this epoch; the ledger is restored as the next one");
+        this.#log("warn", "no Lamport value is left in this epoch; the ledger is restored as the next one");
         let written: RestoreWrite;
         try {
           written = await this.#writeRestore(structuredClone(this.#doc!));
         } catch (err) {
-          this.#log("writing the next epoch failed", err);
+          this.#log("error", "writing the next epoch failed", err);
           throw new ApiError(503, NEEDS_NEW_EPOCH);
         }
         // Not written, or no answer: if that genesis lands after all, the
         // next try finds it listed and the device switches to it first.
         if (written.kind !== "written") {
-          this.#log(`writing the next epoch failed: ${written.detail}`);
+          this.#log("error", `writing the next epoch failed: ${written.detail}`);
           // No epoch is written past a genesis this device can't open
           // (D26): the write waits until the file is deleted.
           if (written.kind === "failed" && written.damagedFile) throw new ApiError(503, needsNewEpochPast(written.damagedFile));
@@ -3076,7 +3093,7 @@ export class SyncEngine {
         this.#damaged = null;
         // A newer build may open it: updating the app is still a way on.
         if (problem === "needsUpdate") this.#blocker = "needsUpdate";
-        this.#log(`this device's epoch ${epoch} is gone, and the winner ${winner} can't be read here (${problem}); nothing is named`);
+        this.#log("error", `this device's epoch ${epoch} is gone, and the winner ${winner} can't be read here (${problem}); nothing is named`);
         return false;
       }
       this.#notGone();
@@ -3085,7 +3102,7 @@ export class SyncEngine {
       const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
       // The same object while nothing changes, so no listener is told again.
       if (damaged === null || this.#damaged?.path !== damaged.path || this.#damaged.reason !== damaged.reason) this.#damaged = damaged;
-      this.#log(`a restore's epoch ${winner} can't be read (${problem}); this device stays where it is and sends nothing more`);
+      this.#log("error", `a restore's epoch ${winner} can't be read (${problem}); this device stays where it is and sends nothing more`);
       return false;
     }
     this.#damaged = null;
@@ -3141,7 +3158,7 @@ export class SyncEngine {
         if (!read.ok || read.read.file.kind !== "genesis") break;
         next = read.read.file.basedOn;
       } catch (err) {
-        this.#log(`the genesis of ${epoch} couldn't be read for its restore cut; what this device had there is offered with the cut {}`, err);
+        this.#log("warn", `the genesis of ${epoch} couldn't be read for its restore cut; what this device had there is offered with the cut {}`, err);
         break;
       }
     }
@@ -3325,7 +3342,7 @@ export class SyncEngine {
     this.#leftBehind = groups;
     this.#oldText = oldText;
     this.#refreshLeftBehind();
-    this.#log(`a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind`);
+    this.#log("info", `a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind`);
     this.#emit();
     return true;
   }
@@ -3345,7 +3362,7 @@ export class SyncEngine {
       if (typeof old === "string") throw new Error(old);
       return old;
     } catch (err) {
-      this.#log("the previous epochs' saved states can't be read; their groups stay as they are", err);
+      this.#log("warn", "the previous epochs' saved states can't be read; their groups stay as they are", err);
       return null;
     }
   }
@@ -3419,7 +3436,7 @@ export class SyncEngine {
       } finally {
         this.#tidying = false;
       }
-    }).catch((err: unknown) => this.#log("tidying the changes restores left behind failed; it will be tried again", err));
+    }).catch((err: unknown) => this.#log("warn", "tidying the changes restores left behind failed; it will be tried again", err));
   }
 
   // --- Status ---------------------------------------------------------------
@@ -3475,7 +3492,7 @@ export class SyncEngine {
         this.#supersede();
         throw new ApiError(503, OTHER_TAB);
       }
-      this.#log("a save on this device failed; nothing from it was kept", err);
+      this.#log("error", "a save on this device failed; nothing from it was kept", err);
       if (!housekeeping) {
         this.#deviceSaveFailed = true;
         this.#emit();
@@ -3513,7 +3530,7 @@ export class SyncEngine {
       } finally {
         this.#compactingLocal = false;
       }
-    }).catch((err: unknown) => this.#log("compacting this device's saved changes failed; it will be tried again", err));
+    }).catch((err: unknown) => this.#log("warn", "compacting this device's saved changes failed; it will be tried again", err));
   }
 
   #supersede(): void {
@@ -3546,7 +3563,7 @@ export class SyncEngine {
       try {
         records = await this.#store.load();
       } catch (err) {
-        this.#log("the saved sync state could not be loaded; it is kept as it is", err);
+        this.#log("error", "the saved sync state could not be loaded; it is kept as it is", err);
         this.#fail(err instanceof LocalStateNewer ? "newer" : "loadFailed");
         return;
       }
@@ -3572,7 +3589,7 @@ export class SyncEngine {
       if (this.#stopped) return;
       if (claim === "changed") {
         if (attempt < MAX_LOADS) continue;
-        this.#log("the saved sync state kept changing while it was loaded; it is kept as it is");
+        this.#log("warn", "the saved sync state kept changing while it was loaded; it is kept as it is");
         this.#fail("loadFailed");
         return;
       }
@@ -3592,7 +3609,7 @@ export class SyncEngine {
       await this.#store.mutate({ expect: meta.writerToken, meta: claimed });
     } catch (err) {
       if (err instanceof WriterTokenMismatch) return "changed";
-      this.#log("could not claim this device's sync state; writes are refused until a claim is saved", err);
+      this.#log("error", "could not claim this device's sync state; writes are refused until a claim is saved", err);
       return "failed";
     }
     return claimed;
@@ -3649,12 +3666,12 @@ export class SyncEngine {
   async #decode(records: StoredRecords): Promise<Loaded | UnreadableReason> {
     const check = checkMeta(records.meta);
     if (!check.ok) {
-      this.#log(`the saved sync state can't be used: ${check.detail}`);
+      this.#log("error", `the saved sync state can't be used: ${check.detail}`);
       return check.problem;
     }
     const meta = check.meta;
     const malformed = (detail: string): UnreadableReason => {
-      this.#log(`the saved sync state can't be used: ${detail}`);
+      this.#log("error", `the saved sync state can't be used: ${detail}`);
       return "malformed";
     };
     try {
@@ -3705,7 +3722,7 @@ export class SyncEngine {
           if (!(err instanceof Undecryptable)) throw err;
         }
         if (notice === null) {
-          this.#log(`a stored notice can't be read, so it is kept as it is and not shown: ${key}`);
+          this.#log("warn", `a stored notice can't be read, so it is kept as it is and not shown: ${key}`);
           unreadNotices.add(key);
           continue;
         }
@@ -3721,10 +3738,10 @@ export class SyncEngine {
       return { meta, state, doc: materialize(state), ownLog, chainHead, tailCount: records.tail.length, leftBehind, notices, unreadNotices, old: records.old ?? null };
     } catch (err) {
       if (err instanceof Undecryptable) {
-        this.#log("the saved sync state doesn't decrypt with this device's key", err);
+        this.#log("error", "the saved sync state doesn't decrypt with this device's key", err);
         return "undecryptable";
       }
-      this.#log("the saved sync state can't be used", err);
+      this.#log("error", "the saved sync state can't be used", err);
       return "malformed";
     }
   }
@@ -3749,7 +3766,7 @@ export class SyncEngine {
           });
         })
         .catch((err: unknown) => {
-          this.#log("could not take the tab lock", err);
+          this.#log("error", "could not take the tab lock", err);
           resolve(false);
         });
     });

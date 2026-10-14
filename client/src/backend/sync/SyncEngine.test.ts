@@ -9,7 +9,7 @@ import { FakeLocks, deferred, dumpDatabase, faultyIndexedDB, hookedStore, tamper
 import { clearSyncState, openSyncStore, type SyncStore } from "./persist";
 import { decodeDelta, seal, unseal, type DeviceKey } from "./records";
 import { genesisState } from "./state";
-import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, type EngineState, type SyncEngineOptions } from "./SyncEngine";
+import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, defaultSyncLog, type EngineState, type SyncEngineOptions } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -876,5 +876,34 @@ describe("nothing on the device is plaintext (AC15)", () => {
         "writerToken",
       ].sort(),
     );
+  });
+});
+
+describe("the default log", () => {
+  function spies() {
+    return {
+      info: vi.spyOn(console, "info").mockImplementation(() => {}),
+      warn: vi.spyOn(console, "warn").mockImplementation(() => {}),
+      error: vi.spyOn(console, "error").mockImplementation(() => {}),
+    };
+  }
+
+  it("sends routine progress to console.info only, with no 'undefined' after it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("info", "the restore's genesis e000002-0000000b landed after all");
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(info.mock.calls).toEqual([["ledger:sync: the restore's genesis e000002-0000000b landed after all"]]);
+  });
+
+  it("sends a warning to console.warn, and a failure to console.error, whether or not an error object comes with it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("warn", "the repo refused 4 writes of this device's log in a row; trying again on the next trigger");
+    defaultSyncLog("error", "this device's own log would be refused (too large); it is not sent");
+    const err = new Error("boom");
+    defaultSyncLog("error", "sync failed; it will be tried again", err);
+    expect(info).not.toHaveBeenCalled();
+    expect(warn.mock.calls).toEqual([["ledger:sync: the repo refused 4 writes of this device's log in a row; trying again on the next trigger"]]);
+    expect(error.mock.calls).toEqual([["ledger:sync: this device's own log would be refused (too large); it is not sent"], ["ledger:sync: sync failed; it will be tried again", err]]);
   });
 });

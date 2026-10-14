@@ -559,6 +559,7 @@ ${"A".repeat(REPO_FILE_MAX_BYTES)}`);
     await cycle(w, a);
     expect(status(a)).toBe("pending");
     expect(a.logs.some((line) => line.startsWith("sync failed"))).toBe(true);
+    expect(a.logged.find((l) => l.message.startsWith("sync failed"))?.level).toBe("error");
     await cycle(w, a);
     expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
     expect(remarks(a).sort()).toEqual(["Bus", "Groceries"]);
