@@ -92,13 +92,16 @@ const BUILD_ENV = { ...process.env, VITE_DEFAULT_MODULES: "expenses,finances,deb
  * Refuses to start when something already listens there (another
  * worktree's preview), and resolves only once its own server answers with
  * this build's index.html. `stop()` kills only the preview's own process
- * tree; so do Ctrl+C, SIGTERM and the process exiting. */
-export async function buildAndPreview({ build = true }: { build?: boolean } = {}): Promise<PagesPreview> {
+ * tree; so do Ctrl+C, SIGTERM and the process exiting. `env` adds to the
+ * build's and the preview's environment (#10's sign-in settings); by
+ * default nothing is added. */
+export async function buildAndPreview({ build = true, env = {} }: { build?: boolean; env?: Record<string, string> } = {}): Promise<PagesPreview> {
+  const buildEnv = { ...BUILD_ENV, ...env };
   if (build) {
     console.log(`Building the GitHub Pages bundle (--base ${PAGES_BASE})...`);
     const built = spawnSync("npm", ["run", "build:pages", "-w", "client", "--", "--base", PAGES_BASE], {
       cwd: ROOT,
-      env: BUILD_ENV,
+      env: buildEnv,
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
       encoding: "utf8",
@@ -117,7 +120,7 @@ ${built.stderr}`);
   const child = spawn(
     process.execPath,
     [path.join(ROOT, "node_modules", "vite", "bin", "vite.js"), "preview", "--mode", "github", "--base", PAGES_BASE, "--strictPort", "--port", String(PREVIEW_PORT)],
-    { cwd: path.join(ROOT, "client"), env: BUILD_ENV, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" },
+    { cwd: path.join(ROOT, "client"), env: buildEnv, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" },
   );
   let output = "";
   child.stdout?.on("data", (chunk) => (output += String(chunk)));
