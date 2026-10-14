@@ -5,7 +5,7 @@ import { forgetDevice, type Connection } from "../backend/github/deviceStore";
 import { createFakeGitHub, type FakeGitHub } from "../backend/github/fakeGitHub";
 import { loadSaved, remember, resetMemoryForTests } from "./connection";
 import type { Deps } from "./ledgerAccess";
-import { connectSignedIn, expireOnReplace, INSTALLED, planReturn, replaceCredentials, replaceSignIn } from "./signInFlow";
+import { connectSignedIn, expireOnReplace, INSTALLED, planReturn, replaceCredentials, replaceSignIn, SIGN_IN_NEEDS_STORAGE } from "./signInFlow";
 import { OTHER_REPO } from "./token";
 
 // The gate's Sign in with GitHub decisions (#10), without React: what a
@@ -115,9 +115,10 @@ describe("back from github.com: what the gate does (#10)", () => {
     expect((await loadSaved()).connection).toEqual(pat);
   });
 
-  it("Replace token offers signing in again only in an App session", () => {
-    expect(replaceSignIn("pat", true)).toBeNull();
-    expect(replaceSignIn("app", true)).toEqual({ message: SIGN_IN_EXPIRED, canSignIn: true });
-    expect(replaceSignIn("app", false)).toEqual({ message: SIGN_IN_EXPIRED, canSignIn: false });
+  it("Replace token offers signing in again only in an App session, and not where a reload would lose this tab's changes", () => {
+    expect(replaceSignIn("pat", true, true)).toBeNull();
+    expect(replaceSignIn("app", true, true)).toEqual({ message: SIGN_IN_EXPIRED, canSignIn: true, note: null });
+    expect(replaceSignIn("app", false, true)).toEqual({ message: SIGN_IN_EXPIRED, canSignIn: false, note: null });
+    expect(replaceSignIn("app", true, false)).toEqual({ message: SIGN_IN_EXPIRED, canSignIn: false, note: SIGN_IN_NEEDS_STORAGE });
   });
 });

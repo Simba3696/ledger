@@ -637,7 +637,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
   }
 
   const back = () => dispatch({ type: "back" });
-  const signInAgain = replaceSignIn((open?.connection ?? work.current.connection)?.kind, signInSettings !== null);
+  const signInAgain = replaceSignIn((open?.connection ?? work.current.connection)?.kind, signInSettings !== null, remembered);
   return (
     <Shell>
       {signInNotice && (
@@ -665,6 +665,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
           signIn={
             signInAgain && {
               message: signInAgain.message,
+              note: signInAgain.note,
               onSignIn: signInAgain.canSignIn ? () => beginSignIn({ path: null, org: null, owner: screen.target.owner, repo: screen.target.repo }) : null,
             }
           }

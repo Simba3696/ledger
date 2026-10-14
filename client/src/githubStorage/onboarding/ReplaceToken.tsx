@@ -18,6 +18,8 @@ const TOKEN_EXPIRED = "GitHub no longer accepts this token (it expired or was re
 interface SignInAgain {
   message: string;
   onSignIn: (() => Promise<void>) | null;
+  /** Why the button isn't offered, when that needs saying. */
+  note: string | null;
 }
 
 export function ReplaceToken({
@@ -72,6 +74,7 @@ export function ReplaceToken({
       <p className="gh-note">
         It must reach <strong>{`${screen.target.owner}/${screen.target.repo}`}</strong>. Your changes on this device are kept.
       </p>
+      {signIn?.note && <p className="gh-warning">{signIn.note}</p>}
       {signIn?.onSignIn && (
         <>
           <SignInWithGitHub disabled={busy} onSignIn={signIn.onSignIn} />

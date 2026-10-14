@@ -15,6 +15,12 @@ import { connectError, OTHER_REPO } from "./token";
  * GitHub opened for it. */
 export const INSTALLED = "Ledger's GitHub App now has access. Go back to the tab where you signed in and choose Check again.";
 
+/** Replace token in a browser that keeps nothing between page loads:
+ * signing in reloads the page, which would lose this tab's key, connection
+ * and unsynced changes. */
+export const SIGN_IN_NEEDS_STORAGE =
+  "Signing in again reloads this page, and this browser keeps nothing between page loads, so your changes here would be lost. Paste a token instead.";
+
 /** Replace token refuses another account's credentials: the engine and
  * every record stamp carry the login this device joined with. */
 function otherAccount(login: string): string {
@@ -113,9 +119,10 @@ export function expireOnReplace(connection: Connection | null, deps: Deps): Prom
 }
 
 /** What Replace token says in an App session, and whether it offers the
- * Sign in with GitHub button (not without this build's sign-in). Null for
- * a pasted token's connection, which #8's screen covers. */
-export function replaceSignIn(kind: Connection["kind"] | undefined, configured: boolean): { message: string; canSignIn: boolean } | null {
+ * Sign in with GitHub button: not without this build's sign-in, and not
+ * where the reload would lose what this tab holds (`remembered` false).
+ * Null for a pasted token's connection, which #8's screen covers. */
+export function replaceSignIn(kind: Connection["kind"] | undefined, configured: boolean, remembered: boolean): { message: string; canSignIn: boolean; note: string | null } | null {
   if (kind !== "app") return null;
-  return { message: SIGN_IN_EXPIRED, canSignIn: configured };
+  return { message: SIGN_IN_EXPIRED, canSignIn: configured && remembered, note: configured && !remembered ? SIGN_IN_NEEDS_STORAGE : null };
 }
