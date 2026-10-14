@@ -11,7 +11,10 @@ import { FIELDS, TOGETHER, createOrderKey, type Coll } from "./keys";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { nextEpochKey } from "./epoch";
 import { applyOp, cloneState, genesisState, joinInto, type Op, type SyncState } from "./state";
+import { Rng } from "./rng";
 import { LamportExhausted, newDeviceId, nextLamport } from "./tags";
+
+export { Rng };
 
 // Test support for the sync core: a seeded PRNG, fingerprints for comparing
 // states and documents, and Replica, an in-memory stand-in for the engine's
@@ -22,43 +25,6 @@ import { LamportExhausted, newDeviceId, nextLamport } from "./tags";
 /** The environment variables a test run was given, if any. */
 export function testEnv(name: string): string | undefined {
   return (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env[name];
-}
-
-/** mulberry32: a small seeded PRNG, so a failing seed can be replayed. */
-export class Rng {
-  #t: number;
-  constructor(seed: number) {
-    this.#t = seed >>> 0;
-  }
-  next(): number {
-    this.#t = (this.#t + 0x6d2b79f5) >>> 0;
-    let x = Math.imul(this.#t ^ (this.#t >>> 15), 1 | this.#t);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  }
-  /** An integer in [0, n). */
-  int(n: number): number {
-    return Math.floor(this.next() * n);
-  }
-  chance(p: number): boolean {
-    return this.next() < p;
-  }
-  pick<T>(items: readonly T[]): T {
-    return items[this.int(items.length)];
-  }
-  shuffle<T>(items: readonly T[]): T[] {
-    const out = [...items];
-    for (let i = out.length - 1; i > 0; i--) {
-      const j = this.int(i + 1);
-      [out[i], out[j]] = [out[j], out[i]];
-    }
-    return out;
-  }
-  /** A uuid-shaped id, from this generator. */
-  uuid(): string {
-    const hex = Array.from({ length: 32 }, () => this.int(16).toString(16)).join("");
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`;
-  }
 }
 
 /** Runs `run` once per seed; a failure names its seed and how to replay it. */
