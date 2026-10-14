@@ -163,8 +163,8 @@ class Session {
    * clone once; if anything throws, nothing is committed and the current
    * document is untouched. A host with begin() hears of the write at the
    * call, before it waits in the queue, and the write reads the document
-   * only once the handle is ready. */
-  write<T>(module: ModuleName, run: (ctx: ops.WriteContext) => T): Promise<T> {
+   * only once the handle is ready. `module` null = always on. */
+  write<T>(module: ModuleName | null, run: (ctx: ops.WriteContext) => T): Promise<T> {
     const { host, now, actor, newId } = this.#options;
     let submitted: HostWrite | undefined;
     try {
@@ -176,7 +176,7 @@ class Session {
       try {
         if (submitted?.ready) await submitted.ready;
         const current = host.current();
-        assertModuleEnabled(current.settings.modules, module);
+        if (module) assertModuleEnabled(current.settings.modules, module);
         const doc = submitted?.draft ? submitted.draft(current) : structuredClone(current);
         const at = now();
         const value = run(Object.assign(this.#context(doc, at), { now: at, actor, newId }));
@@ -205,6 +205,26 @@ export class DocumentBackend implements LedgerBackend {
 
   constructor(options: DocumentBackendOptions) {
     this.#session = new Session(options);
+  }
+
+  /** GitHub mode's Settings (#8): the sections and the time zone. Not a
+   * LedgerBackend call (the Supabase build has no equivalent: there they
+   * are ENABLED_MODULES and APP_TIMEZONE), and in no section of its own.
+   * At least one section, as ENABLED_MODULES can't express none; a time
+   * zone the browser knows, since every "today" is reckoned in it. A
+   * write like any other, so the sync engine sends it as one op. */
+  async updateSettings(patch: Partial<LedgerDocument["settings"]>): Promise<LedgerDocument["settings"]> {
+    const modules = patch.modules === undefined ? undefined : canonicalModules(patch.modules);
+    if (patch.modules !== undefined) {
+      const unknown = patch.modules.filter((m) => !modules!.includes(m));
+      if (unknown.length > 0) return Promise.reject(new ApiError(400, `Unknown section: ${unknown.join(", ")}`));
+      if (modules!.length === 0) return Promise.reject(new ApiError(400, "Choose at least one section"));
+    }
+    if (patch.timeZone !== undefined && !knownTimeZone(patch.timeZone)) return Promise.reject(new ApiError(400, `Unknown time zone: ${patch.timeZone}`));
+    return this.#session.write(null, ({ doc }) => {
+      doc.settings = { modules: modules ?? doc.settings.modules, timeZone: patch.timeZone ?? doc.settings.timeZone };
+      return doc.settings;
+    });
   }
 
   async getConfig(): Promise<AppConfig> {
@@ -367,5 +387,15 @@ export class DocumentBackend implements LedgerBackend {
 
   async getOverview(): Promise<DashboardOverview> {
     return this.#session.read(null, (ctx) => ops.dashboardOverview(ctx, canonicalModules(ctx.doc.settings.modules)));
+  }
+}
+
+/** A zone name the browser can reckon a date in. */
+function knownTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: zone });
+    return zone.trim() !== "";
+  } catch {
+    return false;
   }
 }

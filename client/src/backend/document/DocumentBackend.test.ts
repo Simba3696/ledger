@@ -432,9 +432,11 @@ describe("DocumentBackend order and handles", () => {
 
 describe("DocumentBackend gate and errors", () => {
   it("404s a disabled module's calls with its label and lists enabled modules in canonical order", async () => {
-    // The class is the LedgerBackend and nothing more: its 31 methods.
-    const methods = Object.getOwnPropertyNames(DocumentBackend.prototype).filter((name) => name !== "constructor");
+    // The class is the LedgerBackend's 31 methods, plus GitHub mode's
+    // Settings write (#8), which no LedgerBackend has.
+    const methods = Object.getOwnPropertyNames(DocumentBackend.prototype).filter((name) => name !== "constructor" && name !== "updateSettings");
     expect(methods).toHaveLength(31);
+    expect(Object.getOwnPropertyNames(DocumentBackend.prototype)).toContain("updateSettings");
 
     const doc = createEmptyDocument({ modules: ["subscriptions", "expenses"], timeZone: "UTC" });
     const { host, backend } = setup(doc);
@@ -511,5 +513,36 @@ describe("DocumentBackend performance", () => {
     }
     console.log(`DocumentBackend over ${count} expenses: ${JSON.stringify(timings)} (ms)`);
     for (const ms of Object.values(timings)) expect(ms).toBeLessThan(1000);
+  });
+});
+
+describe("GitHub mode's Settings (#8): updateSettings", () => {
+  it("changes the sections and the time zone in one write, and getConfig follows", async () => {
+    const { host, backend } = setup();
+    const commits = vi.spyOn(host, "commit");
+    await expect(backend.updateSettings({ modules: ["subscriptions", "expenses"], timeZone: "Europe/London" })).resolves.toEqual({ modules: ["expenses", "subscriptions"], timeZone: "Europe/London" });
+    expect(commits).toHaveBeenCalledTimes(1);
+    await expect(backend.getConfig()).resolves.toEqual({ modules: ["expenses", "subscriptions"] });
+    expect(host.current().settings).toEqual({ modules: ["expenses", "subscriptions"], timeZone: "Europe/London" });
+  });
+
+  it("changes only what the patch names", async () => {
+    const { host, backend } = setup();
+    await backend.updateSettings({ timeZone: "UTC" });
+    expect(host.current().settings).toEqual({ modules: [...ALL], timeZone: "UTC" });
+  });
+
+  it("refuses no sections, an unknown section or an unknown time zone, and writes nothing", async () => {
+    const { host, backend } = setup();
+    const before = JSON.stringify(host.current());
+    await expect(backend.updateSettings({ modules: [] })).rejects.toEqual(new ApiError(400, "Choose at least one section"));
+    await expect(backend.updateSettings({ modules: ["expenses", "bogus" as never] })).rejects.toEqual(new ApiError(400, "Unknown section: bogus"));
+    await expect(backend.updateSettings({ timeZone: "Mars/Olympus_Mons" })).rejects.toEqual(new ApiError(400, "Unknown time zone: Mars/Olympus_Mons"));
+    expect(JSON.stringify(host.current())).toBe(before);
+  });
+
+  it("works with every section turned off but one, as a disabled section's calls don't", async () => {
+    const { backend } = setup(createEmptyDocument({ modules: ["debts"], timeZone: "UTC" }));
+    await expect(backend.updateSettings({ modules: ["expenses"] })).resolves.toEqual({ modules: ["expenses"], timeZone: "UTC" });
   });
 });
