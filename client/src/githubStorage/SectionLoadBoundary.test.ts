@@ -34,10 +34,10 @@ describe("SectionLoadBoundary", () => {
   const chunkError = new TypeError("Failed to fetch dynamically imported module: https://example.test/ledger/assets/Debts-abc.js");
 
   /** A boundary that has caught `error`, its setState applied in place. */
-  function caught(error: unknown, online: boolean) {
+  function caught(error: unknown, online: boolean, saving = () => false) {
     const onHome = vi.fn();
     const reload = vi.fn();
-    const boundary = new SectionLoadBoundary({ children: page, onHome, online: () => online, reload });
+    const boundary = new SectionLoadBoundary({ children: page, onHome, online: () => online, saving, reload });
     boundary.state = { ...boundary.state, ...SectionLoadBoundary.getDerivedStateFromError(error) };
     boundary.setState = ((patch: object) => Object.assign(boundary.state, patch)) as typeof boundary.setState;
     return { boundary, onHome, reload };
@@ -71,6 +71,19 @@ describe("SectionLoadBoundary", () => {
     const online = caught(chunkError, true);
     button(online.boundary.render(), "Try again")();
     expect(online.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("Try again doesn't reload while a change is still being saved, and does once it is", () => {
+    // A reload mid-save could cut a write off on the device, or drop changes
+    // a browser keeping nothing (volatile) hasn't sent to GitHub yet.
+    let saving = true;
+    const { boundary, reload } = caught(chunkError, true, () => saving);
+    button(boundary.render(), "Try again")();
+    expect(reload).not.toHaveBeenCalled();
+    expect(renderToString(boundary.render() as ReactElement)).toContain("Ledger is still saving your changes. Try again once they&#x27;re saved.");
+    saving = false;
+    button(boundary.render(), "Try again")();
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it("Back to Dashboard opens the Ledger again on the Dashboard, which needs nothing more loaded", () => {

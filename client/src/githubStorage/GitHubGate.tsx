@@ -543,7 +543,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
           // branches (App.tsx, #8 decision 16).
           // A section that can't be loaded (offline) shows a message, not a
           // blank screen (SectionLoadBoundary.tsx).
-          <SectionLoadBoundary onHome={() => ledgerViews.goHome()}>
+          <SectionLoadBoundary onHome={() => ledgerViews.goHome()} saving={() => open.engine.writing || open.engine.getState().pendingCount > 0}>
             <Ledger
               key={`${target.owner}/${target.repo}#${settingsRevision}`}
               session={null}
