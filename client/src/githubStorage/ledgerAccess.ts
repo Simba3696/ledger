@@ -27,6 +27,8 @@ export interface Deps {
   fetch?: typeof fetch;
   store?: SyncStore;
   locks?: LockManager | null;
+  /** A clock that never jumps (the PUT spacing): tests move it on. */
+  monotonic?: () => number;
 }
 
 export interface Connected {
@@ -166,7 +168,7 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
   const token: TokenHolder = { token: connection.token };
   const client = clientFor(connection, token, deps);
   const remote: SyncRemote = { client, branch: connection.branch ?? (await client.verifyRepo()).defaultBranch };
-  const engine = new SyncEngine({ key, actor: connection.login, remote, store: deps.store, locks: deps.locks });
+  const engine = new SyncEngine({ key, actor: connection.login, remote, store: deps.store, locks: deps.locks, monotonic: deps.monotonic });
   await engine.start();
   try {
     const state = engine.getState();

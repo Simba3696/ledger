@@ -2,13 +2,15 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ModuleName } from "../api";
 import { Ledger } from "../App";
 import { installBackend } from "../api";
+import { clearSyncState } from "../backend/sync/persist";
 import { httpBackend } from "../backend/HttpBackend";
 import { checkEnvironment } from "../backend/crypto";
 import { DialogHost } from "../components/Dialog";
 import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
-import { damagedFileMessage, findLedger, type LedgerFound } from "../backend/sync/ledgerRepo";
+import { compareEpochKeys } from "../backend/sync/epoch";
+import { createLedger, damagedFileMessage, findLedger, takeRestoredEpoch, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
 import type { RejoinResult, SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
@@ -25,6 +27,7 @@ import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
 import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
+import { readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
 import { Settings } from "./Settings";
 import { Shell } from "./Shell";
@@ -92,6 +95,10 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * again. */
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  /** After a reload that followed a restore: whether it landed (#9). */
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
+  /** Settings' backup was interrupted by a refused token (#9). */
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
@@ -115,6 +122,15 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       try {
         const opened = await openLedger(connection, key, start, deps);
         if (opened.kind === "open") {
+          // The reload after a restore (#9): did this tab's restore land, or
+          // did another win? (takeRestoredEpoch)
+          const mine = takeRestoredEpoch();
+          const now = opened.engine.epochKey;
+          if (mine !== null && now !== null) {
+            if (now === mine) setRestoreNote("Restored from the backup.");
+            else if (compareEpochKeys(now, mine) > 0) setRestoreNote("Someone else restored a backup at the same time, and theirs is the ledger now. Restore yours again from Settings if you still need it.");
+            else setRestoreNote("Your restore may still be on its way to GitHub. Ledger switches to it once it lands.");
+          }
           work.current.remote = opened.remote;
           work.current.connection = connection;
           setOpen({ engine: opened.engine, backend: opened.backend, token: opened.token, remote: opened.remote, connection });
@@ -260,6 +276,49 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     }
   }
 
+  /** Create's "start from a backup" (#9): a new ledger holding the backup,
+   * under the backup's own passphrase (its header's salt and iterations),
+   * then opened as Create opens one. An error to show, or null. */
+  async function onRestoreBackup(file: File, passphrase: string): Promise<string | null> {
+    const { connection } = work.current;
+    if (!connection) return null;
+    try {
+      const read = await readBackupFile(file, null, passphrase);
+      if (!read.ok) return read.needsPassphrase ? "Enter the backup's passphrase." : read.message;
+      const remote = await currentRemote(connection);
+      const result = await createLedger(remote, read.key, { doc: read.doc, by: connection.login, at: Date.now(), reason: "restore" });
+      switch (result.kind) {
+        case "created":
+          work.current.key = read.key;
+          setRemembered(await remember(connection, read.key));
+          if (await openWith(connection, read.key, { epoch: result.epoch, sha: result.sha, state: result.state })) dispatch({ type: "created", created: { kind: "created" } });
+          return null;
+        case "exists":
+          if (result.damagedFile) return damagedFileMessage(result.damagedFile);
+          work.current.found = await findLedger(remote);
+          dispatch({ type: "created", created: { kind: "exists" } });
+          return null;
+        case "replaced":
+          work.current.found = await findLedger(remote);
+          dispatch({ type: "created", created: { kind: "replaced" } });
+          return null;
+        case "unknown":
+          dispatch({ type: "created", created: { kind: "unknown" } });
+          return null;
+        case "failed":
+          return result.detail;
+        case "tooLarge":
+          return `This backup is too large to restore: ${result.detail}`;
+      }
+    } catch (err) {
+      if (tokenRefused(err)) {
+        dispatch({ type: "tokenRejected" });
+        return null;
+      }
+      return connectError(err, targetOf(connection), { write: true }).message;
+    }
+  }
+
   async function onUnlock(passphrase: string) {
     const { connection } = work.current;
     if (!connection) return;
@@ -327,6 +386,14 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       // an organization, may still wait for an owner's approval.
       return cause instanceof RepoNotFoundError && !target.ownerIsOrg ? OTHER_REPO : connectError(cause, target).message;
     }
+  }
+
+  /** A restore landed (#9): this device's sync state is cleared and the
+   * page reloads, so it starts in the restored epoch afresh, joined with
+   * the saved key (SyncEngine.restore's contract). */
+  async function afterRestore(): Promise<void> {
+    await clearSyncState();
+    globalThis.location.reload();
   }
 
   /** Forget this device finished: nothing of it is left here. */
@@ -418,6 +485,14 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         bar={
           <>
             <SyncPanel />
+            {restoreNote && (
+              <p className="sync-message-line" role="status" data-testid="gh-restore-note">
+                {restoreNote}{" "}
+                <button type="button" className="gh-secondary" onClick={() => setRestoreNote(null)}>
+                  OK
+                </button>
+              </p>
+            )}
             <EpochGonePanel engine={open.engine} onCreate={onCreateFromDevice} onForget={onForget} />
             {view === "settings" && (
               <Shell>
@@ -426,11 +501,19 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
               backend={open.backend}
               connection={{ ...target, login: open.connection.login, expiresAt: open.connection.expiresAt }}
               onDone={(changed) => {
+                setBackupNotice(null);
                 if (changed) setSettingsRevision((n) => n + 1);
                 setView("ledger");
               }}
               onReplaceToken={replaceToken}
               onForgotten={forgotten}
+              deviceKey={work.current.key}
+              backupNotice={backupNotice}
+              onRestored={afterRestore}
+              onTokenRejected={() => {
+                setBackupNotice("GitHub refused the token, so nothing was restored. Pick the backup file again.");
+                dispatch({ type: "tokenRejected" });
+              }}
             />
               </Shell>
             )}
@@ -456,7 +539,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         <StepCard screen={screen} onOrg={(org) => dispatch({ type: "org", org })} onBack={back} onNext={() => dispatch({ type: "next" })} />
       )}
       {screen.kind === "step" && screen.step === "connect" && <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} />}
-      {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onBack={back} />}
+      {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onRestoreBackup={onRestoreBackup} onBack={back} />}
       {screen.kind === "unlock" && <Unlock screen={screen} remembered={remembered} onUnlock={onUnlock} onBack={back} />}
       {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} onForget={work.current.connection ? onForget : undefined} />}
       {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} onForget={onForget} />}

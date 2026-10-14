@@ -2,7 +2,9 @@ import { useMemo, useState, type FormEvent } from "react";
 import type { ModuleName } from "../api";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { SyncEngine } from "../backend/sync/SyncEngine";
+import type { DeviceKey } from "../backend/sync/records";
 import { DialogHost } from "../components/Dialog";
+import { BackupPanel } from "./BackupPanel";
 import { confirmAndForget } from "./forgetFlow";
 import { SECTION_LABELS, SECTIONS, timeZones } from "./defaults";
 import { inviteLink, orgPendingTokensUrl, orgPeopleUrl, repoAccessUrl } from "./links";
@@ -37,6 +39,10 @@ export function Settings({
   onDone,
   onReplaceToken,
   onForgotten,
+  deviceKey,
+  backupNotice = null,
+  onRestored,
+  onTokenRejected,
 }: {
   engine: SyncEngine;
   backend: DocumentBackend;
@@ -46,6 +52,13 @@ export function Settings({
   /** Resolves to an error to show, or null once the new token is in use. */
   onReplaceToken: (token: string) => Promise<string | null>;
   onForgotten: () => void;
+  /** This device's key, for opening a backup sealed under it (#9). */
+  deviceKey: DeviceKey | null;
+  /** Why the backup picked before is gone (a refused token meanwhile). */
+  backupNotice?: string | null;
+  /** A restore landed: clear this device's sync state and reload (#9). */
+  onRestored: () => Promise<void>;
+  onTokenRejected: () => void;
 }) {
   const settings = engine.current().settings;
   const [sections, setSections] = useState<ModuleName[]>([...settings.modules]);
@@ -230,6 +243,8 @@ export function Settings({
             </ul>
           </section>
         )}
+
+        <BackupPanel engine={engine} deviceKey={deviceKey} repo={connection} notice={backupNotice} onRestored={onRestored} onTokenRejected={onTokenRejected} />
 
         <section className="gh-settings-section" aria-labelledby="gh-settings-device">
           <h3 id="gh-settings-device">This device</h3>
