@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ModuleName } from "../api";
 import { Ledger } from "../App";
+import { installBackend } from "../api";
+import { httpBackend } from "../backend/HttpBackend";
 import { checkEnvironment } from "../backend/crypto";
+import { DialogHost } from "../components/Dialog";
 import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
@@ -10,6 +13,7 @@ import type { DeviceKey } from "../backend/sync/records";
 import type { SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
+import { confirmAndForget } from "./forgetFlow";
 import { ConnectFailed, connect, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
 import { readInvite } from "./links";
 import { ConnectStep } from "./onboarding/ConnectStep";
@@ -91,6 +95,8 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
+  /** forgotten(), for the engine watcher (an effect that outlives renders). */
+  const forgottenRef = useRef<() => void>(() => {});
 
   /** A step failed on GitHub: a refused token goes to Replace token (which
    * keeps everything on the device); anything else is told and can be
@@ -174,6 +180,15 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         joining = true;
         void (async () => {
           try {
+            // Forgotten in another tab meanwhile (it freed the lock this tab
+            // was waiting for): rejoining would write the ledger back to a
+            // device the person just cleared.
+            const saved = await loadSaved();
+            if (saved.remembered && !saved.connection) {
+              engine.stop();
+              forgottenRef.current();
+              return;
+            }
             const from = await startFromRepo(remote, key);
             if (from.kind === "start") return void (await engine.initialize(from.start.epoch, from.start.state, { sha: from.start.sha, state: from.start.state }));
             engine.stop();
@@ -315,10 +330,23 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
 
   /** Forget this device finished: nothing of it is left here. */
   function forgotten() {
+    // api.ts lets go of the old ledger's backend (and its document).
+    installBackend(httpBackend);
     setOpen(null);
     setView("ledger");
     work.current = { connection: null, remote: null, found: null, key: null };
     dispatch({ type: "forgotten" });
+  }
+
+  forgottenRef.current = forgotten;
+
+  /** Forget this device from a screen that can't open the ledger (a dead
+   * token, a ledger that won't open): the open engine, if there is one,
+   * tells what's unsaved. Resolves to an error to show, or null. */
+  async function onForget(): Promise<string | null> {
+    const outcome = await confirmAndForget(open?.engine ?? null);
+    if (outcome.kind === "forgotten") forgotten();
+    return outcome.kind === "failed" ? outcome.message : null;
   }
 
   /** Try again from a blocked screen: with what this device saved, open
@@ -358,10 +386,17 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     }
     const target = targetOf(open.connection);
     return (
-      <SyncHost engine={open.engine} bar={<SyncPanel />}>
-        {view === "settings" ? (
-          <Shell>
-            <Settings
+      // Settings goes in the bar, outside the part SyncHost re-keys on
+      // every join, so a change from another device doesn't remount it
+      // (and lose what's typed, or an open dialog).
+      <SyncHost
+        engine={open.engine}
+        bar={
+          <>
+            <SyncPanel />
+            {view === "settings" && (
+              <Shell>
+                <Settings
               engine={open.engine}
               backend={open.backend}
               connection={{ ...target, login: open.connection.login, expiresAt: open.connection.expiresAt }}
@@ -372,8 +407,12 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
               onReplaceToken={replaceToken}
               onForgotten={forgotten}
             />
-          </Shell>
-        ) : (
+              </Shell>
+            )}
+          </>
+        }
+      >
+        {view === "ledger" && (
           // headerActions is read inside Ledger's GitHub-only branch
           // (App.tsx, #8 decision 16).
           <Ledger key={`${target.owner}/${target.repo}#${settingsRevision}`} session={null} headerActions={<HeaderActions onSettings={() => setView("settings")} />} />
@@ -394,8 +433,9 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       {screen.kind === "step" && screen.step === "connect" && <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} />}
       {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onBack={back} />}
       {screen.kind === "unlock" && <Unlock screen={screen} remembered={remembered} onUnlock={onUnlock} onBack={back} />}
-      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} />}
-      {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} />}
+      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} onForget={work.current.connection ? onForget : undefined} />}
+      {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} onForget={onForget} />}
+      <DialogHost />
     </Shell>
   );
 }

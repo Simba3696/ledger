@@ -3,8 +3,7 @@ import type { ModuleName } from "../api";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { SyncEngine } from "../backend/sync/SyncEngine";
 import { DialogHost } from "../components/Dialog";
-import { confirmDialog } from "../components/dialogs";
-import { forget } from "./connection";
+import { confirmAndForget } from "./forgetFlow";
 import { SECTION_LABELS, SECTIONS, timeZones } from "./defaults";
 import { inviteLink, orgPendingTokensUrl, orgPeopleUrl, repoAccessUrl } from "./links";
 import { Card, ErrorText } from "./Shell";
@@ -28,6 +27,8 @@ export interface SettingsConnection {
 }
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+const isKnownSection = (s: string): s is ModuleName => (SECTIONS as readonly string[]).includes(s);
 
 export function Settings({
   engine,
@@ -55,23 +56,31 @@ export function Settings({
   const [token, setToken] = useState("");
   const [tokenNote, setTokenNote] = useState<{ error: boolean; text: string } | null>(null);
   const [forgetError, setForgetError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
   const [busy, setBusy] = useState(false);
 
   const expires = connection.expiresAt ? new Date(connection.expiresAt) : null;
   const daysLeft = expires ? Math.ceil((expires.getTime() - Date.now()) / 86_400_000) : null;
   const invite = inviteLink(globalThis.location, connection.owner, connection.repo);
 
+  /** Sections in canonical order, plus any this build doesn't know (a newer
+   * build's), kept as they are. */
   function toggle(section: ModuleName, on: boolean) {
-    setSections((was) => SECTIONS.filter((s) => (s === section ? on : was.includes(s))));
+    setSections((was) => [...SECTIONS.filter((s) => (s === section ? on : was.includes(s))), ...was.filter((s) => !isKnownSection(s))]);
   }
 
   async function saveSettings(e: FormEvent) {
     e.preventDefault();
-    if (sections.length === 0) return setSettingsNote({ error: true, text: "Choose at least one section." });
+    if (!sections.some(isKnownSection)) return setSettingsNote({ error: true, text: "Choose at least one section." });
+    // Only what changed: a field left as it was is never sent, so it can't
+    // set back a change another device made meanwhile.
+    const patch: { modules?: ModuleName[]; timeZone?: string } = {};
+    if (sections.join(",") !== settings.modules.join(",")) patch.modules = sections;
+    if (timeZone.trim() !== settings.timeZone) patch.timeZone = timeZone.trim();
+    if (patch.modules === undefined && patch.timeZone === undefined) return setSettingsNote({ error: false, text: "Nothing to save." });
     setBusy(true);
     try {
-      await backend.updateSettings({ modules: sections, timeZone: timeZone.trim() });
+      await backend.updateSettings(patch);
       setChanged(true);
       setSettingsNote({ error: false, text: "Saved." });
     } catch (err) {
@@ -98,46 +107,19 @@ export function Settings({
   async function copyInvite() {
     try {
       await navigator.clipboard.writeText(invite);
-      setCopied(true);
+      setCopied("yes");
     } catch {
-      setCopied(false);
+      setCopied("failed");
     }
   }
 
   async function forgetDevice() {
     setForgetError(null);
-    let state = engine.getState();
-    if (state.pendingCount > 0) {
-      const sync = await confirmDialog({
-        message: `${plural(state.pendingCount, "change")} on this device ${state.pendingCount === 1 ? "hasn't" : "haven't"} been saved to GitHub yet. Sync now first?`,
-        confirmLabel: "Sync now",
-        cancelLabel: "Cancel",
-      });
-      if (!sync) return;
-      await engine.syncNow();
-      state = engine.getState();
-    }
-    const unsaved = state.pendingCount + state.leftBehindOwnCount;
-    const confirmed = await confirmDialog(
-      unsaved > 0
-        ? {
-            message: `${plural(unsaved, "change")} on this device ${unsaved === 1 ? "hasn't" : "haven't"} been saved to GitHub yet and will be lost. Forget this device anyway?`,
-            confirmLabel: "Forget anyway",
-            destructive: true,
-          }
-        : {
-            message: "Forget this device? Ledger's copy of your data, the passphrase key and the token are removed from this browser. Nothing on GitHub changes, and you can connect again at any time.",
-            confirmLabel: "Forget this device",
-            destructive: true,
-          },
-    );
-    if (!confirmed) return;
     setBusy(true);
     try {
-      const done = await forget(engine, { force: unsaved > 0 });
-      if (done.ok) return onForgotten();
-      // Something changed on the device after the dialog: ask again.
-      setForgetError(`${plural(done.pendingCount + done.leftBehindOwnCount, "change")} still ${done.pendingCount + done.leftBehindOwnCount === 1 ? "isn't" : "aren't"} on GitHub. Nothing was forgotten.`);
+      const outcome = await confirmAndForget(engine);
+      if (outcome.kind === "forgotten") return onForgotten();
+      if (outcome.kind === "failed") setForgetError(outcome.message);
     } finally {
       setBusy(false);
     }
@@ -149,7 +131,7 @@ export function Settings({
       <Card title="Settings" focusKey="settings">
         <div className="gh-actions">
           <span />
-          <button type="button" className="submit-btn" onClick={() => onDone(changed)} data-testid="gh-settings-done">
+          <button type="button" className="submit-btn" disabled={busy} onClick={() => onDone(changed)} data-testid="gh-settings-done">
             Done
           </button>
         </div>
@@ -222,9 +204,10 @@ export function Settings({
             <p className="gh-invite" data-testid="gh-invite-link">
               {invite}
             </p>
-            <button type="button" className="gh-secondary" onClick={() => void copyInvite()} data-testid="gh-copy-invite">
-              {copied ? "Copied" : "Copy invite link"}
+            <button type="button" className="gh-secondary" disabled={busy} onClick={() => void copyInvite()} data-testid="gh-copy-invite">
+              {copied === "yes" ? "Copied" : "Copy invite link"}
             </button>
+            {copied === "failed" && <ErrorText>Couldn't copy. Select the link above and copy it.</ErrorText>}
             <ul>
               <li>
                 Invite them on GitHub:{" "}

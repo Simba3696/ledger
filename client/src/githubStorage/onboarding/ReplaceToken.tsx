@@ -10,10 +10,30 @@ import type { Screen } from "./flow";
 
 const TOKEN_EXPIRED = "GitHub no longer accepts this token (it expired or was revoked). Paste a new one.";
 
-export function ReplaceToken({ screen, onReplace }: { screen: Extract<Screen, { kind: "replaceToken" }>; onReplace: (token: string) => Promise<void> }) {
+export function ReplaceToken({
+  screen,
+  onReplace,
+  onForget,
+}: {
+  screen: Extract<Screen, { kind: "replaceToken" }>;
+  onReplace: (token: string) => Promise<void>;
+  /** For when no new token will come (access was removed): resolves to an
+   * error to show, or null. */
+  onForget: () => Promise<string | null>;
+}) {
   const [token, setToken] = useState("");
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgetError, setForgetError] = useState<string | null>(null);
+
+  async function forget() {
+    setBusy(true);
+    try {
+      setForgetError(await onForget());
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -50,6 +70,11 @@ export function ReplaceToken({ screen, onReplace }: { screen: Extract<Screen, { 
           </button>
         </fieldset>
       </form>
+      <p className="gh-note">No longer have access to this repository? Forget this device instead.</p>
+      {forgetError && <ErrorText>{forgetError}</ErrorText>}
+      <button type="button" className="gh-secondary gh-danger" disabled={busy} onClick={() => void forget()} data-testid="gh-replace-forget">
+        Forget this device
+      </button>
     </Card>
   );
 }

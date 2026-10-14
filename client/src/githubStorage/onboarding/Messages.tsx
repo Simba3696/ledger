@@ -1,4 +1,5 @@
-import { Card } from "../Shell";
+import { useState } from "react";
+import { Card, ErrorText } from "../Shell";
 import type { Screen } from "./flow";
 
 // The screens with nothing to fill in (#8): a browser that can't run
@@ -23,7 +24,20 @@ export function Misconfigured({ screen }: { screen: Extract<Screen, { kind: "mis
   );
 }
 
-export function Blocked({ screen, onRetry, onBack }: { screen: Extract<Screen, { kind: "blocked" }>; onRetry: () => void; onBack: () => void }) {
+export function Blocked({
+  screen,
+  onRetry,
+  onBack,
+  onForget,
+}: {
+  screen: Extract<Screen, { kind: "blocked" }>;
+  onRetry: () => void;
+  onBack: () => void;
+  /** Offered when this device saved a connection: resolves to an error to
+   * show, or null. */
+  onForget?: () => Promise<string | null>;
+}) {
+  const [forgetError, setForgetError] = useState<string | null>(null);
   return (
     <Card title="Ledger can't open this yet" focusKey="blocked">
       <p>{screen.message}</p>
@@ -37,6 +51,14 @@ export function Blocked({ screen, onRetry, onBack }: { screen: Extract<Screen, {
           </button>
         )}
       </div>
+      {onForget && (
+        <>
+          {forgetError && <ErrorText>{forgetError}</ErrorText>}
+          <button type="button" className="gh-secondary gh-danger" onClick={() => void onForget().then(setForgetError)} data-testid="gh-blocked-forget">
+            Forget this device
+          </button>
+        </>
+      )}
     </Card>
   );
 }
