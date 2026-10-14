@@ -30,6 +30,7 @@ import { Welcome } from "./onboarding/Welcome";
 import { readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
 import { LedgerViewMemory } from "./ledgerView";
+import { SectionLoadBoundary } from "./SectionLoadBoundary";
 import { warmSections } from "./sectionLoading";
 import { Settings } from "./Settings";
 import { Shell } from "./Shell";
@@ -540,12 +541,16 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         {view === "ledger" && (
           // headerActions and view are read inside Ledger's GitHub-only
           // branches (App.tsx, #8 decision 16).
-          <Ledger
-            key={`${target.owner}/${target.repo}#${settingsRevision}`}
-            session={null}
-            headerActions={<HeaderActions onSettings={() => setView("settings")} />}
-            view={viewSlot}
-          />
+          // A section that can't be loaded (offline) shows a message, not a
+          // blank screen (SectionLoadBoundary.tsx).
+          <SectionLoadBoundary onHome={() => ledgerViews.goHome()}>
+            <Ledger
+              key={`${target.owner}/${target.repo}#${settingsRevision}`}
+              session={null}
+              headerActions={<HeaderActions onSettings={() => setView("settings")} />}
+              view={viewSlot}
+            />
+          </SectionLoadBoundary>
         )}
       </SyncHost>
     );
