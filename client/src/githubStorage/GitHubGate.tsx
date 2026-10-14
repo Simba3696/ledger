@@ -29,6 +29,7 @@ import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
 import { readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
+import { LedgerViewMemory } from "./ledgerView";
 import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
@@ -95,6 +96,9 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * again. */
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  // The Ledger's open tab and month, kept across the remount a change from
+  // another device causes, and across Settings (ledgerView.ts).
+  const [ledgerViews] = useState(() => new LedgerViewMemory());
   /** After a reload that followed a restore: whether it landed (#9). */
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
   /** Settings' backup was interrupted by a refused token (#9). */
@@ -476,6 +480,13 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       );
     }
     const target = targetOf(open.connection);
+    const viewSlot = ledgerViews.slot(`${target.owner}/${target.repo}`, () => {
+      try {
+        return open.engine.current().settings.modules;
+      } catch {
+        return null;
+      }
+    });
     return (
       // Settings goes in the bar, outside the part SyncHost re-keys on
       // every join, so a change from another device doesn't remount it
@@ -521,9 +532,14 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         }
       >
         {view === "ledger" && (
-          // headerActions is read inside Ledger's GitHub-only branch
-          // (App.tsx, #8 decision 16).
-          <Ledger key={`${target.owner}/${target.repo}#${settingsRevision}`} session={null} headerActions={<HeaderActions onSettings={() => setView("settings")} />} />
+          // headerActions and view are read inside Ledger's GitHub-only
+          // branches (App.tsx, #8 decision 16).
+          <Ledger
+            key={`${target.owner}/${target.repo}#${settingsRevision}`}
+            session={null}
+            headerActions={<HeaderActions onSettings={() => setView("settings")} />}
+            view={viewSlot}
+          />
         )}
       </SyncHost>
     );
