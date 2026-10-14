@@ -15,6 +15,7 @@ export function CreateLedger({
   defaultSections,
   remembered,
   onCreate,
+  onRestoreBackup,
   onBack,
 }: {
   screen: Extract<Screen, { kind: "create" }>;
@@ -22,6 +23,9 @@ export function CreateLedger({
   /** False when this browser won't keep the key: it will ask each time. */
   remembered: boolean;
   onCreate: (passphrase: string, choices: { modules: ModuleName[]; timeZone: string }) => Promise<void>;
+  /** #9: a new ledger from a backup file, under the backup's passphrase.
+   * Resolves to an error to show, or null. */
+  onRestoreBackup: (file: File, passphrase: string) => Promise<string | null>;
   onBack: () => void;
 }) {
   const [passphrase, setPassphrase] = useState("");
@@ -32,6 +36,20 @@ export function CreateLedger({
   const [shown, setShown] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const zones = useMemo(() => timeZones(), []);
+  const [backup, setBackup] = useState<File | null>(null);
+  const [backupPassphrase, setBackupPassphrase] = useState("");
+  const [backupError, setBackupError] = useState<string | null>(null);
+
+  async function restoreBackup(e: FormEvent) {
+    e.preventDefault();
+    if (!backup) return;
+    setBusy(true);
+    try {
+      setBackupError(await onRestoreBackup(backup, backupPassphrase));
+    } finally {
+      setBusy(false);
+    }
+  }
   const problem = createProblem({ passphrase, confirm, saved, sections, timeZone });
 
   function toggle(section: ModuleName, on: boolean) {
@@ -113,6 +131,26 @@ export function CreateLedger({
           </div>
         </fieldset>
       </form>
+      <details className="gh-restore-instead">
+        <summary>Have a backup file? Start from it instead</summary>
+        <form onSubmit={(e) => void restoreBackup(e)} className="gh-choices">
+          <fieldset disabled={busy}>
+            <p className="gh-note">The new ledger holds the backup and uses its passphrase.</p>
+            <label>
+              Backup file
+              <input type="file" accept=".enc,application/octet-stream" data-testid="gh-create-backup-file" onChange={(e) => setBackup(e.target.files?.[0] ?? null)} />
+            </label>
+            <label>
+              The backup's passphrase
+              <input type="password" autoComplete="current-password" value={backupPassphrase} data-testid="gh-create-backup-passphrase" onChange={(e) => setBackupPassphrase(e.target.value)} />
+            </label>
+            {backupError && <ErrorText>{backupError}</ErrorText>}
+            <button type="submit" className="gh-secondary" disabled={busy || !backup || backupPassphrase === ""} data-testid="gh-create-from-backup">
+              {busy ? "Restoring..." : "Restore from this backup"}
+            </button>
+          </fieldset>
+        </form>
+      </details>
     </Card>
   );
 }
