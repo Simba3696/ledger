@@ -14,7 +14,7 @@ import type { SyncStore } from "../backend/sync/persist";
 import { SyncEngine, type SyncRemote } from "../backend/sync/SyncEngine";
 import { SyncedHost } from "../backend/sync/SyncedHost";
 import type { ModuleName } from "../api";
-import { updateSavedTokens } from "./connection";
+import { appTokenStore } from "./connection";
 
 // What #8's gate does with GitHub, one step per function, so each is
 // tested against the fake GitHub without a browser: connect (who the token
@@ -65,16 +65,17 @@ const sessions = new WeakMap<Connection, AppSession>();
 
 /** The App session over a kind "app" connection record: one per record,
  * so every client on it shares one refresh (a refresh token works once).
- * It updates the record in place, and the saved copy when there is one. */
+ * It updates the record in place, and the saved copy when there is one,
+ * under a lock the browser's tabs share. */
 export function appSessionFor(connection: Connection, deps: Deps = {}): AppSession {
   let session = sessions.get(connection);
   if (!session) {
     session = new AppSession(connection, {
       helperUrl: signInConfigOf(deps)?.helperUrl ?? null,
       fetch: deps.fetch,
-      // A save that fails leaves the old tokens saved: the next start then
-      // asks to sign in again, which loses nothing.
-      onChange: () => void updateSavedTokens(connection).catch(() => {}),
+      store: appTokenStore(connection),
+      // The tabs' shared lock, unless the deps say otherwise (tests).
+      ...(deps.locks !== undefined ? { locks: deps.locks } : {}),
     });
     sessions.set(connection, session);
   }

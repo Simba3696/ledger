@@ -17,9 +17,15 @@ import { classifyToken, GitHubAuthError, GitHubError, GitHubNetworkError } from 
 //   refreshes once on a 401.
 //
 // The tokens are kept only in #6's deviceStore connection record (kind
-// "app"), never here: a session updates the record it was given.
+// "app"), never here: a session updates the record it was given, and the
+// saved copy through a TokenStore. Every tab holds its own copy of the
+// record, and a refresh token works once, so refreshes take a lock shared
+// by the browser's tabs and adopt another tab's refresh when the saved
+// record has moved on; saves are compare-and-set on the refresh token.
 
 const STATE_KEY = "ledger:github-signin";
+/** The Web Lock every tab's refresh takes. */
+const REFRESH_LOCK = "ledger:github-refresh";
 const API_BASE = "https://api.github.com";
 const TIMEOUT_MS = 30_000;
 /** Refresh an access token with less than this left. */
@@ -167,17 +173,24 @@ export async function startSignIn(
 }
 
 /** What the helper answered, as the record's token fields, or null when
- * it isn't an App user token answer. */
+ * it isn't an App user token answer. The lifetimes are taken from
+ * `expires_in` and `refresh_token_expires_in` on this device's clock when
+ * the helper sends them, so a clock that differs from the helper's doesn't
+ * matter; its epoch-ms times are the fallback. */
 function tokensOf(answer: unknown): AppTokens | null {
   if (typeof answer !== "object" || answer === null) return null;
   const a = answer as Record<string, unknown>;
   if (typeof a.access_token !== "string") return null;
   const check = classifyToken(a.access_token);
   if (!check.ok || check.kind !== "app") return null;
-  const iso = (ms: unknown) => (typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined);
+  const now = Date.now();
+  const iso = (seconds: unknown, ms: unknown) => {
+    if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) return new Date(now + seconds * 1000).toISOString();
+    return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+  };
   const tokens: AppTokens = { token: a.access_token };
-  const expiresAt = iso(a.expires_at);
-  const refreshTokenExpiresAt = iso(a.refresh_token_expires_at);
+  const expiresAt = iso(a.expires_in, a.expires_at);
+  const refreshTokenExpiresAt = iso(a.refresh_token_expires_in, a.refresh_token_expires_at);
   if (expiresAt) tokens.expiresAt = expiresAt;
   if (typeof a.refresh_token === "string" && a.refresh_token !== "") tokens.refreshToken = a.refresh_token;
   if (refreshTokenExpiresAt) tokens.refreshTokenExpiresAt = refreshTokenExpiresAt;
@@ -250,31 +263,51 @@ export async function completeSignIn(
 
 type RefreshOutcome = "ok" | "refused" | "unreachable";
 
+/** Where a session's tokens are saved: the deviceStore connection record
+ * (connection.ts). `load` is the saved tokens when the saved record is
+ * this session's (same account and repo, kind "app"), else null. `save`
+ * is compare-and-set: it writes only while the saved refresh token is
+ * still `expected`, and says whether it wrote. */
+export interface TokenStore {
+  load(): Promise<AppTokens | null>;
+  save(next: AppTokens, expected: string | undefined): Promise<boolean>;
+}
+
+const TOKEN_FIELDS = ["expiresAt", "refreshToken", "refreshTokenExpiresAt"] as const;
+
 /** A signed-in GitHub App session over a token record (a Connection of
  * kind "app", or the tokens a sign-in just returned). It updates that
- * record in place on every refresh, and empties it once the sign-in can't
- * be renewed, telling `onChange` each time so the saved copy follows.
+ * record in place on every refresh, and the saved copy through `store`.
  *
  * `token` and `onUnauthorized` are #6's `TokenSource` and `onUnauthorized`
- * options. A helper that can't be reached is an offline error, never a
- * sign-out: the tokens are kept and the request fails as offline. */
+ * options. Only GitHub refusing the refresh token (`bad_refresh_token`)
+ * ends the session. Anything else that stops a refresh (the helper down or
+ * misconfigured, the network) is an offline error: the tokens are kept and
+ * the request fails as offline. */
 export class AppSession {
   readonly #record: AppTokens;
   readonly #helperUrl: string | null;
   readonly #fetch: typeof fetch;
-  readonly #onChange: (record: AppTokens) => void;
+  readonly #store: TokenStore | null;
+  readonly #locks: LockManager | null;
   #refreshing: Promise<RefreshOutcome> | null = null;
   /** When the last refresh landed (Date.now()), or null. */
   #refreshedAt: number | null = null;
 
   constructor(
     record: AppTokens,
-    { helperUrl, fetch: fetchFn = globalThis.fetch, onChange = () => {} }: { helperUrl: string | null; fetch?: typeof fetch; onChange?: (record: AppTokens) => void },
+    {
+      helperUrl,
+      fetch: fetchFn = globalThis.fetch,
+      store = null,
+      locks = globalThis.navigator?.locks ?? null,
+    }: { helperUrl: string | null; fetch?: typeof fetch; store?: TokenStore | null; locks?: LockManager | null },
   ) {
     this.#record = record;
     this.#helperUrl = helperUrl;
     this.#fetch = fetchFn;
-    this.#onChange = onChange;
+    this.#store = store;
+    this.#locks = locks;
   }
 
   /** The sign-in can't be renewed: only signing in again (or a pasted
@@ -309,51 +342,76 @@ export class AppSession {
     return outcome === "ok";
   };
 
-  /** Ends the session: the record keeps no token. */
-  expire(): void {
-    const r = this.#record;
-    if (r.token === "" && r.expiresAt === undefined && r.refreshToken === undefined && r.refreshTokenExpiresAt === undefined) return;
-    this.#record.token = "";
-    delete this.#record.expiresAt;
-    delete this.#record.refreshToken;
-    delete this.#record.refreshTokenExpiresAt;
-    this.#onChange(this.#record);
+  /** Ends the session (GitHub refused it even after a refresh): this
+   * record keeps no token, and the saved one is emptied too, unless
+   * another tab has refreshed it since. */
+  expire(): Promise<void> {
+    return this.#locked(() => this.#clear(this.#record.refreshToken));
+  }
+
+  /** `fn` under the lock every tab's refresh takes, when the browser has
+   * Web Locks. */
+  #locked<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#locks ? (this.#locks.request(REFRESH_LOCK, fn) as Promise<T>) : fn();
+  }
+
+  /** Empties this record, and the saved one while it still holds `held`. */
+  async #clear(held: string | undefined): Promise<void> {
+    this.#adopt({ token: "" });
+    await this.#store?.save({ token: "" }, held).catch(() => false);
+  }
+
+  #adopt(tokens: AppTokens): void {
+    this.#record.token = tokens.token;
+    for (const key of TOKEN_FIELDS) {
+      if (tokens[key] === undefined) delete this.#record[key];
+      else this.#record[key] = tokens[key];
+    }
   }
 
   /** One refresh at a time: requests that need one meanwhile share it. */
   #refresh(): Promise<RefreshOutcome> {
-    this.#refreshing ??= this.#refreshOnce().finally(() => {
+    this.#refreshing ??= this.#locked(() => this.#refreshOnce()).finally(() => {
       this.#refreshing = null;
     });
     return this.#refreshing;
   }
 
+  /** Runs under the lock, so no other tab refreshes meanwhile. */
   async #refreshOnce(): Promise<RefreshOutcome> {
-    const { refreshToken, refreshTokenExpiresAt } = this.#record;
-    if (this.#helperUrl === null || !refreshToken || Date.parse(refreshTokenExpiresAt ?? "") <= Date.now()) {
-      this.expire();
+    const held = this.#record.refreshToken;
+    // Another tab refreshed (or ended) the sign-in since this one read it:
+    // its tokens are the live ones, and this tab's refresh token is spent.
+    const saved = this.#store ? await this.#store.load().catch(() => null) : null;
+    if (saved !== null && saved.refreshToken !== held) {
+      this.#adopt(saved);
+      if (this.expired) return "refused";
+      this.#refreshedAt = Date.now();
+      return "ok";
+    }
+    if (this.#helperUrl === null || !held || Date.parse(this.#record.refreshTokenExpiresAt ?? "") <= Date.now()) {
+      await this.#clear(held);
       return "refused";
     }
     let res: Response;
+    let answer: unknown;
     try {
-      res = await postHelper(this.#fetch, `${this.#helperUrl}/refresh`, { refresh_token: refreshToken });
+      res = await postHelper(this.#fetch, `${this.#helperUrl}/refresh`, { refresh_token: held });
+      answer = await res.json().catch(() => null);
     } catch {
       return "unreachable";
     }
-    if (res.status >= 500) return "unreachable";
-    const tokens = res.ok ? tokensOf(await res.json().catch(() => null)) : null;
-    if (!res.ok) {
-      this.expire();
+    if (res.status === 400 && (answer as { error?: unknown } | null)?.error === "bad_refresh_token") {
+      await this.#clear(held);
       return "refused";
     }
+    const tokens = res.ok ? tokensOf(answer) : null;
     if (!tokens) return "unreachable";
-    this.#record.token = tokens.token;
-    for (const key of ["expiresAt", "refreshToken", "refreshTokenExpiresAt"] as const) {
-      if (tokens[key] === undefined) delete this.#record[key];
-      else this.#record[key] = tokens[key];
-    }
+    this.#adopt(tokens);
     this.#refreshedAt = Date.now();
-    this.#onChange(this.#record);
+    // A save that fails leaves the spent refresh token saved: the next
+    // start then asks to sign in again, which loses nothing.
+    await this.#store?.save(tokens, held).catch(() => false);
     return "ok";
   }
 }

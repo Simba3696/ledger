@@ -549,13 +549,16 @@ interface Syncing {
  * Nothing is written to GitHub. */
 export async function forgetThisDevice(
   engine: Syncing | null,
-  { force = false }: { force?: boolean } = {},
+  { force = false, beforeDelete }: { force?: boolean; beforeDelete?: () => Promise<void> } = {},
 ): Promise<{ ok: true } | { ok: false; pendingCount: number; leftBehindOwnCount: number }> {
   if (engine && !force) {
     if (engine.getState().pendingCount > 0) await engine.syncNow();
     const { pendingCount, leftBehindOwnCount } = engine.getState();
     if (pendingCount > 0 || leftBehindOwnCount > 0) return { ok: false, pendingCount, leftBehindOwnCount };
   }
+  // Once it is decided: the caller stops (and waits for) its own writes to
+  // the device store, so none lands after the delete (#10).
+  await beforeDelete?.();
   await clearSyncState();
   await forgetDevice();
   return { ok: true };

@@ -11,9 +11,11 @@ import {
   startSignIn,
   type AppTokens,
   type SignInConfig,
+  type TokenStore,
 } from "./appAuth";
 import { createGitHubClient, GitHubAuthError } from "./contents";
 import { createFakeGitHub, type FakeGitHub } from "./fakeGitHub";
+import { FakeLocks } from "../sync/localTestkit";
 
 // Sign in with GitHub (#10): the build's settings, PKCE, the return from
 // github.com, and the App session's token source and one refresh, against
@@ -73,6 +75,21 @@ function fakeHelper(answer: (path: string, body: Record<string, string>) => Resp
     return answer(url.pathname, body);
   }) as typeof fetch;
   return { calls, fetch: fetchFn };
+}
+
+/** One saved token record, compare-and-set on its refresh token, as
+ * connection.ts keeps the deviceStore's. */
+function memoryStore(initial: AppTokens): TokenStore & { saved: AppTokens | null } {
+  const store = {
+    saved: { ...initial } as AppTokens | null,
+    load: async () => (store.saved ? { ...store.saved } : null),
+    save: async (next: AppTokens, expected: string | undefined) => {
+      if (!store.saved || store.saved.refreshToken !== expected) return false;
+      store.saved = { ...next };
+      return true;
+    },
+  };
+  return store;
 }
 
 const tokenAnswer = (token: string, expiresIn = 8 * 3600_000) =>
@@ -214,19 +231,34 @@ describe("the App session (token source and one refresh)", () => {
 
   it("refreshes before a request once the token has under 5 minutes left, and not before", async () => {
     const helper = fakeHelper(() => tokenAnswer("ghu_alexnew"));
-    const changes: string[] = [];
-    const fresh = new AppSession(record("ghu_alexold", 6 * 60_000), { helperUrl: HELPER, fetch: helper.fetch, onChange: (r) => changes.push(r.token) });
+    const fresh = new AppSession(record("ghu_alexold", 6 * 60_000), { helperUrl: HELPER, fetch: helper.fetch, locks: null });
     expect(await fresh.token()).toBe("ghu_alexold");
     expect(helper.calls).toEqual([]);
 
     const tokens = record("ghu_alexold", 4 * 60_000);
-    const near = new AppSession(tokens, { helperUrl: HELPER, fetch: helper.fetch, onChange: (r) => changes.push(r.token) });
+    const store = memoryStore(tokens);
+    const near = new AppSession(tokens, { helperUrl: HELPER, fetch: helper.fetch, store, locks: null });
     // Two requests at once share one refresh.
     expect(await Promise.all([near.token(), near.token()])).toEqual(["ghu_alexnew", "ghu_alexnew"]);
     expect(helper.calls).toEqual([{ path: "/refresh", body: { refresh_token: "ghr_alexold" } }]);
-    // The record itself is updated, and whoever keeps it is told.
+    // The record itself is updated, and the saved copy follows.
     expect(tokens).toMatchObject({ token: "ghu_alexnew", refreshToken: "ghr_alexnew" });
-    expect(changes).toEqual(["ghu_alexnew"]);
+    expect(store.saved).toMatchObject({ token: "ghu_alexnew", refreshToken: "ghr_alexnew" });
+  });
+
+  it("takes the token's lifetime from expires_in on this device's clock, not the helper's expires_at", async () => {
+    // The helper's clock is an hour behind: its expires_at is already near.
+    const skewed = (token: string) =>
+      Response.json({ access_token: token, expires_in: 8 * 3600, expires_at: NOW - 3600_000 + 60_000, refresh_token: "ghr_alexnew", refresh_token_expires_in: 180 * 86_400, refresh_token_expires_at: NOW - 3600_000 });
+    const helper = fakeHelper(() => skewed("ghu_alexnew"));
+    const tokens = record("ghu_alexold", 60_000);
+    const session = new AppSession(tokens, { helperUrl: HELPER, fetch: helper.fetch, locks: null });
+    expect(await session.token()).toBe("ghu_alexnew");
+    expect(tokens.expiresAt).toBe(new Date(NOW + 8 * 3600_000).toISOString());
+    expect(tokens.refreshTokenExpiresAt).toBe(new Date(NOW + 180 * 86_400_000).toISOString());
+    // So the next request doesn't refresh again.
+    expect(await session.token()).toBe("ghu_alexnew");
+    expect(helper.calls).toHaveLength(1);
   });
 
   let fake: FakeGitHub;
@@ -246,7 +278,7 @@ describe("the App session (token source and one refresh)", () => {
   it("a 401 refreshes once and the request is retried once with the new token", async () => {
     const helper = fakeHelper(() => tokenAnswer("ghu_alexnew"));
     // GitHub no longer accepts ghu_alexold (revoked early, say).
-    const session = new AppSession(record("ghu_alexold", 3600_000), { helperUrl: HELPER, fetch: helper.fetch });
+    const session = new AppSession(record("ghu_alexold", 3600_000), { helperUrl: HELPER, fetch: helper.fetch, locks: null });
     await expect(clientOver(session, helper.fetch).verifyRepo()).resolves.toEqual({ defaultBranch: "main" });
     expect(helper.calls.map((c) => c.path)).toEqual(["/refresh"]);
     expect(fake.requests.map((r) => r.headers.authorization)).toEqual(["Bearer ghu_alexold", "Bearer ghu_alexnew"]);
@@ -258,20 +290,20 @@ describe("the App session (token source and one refresh)", () => {
     // A refreshed token that is refused too: one refresh, one retry, then the 401.
     fake.revokeToken("ghu_alexnew");
     const again = fakeHelper(() => tokenAnswer("ghu_alexnewer"));
-    const second = new AppSession(record("ghu_alexold", 3600_000), { helperUrl: HELPER, fetch: again.fetch });
+    const second = new AppSession(record("ghu_alexold", 3600_000), { helperUrl: HELPER, fetch: again.fetch, locks: null });
     await expect(clientOver(second, again.fetch).verifyRepo()).rejects.toBeInstanceOf(GitHubAuthError);
     expect(again.calls).toHaveLength(1);
   });
 
-  it("a refused refresh clears the tokens, says the sign-in expired, and refuses later requests without calling anyone", async () => {
+  it("a refresh GitHub refuses (bad_refresh_token) clears the tokens, here and saved, and later requests are refused without calling anyone", async () => {
     const helper = fakeHelper(() => Response.json({ error: "bad_refresh_token" }, { status: 400 }));
     const tokens = record("ghu_alexold", 3600_000);
-    const changes: AppTokens[] = [];
-    const session = new AppSession(tokens, { helperUrl: HELPER, fetch: helper.fetch, onChange: (r) => changes.push({ ...r }) });
+    const store = memoryStore(tokens);
+    const session = new AppSession(tokens, { helperUrl: HELPER, fetch: helper.fetch, store, locks: null });
     await expect(clientOver(session, helper.fetch).verifyRepo()).rejects.toBeInstanceOf(GitHubAuthError);
     expect(session.expired).toBe(true);
     expect(tokens).toEqual({ token: "" });
-    expect(changes).toEqual([{ token: "" }]);
+    expect(store.saved).toEqual({ token: "" });
     const before = fake.requests.length;
     await expect(session.token()).rejects.toThrow(SIGN_IN_EXPIRED);
     expect(await session.onUnauthorized()).toBe(false);
@@ -279,15 +311,93 @@ describe("the App session (token source and one refresh)", () => {
     expect(helper.calls).toHaveLength(1);
   });
 
-  it("a helper that can't be reached keeps the tokens: the request fails as offline, not signed out", async () => {
-    const offline = (async () => {
-      throw new TypeError("Failed to fetch");
-    }) as typeof fetch;
-    const tokens = record("ghu_alexold", 3600_000);
-    const session = new AppSession(tokens, { helperUrl: HELPER, fetch: offline });
-    await expect(session.onUnauthorized()).rejects.toMatchObject({ name: "GitHubNetworkError" });
-    expect(session.expired).toBe(false);
-    expect(tokens.token).toBe("ghu_alexold");
+  it("any other refresh failure (a helper misconfigured or unreachable) keeps the tokens: the request fails as offline, not signed out", async () => {
+    const answers = [
+      () => Response.json({ error: "incorrect_client_credentials" }, { status: 400 }),
+      () => Response.json({ error: "invalid_request" }, { status: 400 }),
+      () => Response.json({ error: "not_found" }, { status: 404 }),
+      () => Response.json({ error: "origin_not_allowed" }, { status: 403 }),
+      () => Response.json({ error: "helper_not_configured" }, { status: 500 }),
+      () => Response.json({ error: "upstream_unavailable" }, { status: 502 }),
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ];
+    for (const answer of answers) {
+      const tokens = record("ghu_alexold", 3600_000);
+      const store = memoryStore(tokens);
+      const session = new AppSession(tokens, { helperUrl: HELPER, fetch: fakeHelper(answer).fetch, store, locks: null });
+      await expect(session.onUnauthorized()).rejects.toMatchObject({ name: "GitHubNetworkError" });
+      expect(session.expired).toBe(false);
+      expect(tokens.token).toBe("ghu_alexold");
+      expect(store.saved?.refreshToken).toBe("ghr_alexold");
+    }
+  });
+});
+
+describe("the App session across tabs (one saved record)", () => {
+  const T1: AppTokens = { token: "ghu_alex1", expiresAt: new Date(NOW + 3600_000).toISOString(), refreshToken: "ghr_alex1", refreshTokenExpiresAt: new Date(NOW + 180 * 86_400_000).toISOString() };
+
+  /** The helper as GitHub runs it: each refresh token works once. */
+  function rotatingHelper() {
+    let n = 1;
+    const spent = new Set<string>();
+    return fakeHelper((_path, body) => {
+      if (spent.has(body.refresh_token) || body.refresh_token !== `ghr_alex${n}`) return Response.json({ error: "bad_refresh_token" }, { status: 400 });
+      spent.add(body.refresh_token);
+      n++;
+      return tokenAnswer(`ghu_alex${n}`);
+    });
+  }
+
+  it("a second tab with the old tokens takes the first tab's refresh instead of spending the used refresh token", async () => {
+    const store = memoryStore({ ...T1 });
+    const locks = new FakeLocks().asLockManager();
+    const helper = rotatingHelper();
+    const tabA = { ...T1 };
+    const tabB = { ...T1 };
+    const a = new AppSession(tabA, { helperUrl: HELPER, fetch: helper.fetch, store, locks });
+    const b = new AppSession(tabB, { helperUrl: HELPER, fetch: helper.fetch, store, locks });
+    expect(await a.onUnauthorized()).toBe(true);
+    expect(store.saved).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+    expect(await b.onUnauthorized()).toBe(true);
+    expect(tabB).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+    expect(helper.calls).toHaveLength(1);
+    expect(store.saved).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+  });
+
+  it("two tabs refreshing at once make one refresh between them", async () => {
+    const store = memoryStore({ ...T1 });
+    const locks = new FakeLocks().asLockManager();
+    const helper = rotatingHelper();
+    const a = new AppSession({ ...T1 }, { helperUrl: HELPER, fetch: helper.fetch, store, locks });
+    const b = new AppSession({ ...T1 }, { helperUrl: HELPER, fetch: helper.fetch, store, locks });
+    expect(await Promise.all([a.onUnauthorized(), b.onUnauthorized()])).toEqual([true, true]);
+    expect(helper.calls).toHaveLength(1);
+    expect(store.saved).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+  });
+
+  it("a tab whose refresh token was refused, or that ends its session, never clears tokens another tab saved since", async () => {
+    const store = memoryStore({ ...T1, token: "ghu_alex2", refreshToken: "ghr_alex2" });
+    // This tab couldn't read the saved record (null), so it spends its own
+    // old refresh token, which GitHub refuses.
+    const blind: TokenStore = { load: async () => null, save: (next, expected) => store.save(next, expected) };
+    const refused = fakeHelper(() => Response.json({ error: "bad_refresh_token" }, { status: 400 }));
+    const stale = new AppSession({ ...T1 }, { helperUrl: HELPER, fetch: refused.fetch, store: blind, locks: null });
+    expect(await stale.onUnauthorized()).toBe(false);
+    expect(stale.expired).toBe(true);
+    expect(store.saved).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+
+    // Replace token's expire, from a tab still holding the old tokens.
+    const other = new AppSession({ ...T1 }, { helperUrl: HELPER, fetch: refused.fetch, store, locks: null });
+    await other.expire();
+    expect(other.expired).toBe(true);
+    expect(store.saved).toMatchObject({ token: "ghu_alex2", refreshToken: "ghr_alex2" });
+
+    // The tab holding the saved tokens does clear them.
+    const current = new AppSession({ ...T1, token: "ghu_alex2", refreshToken: "ghr_alex2" }, { helperUrl: HELPER, fetch: refused.fetch, store, locks: null });
+    await current.expire();
+    expect(store.saved).toEqual({ token: "" });
   });
 });
 
@@ -308,4 +418,25 @@ describe("whether the App reaches a repo", () => {
     expect(await appReaches(token, "smith-household", "ledger-data", fake.fetch)).toBe(true);
     expect(fake.unhandled).toEqual([]);
   });
+
+  it("pages past 100 installations, and past 100 repositories in one", async () => {
+    const repos = [
+      ...Array.from({ length: 105 }, (_, i) => ({ owner: `family${i}`, name: "ledger-data", private: true })),
+      ...Array.from({ length: 150 }, (_, i) => ({ owner: "big-household", name: `repo${String(i).padStart(3, "0")}`, private: true })),
+    ];
+    const fake = createFakeGitHub({
+      repos,
+      tokens: { ghu_alex: { login: "alex", repos: repos.map((r) => `${r.owner}/${r.name}`), permission: "write" } },
+      installations: [
+        ...Array.from({ length: 105 }, (_, i) => ({ id: i + 1, account: `family${i}`, repos: [`family${i}/ledger-data`] })),
+        { id: 500, account: "big-household", repos: "all" as const },
+      ],
+    });
+    const token = () => Promise.resolve("ghu_alex");
+    expect(await appReaches(token, "family104", "ledger-data", fake.fetch)).toBe(true);
+    expect(await appReaches(token, "big-household", "repo149", fake.fetch)).toBe(true);
+    expect(await appReaches(token, "big-household", "repo150", fake.fetch)).toBe(false);
+    const pages = fake.requests.map((r) => r.path).filter((p) => p.includes("page=2"));
+    expect(pages).toEqual(expect.arrayContaining([expect.stringMatching(/^\/user\/installations\?per_page=100&page=2$/), expect.stringMatching(/^\/user\/installations\/500\/repositories\?per_page=100&page=2$/)]));
+  }, 30_000);
 });
