@@ -21,6 +21,7 @@
 import { spawn, spawnSync, execSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,46 +65,97 @@ function killTree(child: ChildProcess): void {
   }
 }
 
+/** Whether anything accepts connections on localhost:`port` (IPv4 or IPv6). */
+async function portInUse(port: number): Promise<boolean> {
+  const tryHost = (host: string) =>
+    new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ port, host });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+    });
+  return (await tryHost("127.0.0.1")) || (await tryHost("::1"));
+}
+
+/** The build's environment: VITE_DEFAULT_MODULES pinned to every section,
+ * so a fork's committed client/.env.github or a developer's client/.env
+ * can't change what the checks expect (Vite lets a variable already in the
+ * environment win over its .env files). */
+const BUILD_ENV = { ...process.env, VITE_DEFAULT_MODULES: "expenses,finances,debts,emi,credit-cards,subscriptions" };
+
 /** Builds the GitHub Pages bundle (client/dist-pages, never client/dist)
  * with `--base /ledger/`, then serves it with `vite preview --mode github`
  * on CLIENT_PORT + 1 (strictPort: a busy port fails rather than moving).
- * Resolves once the page answers. `stop()` kills only the preview's own
- * process tree. */
+ * Refuses to start when something already listens there (another
+ * worktree's preview), and resolves only once its own server answers with
+ * this build's index.html. `stop()` kills only the preview's own process
+ * tree; so do Ctrl+C, SIGTERM and the process exiting. */
 export async function buildAndPreview({ build = true }: { build?: boolean } = {}): Promise<PagesPreview> {
   if (build) {
     console.log(`Building the GitHub Pages bundle (--base ${PAGES_BASE})...`);
     const built = spawnSync("npm", ["run", "build:pages", "-w", "client", "--", "--base", PAGES_BASE], {
       cwd: ROOT,
+      env: BUILD_ENV,
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
       encoding: "utf8",
     });
-    if (built.status !== 0) throw new Error(`build:pages failed:\n${built.stdout}\n${built.stderr}`);
+    if (built.status !== 0) throw new Error(`build:pages failed:
+${built.stdout}
+${built.stderr}`);
+  }
+  if (await portInUse(PREVIEW_PORT)) {
+    throw new Error(`Port ${PREVIEW_PORT} is already in use (another checkout's preview?). Stop it, or give this checkout another VITE_DEV_PORT in client/.env.`);
   }
   const origin = `http://localhost:${PREVIEW_PORT}`;
+  const builtIndex = fs.readFileSync(path.join(ROOT, "client", "dist-pages", "index.html"), "utf8");
   console.log(`Serving client/dist-pages at ${origin}${PAGES_BASE}...`);
   // Vite's own script, run by this Node: no shell, so the PID is vite's.
   const child = spawn(
     process.execPath,
     [path.join(ROOT, "node_modules", "vite", "bin", "vite.js"), "preview", "--mode", "github", "--base", PAGES_BASE, "--strictPort", "--port", String(PREVIEW_PORT)],
-    { cwd: path.join(ROOT, "client"), stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" },
+    { cwd: path.join(ROOT, "client"), env: BUILD_ENV, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" },
   );
   let output = "";
   child.stdout?.on("data", (chunk) => (output += String(chunk)));
   child.stderr?.on("data", (chunk) => (output += String(chunk)));
-  const stop = () => killTree(child);
+  const onSignal = (signal: NodeJS.Signals) => {
+    stop();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const stop = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.off("exit", stop);
+    killTree(child);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("exit", stop);
+  const alive = () => child.exitCode === null && child.signalCode === null;
   const deadline = Date.now() + 30_000;
   for (;;) {
-    if (child.exitCode !== null) throw new Error(`vite preview exited (${child.exitCode}):\n${output}`);
+    if (!alive()) {
+      stop();
+      throw new Error(`vite preview exited (${child.exitCode ?? child.signalCode}):
+${output}`);
+    }
     try {
       const res = await fetch(`${origin}${PAGES_BASE}`);
-      if (res.ok) break;
+      // Ours, still running after it answered, and serving this build.
+      if (res.ok && (await res.text()) === builtIndex) {
+        await sleep(300);
+        if (alive()) break;
+      }
     } catch {
       // not up yet
     }
     if (Date.now() > deadline) {
       stop();
-      throw new Error(`vite preview didn't answer on ${origin}${PAGES_BASE}:\n${output}`);
+      throw new Error(`vite preview didn't serve client/dist-pages on ${origin}${PAGES_BASE}:
+${output}`);
     }
     await sleep(250);
   }
