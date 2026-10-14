@@ -197,7 +197,9 @@ describe("dates at the ends of the calendar (0001 and 9999)", () => {
       await quiesce(w, now, late);
       expectConverged(now, late);
       for (const d of [now, late]) expect(d.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
-    });
+      // Robustness, not speed: two devices' every read takes seconds, past
+      // vitest's 5 s default when the suite runs on a loaded machine.
+    }, 60_000);
   }
 });
 
