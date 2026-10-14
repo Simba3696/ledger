@@ -191,9 +191,17 @@ export interface SubscriptionEdits {
 
 export { ApiError } from "./backend/ApiError";
 
-/** Where every function below sends its call (LedgerBackend.ts). The
- * Supabase build has one backend, the REST API, and no way to swap it. */
-const backend: LedgerBackend = httpBackend;
+/** Where every function below sends its call (LedgerBackend.ts): the REST
+ * API, unless GitHub storage mode puts its own in (installBackend). */
+let backend: LedgerBackend = httpBackend;
+
+/** Puts another backend behind every function below. Called only by GitHub
+ * storage mode (#8's gate), once a ledger is open, with the DocumentBackend
+ * over the synced document. Nothing in the Supabase build calls it, so it
+ * is dropped from that bundle. */
+export function installBackend(next: LedgerBackend): void {
+  backend = next;
+}
 
 /** A section a deployment can turn off with the server's ENABLED_MODULES.
  * The Dashboard is always on. */
