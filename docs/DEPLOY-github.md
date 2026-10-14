@@ -51,9 +51,10 @@ What you need:
 ## 2. One person
 
 Open the Ledger site. The first screen, **Set up Ledger**, offers three ways
-in. Press **Just me**. Ledger then shows three steps; each one opens a page
-on GitHub in a new tab and says exactly what to press there. Do the step on
-GitHub, come back to the Ledger tab and press **Next**.
+in. Press **Just me**. Ledger then shows three steps. The first two each
+open a page on GitHub in a new tab and say exactly what to press there: do
+the step on GitHub, come back to the Ledger tab and press **Next**. The
+third is where you paste your token and press **Connect**.
 
 1. **Create your data repository.** Press **Open GitHub: new repository**.
    On GitHub, check the name is **ledger-data** and **Private** is
@@ -147,7 +148,8 @@ someone set up**). Ledger shows three steps:
 1. **Accept the invitation.** GitHub emailed you an invitation. If you don't
    have a GitHub account yet, create one first, with that email. Type the
    organization's name (the invite link fills it in), press **Open GitHub:
-   the invitation**, press **Join** there, and come back.
+   the invitation**, press **Join** followed by the organization's name
+   (for example **Join smith-household**) there, and come back.
 2. **Create a token for Ledger**, with the organization as **Resource
    owner** and only **ledger-data** selected. Your token may wait for an
    owner's approval; you can paste it now either way.
@@ -185,6 +187,14 @@ GitHub yet, Ledger asks first and offers to sync them. To use Ledger on the
 device again, connect with a token as before; it asks for the passphrase
 again.
 
+**The household's owner on a new device.** Press **My household (I'm
+setting it up)** again and type the organization's name. The organization,
+the repository, the token approval and the invitations already exist, so
+press **Next** past each of those steps without doing them again. Make a
+token (or reuse yours), paste it, and Ledger finds the ledger and asks for
+the passphrase. A member uses **Join a household someone set up** the same
+way.
+
 **Tokens expire.** A token made from Ledger's link lasts a year. When GitHub
 stops accepting it, Ledger shows **Replace your token**: make a new token
 (part 2, step 2, or part 3, step 5), paste it and press **Use this token**.
@@ -199,10 +209,13 @@ In **Settings**, under **Backup**:
   `ledger-backup-2026-10-14.enc` with everything this device shows. It's
   encrypted with the passphrase you use today. Keep it somewhere other than
   GitHub (your computer, a USB stick, another cloud drive).
-- **Restore from a backup file** replaces the whole ledger with the backup,
-  after asking you. Every device switches to the restored ledger, and
-  GitHub keeps the old version in the repository's history. A backup made
-  under another passphrase asks for that passphrase.
+- **Restore from a backup file**: pick the file, and Ledger says what the
+  backup holds. Press **Replace with this backup**, then confirm with
+  **Replace with backup**: the whole ledger is replaced with the backup.
+  Every device switches to the restored ledger, and GitHub keeps the old
+  version in the repository's history. A backup made under another
+  passphrase asks for it first: type it under **This backup's passphrase**
+  and press **Open backup**.
 - Starting fresh on an empty repository, **Create your ledger** has **Have a
   backup file? Start from it instead**: the new ledger holds the backup and
   uses its passphrase.
@@ -211,8 +224,12 @@ In **Settings**, under **Backup**:
 
 What is encrypted: every number, name, note and setting you enter. Each
 file is compressed, then encrypted with AES-GCM-256, with a key made from
-your passphrase by PBKDF2-SHA256 at 600,000 rounds. Ledger's code on
-GitHub Pages holds no data at all.
+your passphrase by PBKDF2-SHA256 at 600,000 rounds. In plain words:
+AES-GCM-256 is the standard lock banks and browsers use, and it also notices
+if anyone changed a file; PBKDF2-SHA256 turns your passphrase into the key
+slowly on purpose (600,000 rounds), so guessing passphrases one after
+another takes far too long. Ledger's code on GitHub Pages holds no data at
+all.
 
 What GitHub (and anyone you give access to the repository) can still see:
 the repository's name, how many files it has and how big they are, and
@@ -275,11 +292,18 @@ In this build, every person connects by pasting a token, as in
 | What Ledger shows | What it means | What to do |
 |---|---|---|
 | "Ledger needs a secure (HTTPS) address to encrypt your data. Open it from an https:// link." | The site was opened over plain `http://`. | Open the `https://` address. |
-| "Wrong passphrase" | The passphrase doesn't open this ledger (or this backup). | Check capitals and spaces. A backup made before a passphrase change needs the old one. |
+| "Wrong passphrase" | The passphrase doesn't open this ledger (or this backup). | Check capitals and spaces. A backup made by another household opens only with its passphrase. |
+| "This is a classic token. Create a fine-grained token instead: it can be limited to just your ledger-data repo." | The pasted token starts with `ghp_`: a classic token, which can reach every repository you own. | Make a fine-grained token (part 2, step 2) and paste that. |
+| "That doesn't look like a GitHub fine-grained token." | What was pasted isn't a token that starts with `github_pat_`. | Copy the token again from GitHub; it starts with `github_pat_`. |
 | "GitHub didn't accept this token. Check you copied all of it." (401) | GitHub doesn't know the token: it was cut short when copied, or it was deleted. | Copy the whole token again (it starts with `github_pat_`), or make a new one. |
-| "Replace your token": "GitHub no longer accepts this token (it expired or was revoked)." (401) | The token expired or was deleted. | Make a new token and paste it (part 5). |
+| "Replace your token": "GitHub no longer accepts this token (it expired or was revoked). Paste a new one." (401, or 403 while syncing) | The token expired or was deleted, or GitHub stopped letting it save (its permissions or the organization's policy changed). | Make a new token and paste it (part 5). |
+| "Needs attention: GitHub access needs renewing." | The sync status line, while GitHub refuses the token. | As for **Replace your token**. |
 | "Can't find *owner*/ledger-data, or this token wasn't given access to it." (404) | The token can't reach the repository: the token's **Resource owner** is wrong (you instead of the organization, or the other way round), **ledger-data** wasn't picked under **Only select repositories**, or an organization owner hasn't approved the token yet ("Your token may be waiting for approval"). | Check the token's settings on GitHub, or ask an owner to approve it under the organization's **Settings**, **Personal access tokens**, **Pending requests**, then press **Check again**. |
+| "*owner*/*repo* is public. Ledger only stores data in a private repository." | The repository was created as Public. | On GitHub, open the repository's **Settings**, and under **Danger Zone** change its visibility to **Private**. Then press **Connect** again. |
 | "This token can read but not save. Set Contents to Read and write." or "Resource not accessible by personal access token" (403) | The token's permissions, or the organization's token policy, don't allow saving. | Edit the token on GitHub so **Contents** is **Read and write**, or check the organization's policy allows fine-grained tokens (part 3, step 3). |
 | "1 to review" next to the sync status, and a note like "*Sam* changed Groceries · amount to 160.00; your 150.00 was replaced." | Two devices changed the same thing before syncing. Every device settles on the same one, the same way, without asking; the device whose change was replaced gets this note. | Press **1 to review**. Press **Use 150.00** (the button names your value) to put yours back, or **Dismiss** to keep theirs. |
 | "Offline, 2 changes not saved yet" with **Try again** | Ledger couldn't reach GitHub, or GitHub kept refusing its saves for now. Your changes are kept on this device. | Check your connection, then press **Try again**. Ledger also tries again by itself when you come back online or reopen the app. |
 | "Ledger is open in another tab. Close it there to use it here." | Only one tab per browser can use Ledger at a time. | Close the other tab. |
+| "Needs attention: the ledger isn't in the GitHub repo." | The repository no longer has the ledger's files (deleted, or the repository was emptied or replaced). | Restore from a backup (part 6), or check you're connected to the right repository. |
+| "This ledger was saved by a newer version of Ledger. Update the app to open it." | Another device uses a newer Ledger than this site. | Reload the page; if you run your own copy, update your fork (part 8). |
+| "This backup was made by a newer version of Ledger. Update the app and try again." | The backup comes from a newer Ledger. | As above, then pick the backup again. |
