@@ -112,10 +112,14 @@ export async function remoteFor(connection: Connection, deps: Deps = {}): Promis
  * (null when GitHub didn't say whose token it is). */
 export class ConnectFailed extends Error {
   readonly owner: string | null;
-  constructor(cause: unknown, owner: string | null) {
+  /** The connection as far as it got: an App sign-in's tokens as its
+   * session left them (a refresh rotates them), for trying again. */
+  readonly connection: Connection | null;
+  constructor(cause: unknown, owner: string | null, connection: Connection | null = null) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = "ConnectFailed";
     this.owner = owner;
+    this.connection = connection;
   }
 }
 
@@ -165,7 +169,7 @@ export async function connect(
     if (connection.kind === "pat" && tokenExpiresAt !== null) connection.expiresAt = tokenExpiresAt;
     return { connection, remote, found, token };
   } catch (err) {
-    throw new ConnectFailed(err, owner);
+    throw new ConnectFailed(err, owner, connection);
   }
 }
 

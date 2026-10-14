@@ -96,11 +96,36 @@ describe("back from github.com: what the gate does (#10)", () => {
 
   it("the install prompt, then Check again with the same tokens once the App is installed", async () => {
     const signedIn = tokens("ghu_alex1");
-    expect(await connectSignedIn("personal", signedIn, null, "other-data", deps)).toEqual({ kind: "install", owner: "alex", repo: "other-data" });
+    expect(await connectSignedIn("personal", signedIn, null, "other-data", deps)).toMatchObject({ kind: "install", owner: "alex", repo: "other-data", tokens: signedIn });
     fake.install({ id: 7, account: "alex", repos: "all" });
     const again = await connectSignedIn("personal", signedIn, null, "other-data", deps);
     expect(again).toMatchObject({ kind: "connected", connected: { connection: { kind: "app", owner: "alex", repo: "other-data", token: "ghu_alex1" } } });
     expect(await connectSignedIn("personal", tokens("ghu_unknown"), null, "ledger-data", deps)).toEqual({ kind: "failed", message: SIGN_IN_INCOMPLETE });
+  });
+
+  it("Check again uses the tokens as the first try left them: a refresh during it spent the original refresh token", async () => {
+    // GitHub's refresh tokens work once: a helper that rotates them.
+    let issued = 1;
+    const spent = new Set<string>();
+    const helperFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).startsWith("https://signin.example.workers.dev")) return fake.fetch(input, init);
+      const { refresh_token } = JSON.parse(String(init?.body)) as { refresh_token: string };
+      if (spent.has(refresh_token)) return Response.json({ error: "bad_refresh_token" }, { status: 400 });
+      spent.add(refresh_token);
+      issued++;
+      fake.setToken(`ghu_alex${issued}`, { login: "alex", repos: [FULL, "alex/other-data"], permission: "write" });
+      return Response.json({ access_token: `ghu_alex${issued}`, expires_in: 28_800, refresh_token: `ghr_alex${issued}`, refresh_token_expires_in: 15_897_600 });
+    }) as typeof fetch;
+    const rotating: Deps = { ...deps, fetch: helperFetch };
+    // A sign-in whose token has under 5 minutes left: the first try refreshes it.
+    const signedIn: AppTokens = { ...tokens("ghu_alex1"), expiresAt: new Date(Date.now() + 4 * 60_000).toISOString() };
+    const first = await connectSignedIn("personal", signedIn, null, "other-data", rotating);
+    expect(first).toMatchObject({ kind: "install", owner: "alex", repo: "other-data", tokens: { token: "ghu_alex2", refreshToken: "ghr_alex2" } });
+    if (first.kind !== "install") throw new Error(first.kind);
+    fake.install({ id: 7, account: "alex", repos: "all" });
+    const again = await connectSignedIn("personal", first.tokens, null, "other-data", rotating);
+    expect(again).toMatchObject({ kind: "connected", connected: { connection: { kind: "app", token: "ghu_alex2", refreshToken: "ghr_alex2" } } });
+    expect(spent.size).toBe(1);
   });
 
   it("reaching Replace token in an App session clears its saved tokens; a pasted token's are left alone", async () => {

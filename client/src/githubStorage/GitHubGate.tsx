@@ -311,7 +311,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
       work.current = { connection: connected.connection, remote: connected.remote, found: connected.found, key: null };
       dispatch({ type: "found", target: targetOf(connected.connection), found: foundOf(connected.found) });
     } else if (outcome.kind === "install") {
-      setAppSignIn({ ...signedIn, connecting: false, install: { owner: outcome.owner, repo: outcome.repo } });
+      setAppSignIn({ ...signedIn, tokens: outcome.tokens, connecting: false, install: { owner: outcome.owner, repo: outcome.repo } });
     } else {
       setAppSignIn({ ...signedIn, connecting: false });
       dispatch({ type: "connectFailed", message: outcome.message, awaitingApproval: false });

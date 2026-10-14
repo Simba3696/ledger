@@ -94,7 +94,9 @@ export async function replaceCredentials(connection: Connection, credentials: st
   }
 }
 
-export type SignedInConnect = { kind: "connected"; connected: Connected } | { kind: "install"; owner: string; repo: string } | { kind: "failed"; message: string };
+/** `tokens` in the install case: the sign-in as this try left it, for
+ * Check again (a refresh during the try spent the original refresh token). */
+export type SignedInConnect = { kind: "connected"; connected: Connected } | { kind: "install"; owner: string; repo: string; tokens: AppTokens } | { kind: "failed"; message: string };
 
 /** Back from signing in with nothing saved: connects with the App's token
  * as a pasted one connects, or asks for the App to be installed on the
@@ -104,7 +106,12 @@ export async function connectSignedIn(path: Path, tokens: AppTokens, owner: stri
     return { kind: "connected", connected: await connect(tokens, { owner, repo }, deps) };
   } catch (err) {
     const cause = err instanceof ConnectFailed ? err.cause : err;
-    if (cause instanceof AppNotInstalledError) return { kind: "install", owner: cause.owner, repo: cause.repo };
+    if (cause instanceof AppNotInstalledError) {
+      const left = err instanceof ConnectFailed ? err.connection : null;
+      const now: AppTokens = left ? { token: left.token } : tokens;
+      if (left) for (const key of ["expiresAt", "refreshToken", "refreshTokenExpiresAt"] as const) if (left[key] !== undefined) now[key] = left[key];
+      return { kind: "install", owner: cause.owner, repo: cause.repo, tokens: now };
+    }
     if (cause instanceof GitHubAuthError) return { kind: "failed", message: SIGN_IN_INCOMPLETE };
     const tried = err instanceof ConnectFailed ? err.owner : owner;
     return { kind: "failed", message: connectError(cause, { owner: tried ?? "your account", repo, ownerIsOrg: path !== "personal" && tried !== null }).message };
