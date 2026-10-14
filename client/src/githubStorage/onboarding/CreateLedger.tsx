@@ -12,11 +12,14 @@ import type { Screen } from "./flow";
 export function CreateLedger({
   screen,
   defaultSections,
+  remembered,
   onCreate,
   onBack,
 }: {
   screen: Extract<Screen, { kind: "create" }>;
   defaultSections: readonly ModuleName[];
+  /** False when this browser won't keep the key: it will ask each time. */
+  remembered: boolean;
   onCreate: (passphrase: string, choices: { modules: ModuleName[]; timeZone: string }) => Promise<void>;
   onBack: () => void;
 }) {
@@ -56,6 +59,7 @@ export function CreateLedger({
         Ledger will keep its data in <strong>{`${screen.target.owner}/${screen.target.repo}`}</strong>, encrypted with a passphrase you choose now.
         {screen.target.ownerIsOrg ? " Everyone in your household will type the same passphrase on their own device." : ""}
       </p>
+      {!remembered && <p className="gh-note">This browser won't remember your passphrase, so you'll enter it each time.</p>}
       <form onSubmit={(e) => void submit(e)} className="gh-choices">
         <fieldset disabled={busy}>
           <label>

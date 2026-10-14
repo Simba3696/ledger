@@ -2,14 +2,14 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { ModuleName } from "../api";
 import { Ledger } from "../App";
 import { checkEnvironment } from "../backend/crypto";
-import { RepoNotFoundError } from "../backend/github/contents";
+import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
 import type { Connection } from "../backend/github/deviceStore";
 import { damagedFileMessage, findLedger, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
 import type { SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
-import { ConnectFailed, connect, createNew, openLedger, remoteFor, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
+import { ConnectFailed, connect, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
 import { readInvite } from "./links";
 import { ConnectStep } from "./onboarding/ConnectStep";
 import { CreateLedger } from "./onboarding/CreateLedger";
@@ -57,7 +57,19 @@ function targetOf(connection: Connection): Target {
 interface OpenLedger {
   engine: SyncEngine;
   token: TokenHolder;
+  remote: SyncRemote;
   connection: Connection;
+}
+
+/** The token was refused (a 401), however it reached the gate. */
+function tokenRefused(err: unknown): boolean {
+  return (err instanceof ConnectFailed ? err.cause : err) instanceof GitHubAuthError;
+}
+
+/** Replace token refuses another account's token: the engine and every
+ * record stamp carry the login this device joined with. */
+function otherAccount(login: string): string {
+  return `This token belongs to another GitHub account. Use a token from ${login}'s account.`;
 }
 
 export function GitHubGate({ deps = {} }: { deps?: Deps }) {
@@ -67,9 +79,18 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   const [sections, setSections] = useState<readonly ModuleName[]>(SECTIONS);
   const [open, setOpen] = useState<OpenLedger | null>(null);
   /** What the steps found so far: the connection, its repo, the ledger
-   * findLedger found, and the key once derived. */
+   * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
+
+  /** A step failed on GitHub: a refused token goes to Replace token (which
+   * keeps everything on the device); anything else is told and can be
+   * tried again. */
+  const failed = useCallback((err: unknown, connection: Connection) => {
+    if (tokenRefused(err)) return dispatch({ type: "tokenRejected" });
+    const cause = err instanceof ConnectFailed ? err.cause : err;
+    dispatch({ type: "found", target: targetOf(connection), found: { kind: "damaged", message: connectError(cause, targetOf(connection)).message } });
+  }, []);
 
   /** Opens the ledger on this device. False when it couldn't, and the flow
    * was told why. */
@@ -78,19 +99,20 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       try {
         const opened = await openLedger(connection, key, start, deps);
         if (opened.kind === "open") {
-          setOpen({ engine: opened.engine, token: opened.token, connection });
+          work.current.remote = opened.remote;
+          work.current.connection = connection;
+          setOpen({ engine: opened.engine, token: opened.token, remote: opened.remote, connection });
           return true;
         }
         work.current.found = opened.found;
         if (opened.kind === "keyChanged") dispatch({ type: "keyChanged" });
         else dispatch({ type: "found", target: targetOf(connection), found: foundOf(opened.found) });
       } catch (err) {
-        const { message } = connectError(err, targetOf(connection));
-        dispatch({ type: "found", target: targetOf(connection), found: { kind: "damaged", message } });
+        failed(err, connection);
       }
       return false;
     },
-    [deps],
+    [deps, failed],
   );
 
   // Start: the browser, this build's settings, what this device saved, and
@@ -120,16 +142,47 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     })();
   }, [openWith]);
 
-  // GitHub refused the token while the ledger is open: Replace token. The
-  // engine keeps every change on the device meanwhile.
+  // While a ledger is open: GitHub refusing the token goes to Replace token
+  // when it starts (not on every later change, so a replacement isn't
+  // undone by the cycle still finishing with the old one), and a first
+  // start that had to wait (another tab held the lock, or "Start as a new
+  // device") runs once the engine can take it.
+  // It depends on the engine alone: Replace token swaps the connection
+  // while the engine still reports the refusal, and re-running here then
+  // would forget it was already told.
+  const engine = open?.engine ?? null;
+  const remote = open?.remote ?? null;
   useEffect(() => {
-    if (!open) return;
+    if (!engine || !remote) return;
+    let last: string | null = null;
+    let joining = false;
     const check = () => {
-      if (open.engine.getState().status === "needsToken") dispatch({ type: "tokenRejected" });
+      const state = engine.getState();
+      if (state.status === "needsToken" && last !== "needsToken") dispatch({ type: "tokenRejected" });
+      last = state.status;
+      const key = work.current.key;
+      if (state.needsInit && state.status !== "locked" && !joining && key) {
+        joining = true;
+        void (async () => {
+          try {
+            const from = await startFromRepo(remote, key);
+            if (from.kind === "start") return void (await engine.initialize(from.start.epoch, from.start.state, { sha: from.start.sha, state: from.start.state }));
+            engine.stop();
+            setOpen(null);
+            work.current.found = from.found;
+            if (from.kind === "keyChanged") dispatch({ type: "keyChanged" });
+            else if (work.current.connection) dispatch({ type: "found", target: targetOf(work.current.connection), found: foundOf(from.found) });
+          } catch (err) {
+            if (work.current.connection) failed(err, work.current.connection);
+          } finally {
+            joining = false;
+          }
+        })();
+      }
     };
     check();
-    return open.engine.subscribe(check);
-  }, [open]);
+    return engine.subscribe(check);
+  }, [engine, remote, failed]);
 
   async function onConnect(path: Path, token: string, owner: string | null, repo: string) {
     try {
@@ -144,18 +197,18 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     }
   }
 
-  /** The ledger in the repo now, for Unlock after a create that found one,
-   * or on a later start. */
-  async function currentLedger(): Promise<LedgerFound> {
-    const { connection } = work.current;
-    work.current.remote ??= await remoteFor(connection!, deps);
-    return findLedger(work.current.remote);
+  /** The repo of the connection the steps hold, built from the saved one on
+   * a later start. */
+  async function currentRemote(connection: Connection): Promise<SyncRemote> {
+    work.current.remote ??= await remoteFor(connection, deps);
+    return work.current.remote;
   }
 
   async function onCreate(passphrase: string, choices: { modules: ModuleName[]; timeZone: string }) {
-    const { connection, remote } = work.current;
-    if (!connection || !remote) return;
+    const { connection } = work.current;
+    if (!connection) return;
     try {
+      const remote = await currentRemote(connection);
       const { key, result } = await createNew({ connection, remote }, passphrase, choices);
       switch (result.kind) {
         case "created": {
@@ -166,10 +219,10 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         }
         case "exists":
           if (result.damagedFile) return dispatch({ type: "created", created: { kind: "failed", message: damagedFileMessage(result.damagedFile) } });
-          work.current.found = await currentLedger();
+          work.current.found = await findLedger(remote);
           return dispatch({ type: "created", created: { kind: "exists" } });
         case "replaced":
-          work.current.found = await currentLedger();
+          work.current.found = await findLedger(remote);
           return dispatch({ type: "created", created: { kind: "replaced" } });
         case "unknown":
           return dispatch({ type: "created", created: { kind: "unknown" } });
@@ -177,6 +230,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
           return dispatch({ type: "created", created: { kind: "failed", message: result.detail } });
       }
     } catch (err) {
+      if (tokenRefused(err)) return dispatch({ type: "tokenRejected" });
       dispatch({ type: "createFailed", message: connectError(err, targetOf(connection), { write: true }).message });
     }
   }
@@ -185,7 +239,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     const { connection } = work.current;
     if (!connection) return;
     try {
-      const found = work.current.found?.kind === "ledger" ? work.current.found : await currentLedger();
+      const found = work.current.found?.kind === "ledger" ? work.current.found : await findLedger(await currentRemote(connection));
       if (found.kind !== "ledger") return dispatch({ type: "found", target: targetOf(connection), found: foundOf(found) });
       const opened = await unlock(found, passphrase);
       if (!opened.ok) {
@@ -198,28 +252,69 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       setRemembered(await remember(connection, opened.key));
       if (await openWith(connection, opened.key, opened.start)) dispatch({ type: "unlocked" });
     } catch (err) {
-      dispatch({ type: "found", target: targetOf(connection), found: { kind: "damaged", message: connectError(err, targetOf(connection)).message } });
+      failed(err, connection);
     }
   }
 
+  /** A new token for the same repo and account. With a ledger open, the
+   * running engine's requests carry it from now on; before one is (a 401
+   * while unlocking or on a later start), the gate goes on from where it
+   * stopped. */
   async function onReplace(token: string) {
-    if (!open) return;
-    const target = targetOf(open.connection);
+    const connection = open?.connection ?? work.current.connection;
+    if (!connection) return;
+    const target = targetOf(connection);
     try {
       const connected = await connect(token, { owner: target.owner, repo: target.repo }, deps);
-      const next: Connection = { ...open.connection, token, login: connected.connection.login };
+      if (connected.connection.login.toLowerCase() !== connection.login.toLowerCase()) {
+        return dispatch({ type: "connectFailed", message: otherAccount(connection.login), awaitingApproval: false });
+      }
+      const next: Connection = { ...connection, token };
       if (connected.connection.expiresAt) next.expiresAt = connected.connection.expiresAt;
       else delete next.expiresAt;
-      open.token.token = token;
-      if (work.current.key) setRemembered(await remember(next, work.current.key));
-      setOpen({ ...open, connection: next });
-      dispatch({ type: "tokenReplaced", target: targetOf(next) });
-      void open.engine.syncNow();
+      work.current.connection = next;
+      work.current.found = connected.found;
+      const key = work.current.key;
+      if (open) {
+        open.token.token = token;
+        if (key) setRemembered(await remember(next, key));
+        setOpen({ ...open, connection: next });
+        dispatch({ type: "tokenReplaced", target: targetOf(next) });
+        void open.engine.syncNow();
+        return;
+      }
+      work.current.remote = connected.remote;
+      if (key) {
+        setRemembered(await remember(next, key));
+        if (await openWith(next, key, null)) dispatch({ type: "opened", target: targetOf(next) });
+        return;
+      }
+      dispatch({ type: "found", target: targetOf(next), found: foundOf(connected.found) });
     } catch (err) {
       const cause = err instanceof ConnectFailed ? err.cause : err;
-      // A token that can't reach this ledger's repo was made for another.
-      const message = cause instanceof RepoNotFoundError ? OTHER_REPO : connectError(cause, target).message;
+      // A token that can't reach this repo was made for another one, or, in
+      // an organization, may still wait for an owner's approval.
+      const message = cause instanceof RepoNotFoundError && !target.ownerIsOrg ? OTHER_REPO : connectError(cause, target).message;
       dispatch({ type: "connectFailed", message, awaitingApproval: false });
+    }
+  }
+
+  /** Try again from a blocked screen: with what this device saved, open
+   * the ledger again; with a connection from the steps, look at the repo
+   * again; with neither, back to the connect card. */
+  async function onRetry() {
+    const { connection, key } = work.current;
+    if (!connection) return dispatch({ type: "retry" });
+    if (key && !open) {
+      if (await openWith(connection, key, null)) dispatch({ type: "opened", target: targetOf(connection) });
+      return;
+    }
+    try {
+      const found = await findLedger(await currentRemote(connection));
+      work.current.found = found;
+      dispatch({ type: "found", target: targetOf(connection), found: foundOf(found) });
+    } catch (err) {
+      failed(err, connection);
     }
   }
 
@@ -256,9 +351,9 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         <StepCard screen={screen} onOrg={(org) => dispatch({ type: "org", org })} onBack={back} onNext={() => dispatch({ type: "next" })} />
       )}
       {screen.kind === "step" && screen.step === "connect" && <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} />}
-      {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} onCreate={onCreate} onBack={back} />}
+      {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onBack={back} />}
       {screen.kind === "unlock" && <Unlock screen={screen} remembered={remembered} onUnlock={onUnlock} onBack={back} />}
-      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => dispatch({ type: "retry" })} onBack={back} />}
+      {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} />}
       {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} />}
     </Shell>
   );

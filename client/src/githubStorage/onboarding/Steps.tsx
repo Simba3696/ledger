@@ -39,7 +39,7 @@ function OrgName({ screen, onOrg }: { screen: StepScreen; onOrg: (org: string) =
   return (
     <>
       <label>
-        Your organization's name
+        {screen.path === "member" ? "The organization's name" : "Your organization's name"}
         <input
           name="org"
           autoComplete="off"
@@ -166,19 +166,25 @@ export function StepCard({ screen, onOrg, onBack, onNext }: { screen: StepScreen
         </>,
       );
     case "accept":
+      // Without an invite link the organization isn't known yet: the
+      // member types it, as the owner did, before any link is shown.
       return card(
         "Accept the invitation",
         <>
-          <p>
-            Someone in your household invited you to <strong>{org}</strong> on GitHub. If you don't have a GitHub account yet, create one first.
-          </p>
-          <GitHubLink href={orgInvitationUrl(org)} testId="gh-open-invitation">
-            Open GitHub: the invitation
-          </GitHubLink>
-          <p>
-            Press <strong>Join {org}</strong>.
-          </p>
+          <p>Someone in your household invited you to their GitHub organization. If you don't have a GitHub account yet, create one first.</p>
+          <OrgName screen={screen} onOrg={onOrg} />
+          {screen.org && (
+            <>
+              <GitHubLink href={orgInvitationUrl(org)} testId="gh-open-invitation">
+                Open GitHub: the invitation
+              </GitHubLink>
+              <p>
+                Press <strong>Join {org}</strong>.
+              </p>
+            </>
+          )}
         </>,
+        <Nav onBack={onBack} onNext={onNext} nextDisabled={!screen.org} />,
       );
     case "token":
       return card(
