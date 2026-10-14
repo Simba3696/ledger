@@ -266,6 +266,16 @@ export interface LeftBehindView {
 }
 
 /** What a restore did (section 9.2). */
+/** What rejoin() did (#8, D34, D35). */
+export type RejoinResult =
+  | { kind: "joined"; epoch: string }
+  | { kind: "notGone" }
+  | { kind: "empty" }
+  | { kind: "unknown" }
+  | { kind: "otherKey"; epoch: string }
+  | { kind: "needsUpdate"; epoch: string }
+  | { kind: "damaged"; epoch: string; damagedFile: DamagedFile };
+
 export type RestoreResult =
   /** The backup is the new epoch's genesis. Clear this device's sync
    * state and reload (#9): the device starts in it as a new device.
@@ -2639,6 +2649,51 @@ export class SyncEngine {
       this.#log("the winning restore's genesis couldn't be read", err);
       return {};
     }
+  }
+
+  /** #8's join from a gone epoch (ADR-0008 STAGE-8, owner decision D34):
+   * this device's epoch was deleted on GitHub, so it can't sync, and the
+   * cycle never moves it on its own (a listing that doesn't count it may
+   * only be stale). Asked by the person, with a fresh listing, it switches
+   * to the epoch that wins now as a restore's switch does, with the gone
+   * epoch's cut {} (section 9.3): everything it held there that the winner
+   * doesn't is left behind, this device's own changes as its own group,
+   * shown first (D18), so Re-apply brings them in. Nothing is dropped and
+   * nothing is written to GitHub but this device's first log in the
+   * winner, once the cycle runs.
+   * - "notGone": the epoch counts in the listing; nothing to do.
+   * - "empty": no ledger in the repo; #8 offers to create one from this
+   *   device (createLedger, reason "restore"), then rejoin.
+   * - "unknown": GitHub cut the listing short, or a switch got there first;
+   *   try again.
+   * - "otherKey": the winner is under another passphrase's salt (a racing
+   *   create's, or a changed passphrase). This device's records are sealed
+   *   with its own key, so it can't carry them over (owner decision D35):
+   *   #8 offers a backup of this device, then Forget and join.
+   * - "needsUpdate" / "damaged": the winner can't be read here. */
+  async rejoin(): Promise<RejoinResult> {
+    if (this.#stopped || this.#superseded || !this.#lockHeld || this.#meta === null || this.#remote === null) return Promise.reject(new Error("This device can't join a ledger now"));
+    const ref = await this.#head(false);
+    if (ref.kind === "empty") return { kind: "empty" };
+    if (ref.kind !== "head") return { kind: "unknown" };
+    const listing = await this.#list(ref.commitSha, ref.etag);
+    if (listing.truncated) return { kind: "unknown" };
+    const from = this.#meta.epochKey;
+    const names = [...listing.files.keys()];
+    const winner = winningEpoch(names);
+    if (winner === null) return { kind: "empty" };
+    if (epochCounted(names, from)) return { kind: "notGone" };
+    const name = repoFileName({ kind: "genesis", epoch: winner });
+    const read = await this.#read(name, listing.files.get(name)!);
+    if (!read.ok || read.read.file.kind !== "genesis") {
+      const problem = read.ok ? "malformed" : read.problem;
+      if (problem === "needsUpdate") return { kind: "needsUpdate", epoch: winner };
+      if (problem === "foreignKey") return { kind: "otherKey", epoch: winner };
+      return { kind: "damaged", epoch: winner, damagedFile: damagedGenesis(winner, problem, epochJoined(names, winner)) };
+    }
+    if (!(await this.#switchToListed(listing, winner, true))) return { kind: "unknown" };
+    void this.sync();
+    return { kind: "joined", epoch: winner };
   }
 
   /** Export (#9, section 9.5): the current document, sealed with the

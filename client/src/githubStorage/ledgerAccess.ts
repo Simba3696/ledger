@@ -190,3 +190,11 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
   installBackend(backend);
   return { kind: "open", engine, backend, token, remote };
 }
+
+/** "Create a new ledger from this device" (#8, the join from a gone epoch
+ * with no ledger left in the repo): a genesis of what this device shows
+ * now, as a restore of it, which rejoin then switches the device into,
+ * carrying whatever the genesis doesn't already hold. */
+export async function createFromDevice(engine: SyncEngine, remote: SyncRemote, key: DeviceKey, by: string, now: () => number = Date.now): Promise<CreateResult> {
+  return createLedger(remote, key, { doc: structuredClone(engine.current()), by, at: now(), reason: "restore" });
+}
