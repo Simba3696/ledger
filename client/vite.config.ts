@@ -19,11 +19,17 @@ export default defineConfig(({ mode }) => {
   // drops the GitHub branch and its dynamic import entirely.
   const storage = mode === 'github' ? 'github' : 'supabase'
   const github = storage === 'github'
+  // Sign in with GitHub (#10, ADR-0009), GitHub build only: with all three
+  // settings the helper's origin joins the CSP's connect-src. With any one
+  // missing or blank, all three are built in as "", so no part of them (a
+  // lone helper URL, say) reaches the bundle, and there is no button.
+  const signIn = github ? signInSettings(env) : null
 
   return {
-    plugins: github ? [react(), pagesBaseFiles()] : [react()],
+    plugins: github ? [react(), pagesBaseFiles(signIn ? [signIn.helperOrigin] : [])] : [react()],
     define: {
       __LEDGER_STORAGE__: JSON.stringify(storage),
+      ...(github && !signIn ? NO_SIGN_IN : {}),
     },
     // Netlify publishes client/dist (netlify.toml), so the GitHub build
     // writes elsewhere and never touches it. The Pages base comes from
@@ -39,28 +45,53 @@ export default defineConfig(({ mode }) => {
   }
 })
 
+const SIGN_IN_SETTINGS = ['VITE_GITHUB_APP_CLIENT_ID', 'VITE_GITHUB_APP_SLUG', 'VITE_GITHUB_SIGNIN_HELPER_URL'] as const
+
+/** What a GitHub build without (all of) the sign-in settings defines them
+ * as: blank, as appAuth's signInConfig() reads "no sign-in". */
+const NO_SIGN_IN = Object.fromEntries(SIGN_IN_SETTINGS.map((name) => [`import.meta.env.${name}`, '""']))
+
+/** The sign-in helper's origin, when all three sign-in settings are set
+ * and non-blank, else null. A helper URL that isn't one stops the build. */
+function signInSettings(env: Record<string, string>): { helperOrigin: string } | null {
+  const clientId = env.VITE_GITHUB_APP_CLIENT_ID?.trim()
+  const slug = env.VITE_GITHUB_APP_SLUG?.trim()
+  const helperUrl = env.VITE_GITHUB_SIGNIN_HELPER_URL?.trim()
+  if (!clientId || !slug || !helperUrl) return null
+  let helperOrigin: string
+  try {
+    helperOrigin = new URL(helperUrl).origin
+  } catch {
+    throw new Error(`VITE_GITHUB_SIGNIN_HELPER_URL is not a URL: ${helperUrl}`)
+  }
+  return { helperOrigin }
+}
+
 // The GitHub Pages build's Content-Security-Policy. It mirrors the header in
 // netlify.toml, except that connect-src allows GitHub's API instead of
-// Supabase. frame-ancestors is left out: browsers ignore it in a meta tag.
-const PAGES_CSP = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data:",
-  "connect-src 'self' https://api.github.com",
-  "manifest-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-].join('; ')
+// Supabase, plus the sign-in helper when the build has one (#10).
+// frame-ancestors is left out: browsers ignore it in a meta tag.
+function pagesCsp(connectExtra: string[]): string {
+  return [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    ["connect-src 'self' https://api.github.com", ...connectExtra].join(' '),
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; ')
+}
 
 // GitHub mode only. A project Pages site is served under /<repo>/, so the
 // PWA files that name absolute paths must carry the base. Rewrites the
 // manifest copied into the output folder (client/public's copy stays the
 // single source and is never edited), and is the one place GitHub-mode-only
 // tags (the CSP meta) are added to index.html.
-function pagesBaseFiles(): Plugin {
+function pagesBaseFiles(connectExtra: string[]): Plugin {
   let base = '/'
   let outDir = ''
   let publicDir = ''
@@ -83,7 +114,7 @@ function pagesBaseFiles(): Plugin {
       // placed right after the charset so it covers every later tag.
       const charset = /<meta charset="UTF-8" \/>/i
       if (!charset.test(based)) throw new Error('index.html has no <meta charset="UTF-8" /> to put the CSP after')
-      return based.replace(charset, (tag) => `${tag}\n    <meta http-equiv="Content-Security-Policy" content="${PAGES_CSP}" />`)
+      return based.replace(charset, (tag) => `${tag}\n    <meta http-equiv="Content-Security-Policy" content="${pagesCsp(connectExtra)}" />`)
     },
     async writeBundle() {
       const source = JSON.parse(await readFile(path.join(publicDir, 'manifest.webmanifest'), 'utf8')) as {

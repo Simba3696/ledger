@@ -6,7 +6,8 @@ import { clearSyncState } from "../backend/sync/persist";
 import { httpBackend } from "../backend/HttpBackend";
 import { checkEnvironment } from "../backend/crypto";
 import { DialogHost } from "../components/Dialog";
-import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
+import { startSignIn, type AppTokens, type SignInResult, type SignInResume } from "../backend/github/appAuth";
+import { GitHubAuthError } from "../backend/github/contents";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
 import { compareEpochKeys } from "../backend/sync/epoch";
@@ -17,11 +18,24 @@ import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
 import { confirmAndForget } from "./forgetFlow";
 import { EpochGonePanel } from "./EpochGonePanel";
-import { ConnectFailed, connect, createFromDevice, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
+import {
+  ConnectFailed,
+  connect,
+  createFromDevice,
+  createNew,
+  openLedger,
+  remoteFor,
+  signInConfigOf,
+  startFromRepo,
+  unlock,
+  type Deps,
+  type Start,
+  type TokenHolder,
+} from "./ledgerAccess";
 import { readInvite } from "./links";
-import { ConnectStep } from "./onboarding/ConnectStep";
+import { ConnectStep, type ConnectSignIn } from "./onboarding/ConnectStep";
 import { CreateLedger } from "./onboarding/CreateLedger";
-import { CREATE_UNKNOWN, flow, initialScreen, type FlowEvent, type Path, type Target } from "./onboarding/flow";
+import { CREATE_UNKNOWN, flow, initialScreen, type FlowEvent, type Path, type Screen, type Target } from "./onboarding/flow";
 import { Blocked, Misconfigured, Unsupported } from "./onboarding/Messages";
 import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
@@ -36,7 +50,8 @@ import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
 import { SyncPanel } from "./sync/SyncPanel";
-import { connectError, OTHER_REPO, TOKEN_REFUSED } from "./token";
+import { connectSignedIn, expireOnReplace, planReturn, replaceCredentials, replaceSignIn } from "./signInFlow";
+import { connectError, TOKEN_REFUSED } from "./token";
 
 // GitHub mode's gate (#8): from a fresh browser to an open ledger. flow.ts
 // decides which screen shows; this does the work each step needs (the
@@ -81,13 +96,21 @@ function tokenRefused(err: unknown): boolean {
   return (err instanceof ConnectFailed ? err.cause : err) instanceof GitHubAuthError;
 }
 
-/** Replace token refuses another account's token: the engine and every
- * record stamp carry the login this device joined with. */
-function otherAccount(login: string): string {
-  return `This token belongs to another GitHub account. Use a token from ${login}'s account.`;
+/** A sign-in with GitHub (#10) back from github.com, not yet connected:
+ * its tokens (held in memory only, until a ledger opens and the connection
+ * is saved), the repo it is for, and the install prompt when the App
+ * can't reach that repo. */
+interface AppSignIn {
+  tokens: AppTokens;
+  path: Path;
+  owner: string | null;
+  repo: string;
+  connecting: boolean;
+  install: { owner: string; repo: string } | null;
 }
 
-export function GitHubGate({ deps = {} }: { deps?: Deps }) {
+/** `signIn`: what completeSignIn() found on this page load (#10). */
+export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: Deps; signIn?: SignInResult }) {
   const [screen, dispatch] = useReducer(flow, undefined, initialScreen);
   const [started, setStarted] = useState(false);
   const [remembered, setRemembered] = useState(true);
@@ -105,12 +128,19 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
   /** Settings' backup was interrupted by a refused token (#9). */
   const [backupNotice, setBackupNotice] = useState<string | null>(null);
+  /** Back from signing in with GitHub, connecting (#10). */
+  const [appSignIn, setAppSignIn] = useState<AppSignIn | null>(null);
+  /** A word about a sign-in that has no screen of its own (#10). */
+  const [signInNotice, setSignInNotice] = useState<string | null>(null);
+  const signInSettings = signInConfigOf(deps);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
   /** forgotten(), for the engine watcher (an effect that outlives renders). */
   const forgottenRef = useRef<() => void>(() => {});
+  /** What the start effect needs for a return from github.com (#10). */
+  const signInRef = useRef<{ result: SignInResult; replaceToken: typeof replaceToken; onConnectApp: typeof onConnectApp } | null>(null);
 
   /** A step failed on GitHub: a refused token goes to Replace token (which
    * keeps everything on the device); anything else is told and can be
@@ -176,9 +206,38 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         invite: readInvite(globalThis.location?.search ?? ""),
       });
       setStarted(true);
-      if (environment.ok && defaults.ok && saved.connection && saved.key) await openWith(saved.connection, saved.key, null);
+      if (!environment.ok || !defaults.ok) return;
+      // Back from github.com (#10).
+      const { result, replaceToken, onConnectApp } = signInRef.current!;
+      const plan = planReturn(result, saved.connection !== null);
+      if (plan.kind === "replace" || plan.kind === "replaceFailed") {
+        // Signed in again from Replace token: the new sign-in takes the
+        // old token's place (same account, same repo), and the ledger
+        // opens as it would have, unsynced changes included.
+        const error = plan.kind === "replaceFailed" ? plan.message : await replaceToken(plan.tokens);
+        if (error) {
+          dispatch({ type: "tokenRejected" });
+          dispatch({ type: "connectFailed", message: error, awaitingApproval: false });
+        }
+        return;
+      }
+      if (plan.kind === "connect") {
+        dispatch(plan.event);
+        if (plan.tokens) await onConnectApp(plan.event.path, plan.tokens, plan.event.owner, plan.event.repo);
+        return;
+      }
+      if (plan.kind === "notice") setSignInNotice(plan.message);
+      if (saved.connection && saved.key) await openWith(saved.connection, saved.key, null);
     })();
   }, [openWith]);
+
+  // GitHub refused an App session's token even after a refresh (#10): its
+  // tokens are cleared on the device, and Replace token asks to sign in
+  // again. Unsynced changes stay in the sync state.
+  useEffect(() => {
+    if (screen.kind !== "replaceToken") return;
+    void expireOnReplace(open?.connection ?? work.current.connection, deps);
+  }, [screen.kind, open, deps]);
 
   // While a ledger is open: GitHub refusing the token goes to Replace token
   // when it starts (not on every later change, so a replacement isn't
@@ -247,6 +306,47 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       const { message, awaitingApproval } = connectError(cause, { owner: tried ?? "your account", repo, ownerIsOrg: path !== "personal" && tried !== null });
       dispatch({ type: "connectFailed", message, awaitingApproval });
     }
+  }
+
+  /** Back from signing in with GitHub (#10): connects with the App's token
+   * as onConnect does with a pasted one. A repo the App isn't installed on
+   * gets the install prompt; Check again comes back here with the same
+   * tokens, so nobody signs in twice. */
+  async function onConnectApp(path: Path, tokens: AppTokens, owner: string | null, repo: string) {
+    const signedIn: AppSignIn = { tokens, path, owner, repo, connecting: true, install: null };
+    setAppSignIn(signedIn);
+    const outcome = await connectSignedIn(path, tokens, owner, repo, deps);
+    if (outcome.kind === "connected") {
+      const { connected } = outcome;
+      setAppSignIn(null);
+      work.current = { connection: connected.connection, remote: connected.remote, found: connected.found, key: null };
+      dispatch({ type: "found", target: targetOf(connected.connection), found: foundOf(connected.found) });
+    } else if (outcome.kind === "install") {
+      setAppSignIn({ ...signedIn, tokens: outcome.tokens, connecting: false, install: { owner: outcome.owner, repo: outcome.repo } });
+    } else {
+      setAppSignIn({ ...signedIn, connecting: false });
+      dispatch({ type: "connectFailed", message: outcome.message, awaitingApproval: false });
+    }
+  }
+
+  /** Leaves for github.com to sign in (#10), to come back to `resume`. */
+  async function beginSignIn(resume: SignInResume): Promise<void> {
+    if (!signInSettings) return;
+    await startSignIn(signInSettings, resume, deps.navigate ? { navigate: deps.navigate } : {});
+  }
+
+  /** The connect card's Sign in with GitHub (#10), when this build has it. */
+  function connectSignIn(card: Extract<Screen, { kind: "step" }>): ConnectSignIn | null {
+    if (!signInSettings) return null;
+    const mine = appSignIn !== null && appSignIn.path === card.path ? appSignIn : null;
+    return {
+      onSignIn: (owner, repo) => beginSignIn({ path: card.path, org: card.org, owner, repo }),
+      connecting: mine?.connecting ?? false,
+      install:
+        mine?.install != null
+          ? { ...mine.install, slug: signInSettings.slug, onCheckAgain: () => onConnectApp(mine.path, mine.tokens, mine.owner, mine.repo) }
+          : null,
+    };
   }
 
   /** The repo of the connection the steps hold, built from the saved one on
@@ -361,22 +461,21 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   }
 
   /** onReplace's work, shared with Settings: what to tell the person, or
-   * null once the new token is in use. */
-  async function replaceToken(token: string): Promise<string | null> {
+   * null once the new token is in use. `credentials` is a pasted token, or
+   * a new GitHub sign-in's tokens (#10); either kind can replace either. */
+  async function replaceToken(credentials: string | AppTokens): Promise<string | null> {
     const connection = open?.connection ?? work.current.connection;
     if (!connection) return null;
-    const target = targetOf(connection);
+    const replaced = await replaceCredentials(connection, credentials, deps);
+    if (!replaced.ok) return replaced.message;
+    const { next, connected } = replaced;
     try {
-      const connected = await connect(token, { owner: target.owner, repo: target.repo }, deps);
-      if (connected.connection.login.toLowerCase() !== connection.login.toLowerCase()) return otherAccount(connection.login);
-      const next: Connection = { ...connection, token };
-      if (connected.connection.expiresAt) next.expiresAt = connected.connection.expiresAt;
-      else delete next.expiresAt;
       work.current.connection = next;
       work.current.found = connected.found;
       const key = work.current.key;
       if (open) {
-        open.token.token = token;
+        open.token.token = next.token;
+        open.token.app = connected.token.app;
         if (key) setRemembered(await remember(next, key));
         setOpen({ ...open, connection: next });
         dispatch({ type: "tokenReplaced", target: targetOf(next) });
@@ -392,10 +491,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       dispatch({ type: "found", target: targetOf(next), found: foundOf(connected.found) });
       return null;
     } catch (err) {
-      const cause = err instanceof ConnectFailed ? err.cause : err;
-      // A token that can't reach this repo was made for another one, or, in
-      // an organization, may still wait for an owner's approval.
-      return cause instanceof RepoNotFoundError && !target.ownerIsOrg ? OTHER_REPO : connectError(cause, target).message;
+      return connectError(err, targetOf(next)).message;
     }
   }
 
@@ -419,6 +515,8 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   }
 
   forgottenRef.current = forgotten;
+  // The sign-in result is this page load's, read once by the start effect.
+  signInRef.current = { result: signIn, replaceToken, onConnectApp };
 
   /** Forget this device from a screen that can't open the ledger (a dead
    * token, a ledger that won't open): the open engine, if there is one,
@@ -504,6 +602,14 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         bar={
           <>
             <SyncPanel />
+            {signInNotice && (
+              <p className="sync-message-line" role="status" data-testid="gh-signin-notice">
+                {signInNotice}{" "}
+                <button type="button" className="gh-secondary" onClick={() => setSignInNotice(null)}>
+                  OK
+                </button>
+              </p>
+            )}
             {restoreNote && (
               <p className="sync-message-line" role="status" data-testid="gh-restore-note">
                 {restoreNote}{" "}
@@ -518,7 +624,8 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
                 <Settings
               engine={open.engine}
               backend={open.backend}
-              connection={{ ...target, login: open.connection.login, expiresAt: open.connection.expiresAt }}
+              // An App token's 8-hour expiry renews itself: not a token to warn about.
+              connection={{ ...target, login: open.connection.login, expiresAt: open.connection.kind === "pat" ? open.connection.expiresAt : undefined }}
               onDone={(changed) => {
                 setBackupNotice(null);
                 if (changed) setSettingsRevision((n) => n + 1);
@@ -561,19 +668,40 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   }
 
   const back = () => dispatch({ type: "back" });
+  const signInAgain = replaceSignIn((open?.connection ?? work.current.connection)?.kind, signInSettings !== null, remembered);
   return (
     <Shell>
+      {signInNotice && (
+        <p className="sync-message-line" role="status" data-testid="gh-signin-notice">
+          {signInNotice}
+        </p>
+      )}
       {screen.kind === "unsupported" && <Unsupported screen={screen} />}
       {screen.kind === "misconfigured" && <Misconfigured screen={screen} />}
       {screen.kind === "welcome" && <Welcome onChoose={(path) => dispatch({ type: "choose", path })} />}
       {screen.kind === "step" && screen.step !== "connect" && (
         <StepCard screen={screen} onOrg={(org) => dispatch({ type: "org", org })} onBack={back} onNext={() => dispatch({ type: "next" })} />
       )}
-      {screen.kind === "step" && screen.step === "connect" && <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} />}
+      {screen.kind === "step" && screen.step === "connect" && (
+        <ConnectStep key={screen.path} screen={screen} onConnect={(token, owner, repo) => onConnect(screen.path, token, owner, repo)} onBack={back} signIn={connectSignIn(screen)} />
+      )}
       {screen.kind === "create" && <CreateLedger screen={screen} defaultSections={sections} remembered={remembered} onCreate={onCreate} onRestoreBackup={onRestoreBackup} onBack={back} />}
       {screen.kind === "unlock" && <Unlock screen={screen} remembered={remembered} onUnlock={onUnlock} onBack={back} />}
       {screen.kind === "blocked" && <Blocked screen={screen} onRetry={() => void onRetry()} onBack={back} onForget={work.current.connection ? onForget : undefined} />}
-      {screen.kind === "replaceToken" && <ReplaceToken screen={screen} onReplace={onReplace} onForget={onForget} />}
+      {screen.kind === "replaceToken" && (
+        <ReplaceToken
+          screen={screen}
+          onReplace={onReplace}
+          onForget={onForget}
+          signIn={
+            signInAgain && {
+              message: signInAgain.message,
+              note: signInAgain.note,
+              onSignIn: signInAgain.canSignIn ? () => beginSignIn({ path: null, org: null, owner: screen.target.owner, repo: screen.target.repo }) : null,
+            }
+          }
+        />
+      )}
       <DialogHost />
     </Shell>
   );

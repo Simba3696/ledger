@@ -50,6 +50,9 @@ const FORBIDDEN_IN_DEFAULT = [
   'ledger-data',
   'Forget this device',
   'ledger-backup',
+  'login/oauth',
+  'ledger:github-signin',
+  'user/installations',
 ]
 
 // No file in the default build may have these in its name.
@@ -57,7 +60,10 @@ const FORBIDDEN_IN_DEFAULT_FILE_NAMES = ['github', 'DocumentBackend']
 
 // Literals the GitHub build must contain (client/src/backend/github), behind
 // the dynamic import: present in a non-entry chunk, absent from the entry.
-const POSITIVE_CONTROL = ['.genesis.enc', 'api.github.com', 'PBKDF2', 'ledger:github', 'ledger:document-backend']
+// #10's three sign-in sentinels are here too, so a sentinel that stopped
+// reaching the GitHub build can't make the default build's check pass
+// vacuously.
+const POSITIVE_CONTROL = ['.genesis.enc', 'api.github.com', 'PBKDF2', 'ledger:github', 'ledger:document-backend', 'login/oauth', 'ledger:github-signin', 'user/installations']
 
 // GitHub Pages can't send headers, so the GitHub build carries its
 // Content-Security-Policy as a meta tag (client/vite.config.ts). The default

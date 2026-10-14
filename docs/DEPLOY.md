@@ -252,6 +252,11 @@ Don't set these on Netlify:
 - `VITE_DEFAULT_MODULES`: read only by the GitHub storage build (the
   sections a new ledger starts with). This Netlify build ignores it; use
   `ENABLED_MODULES`.
+- `VITE_GITHUB_APP_CLIENT_ID`, `VITE_GITHUB_APP_SLUG`,
+  `VITE_GITHUB_SIGNIN_HELPER_URL`: the optional "Sign in with GitHub"
+  button, which belongs to GitHub storage mode only (see
+  `docs/DEPLOY-github.md` and `signin-helper/README.md`). This Netlify
+  build ignores them.
 
 ## 8. Create the Netlify site and deploy
 

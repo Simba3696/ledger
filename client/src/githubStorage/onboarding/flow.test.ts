@@ -110,4 +110,25 @@ describe("the GitHub gate's flow (#8)", () => {
     const blocked = run([{ type: "found", target: alex, found: { kind: "unknown" } }], run([start({ saved: { target: alex, hasKey: true } })]));
     expect(run([{ type: "opened", target: alex }], blocked)).toEqual({ kind: "app", target: alex });
   });
+
+  it("back from signing in with GitHub (#10): the connect card of the path it started on, with the error if it failed", () => {
+    const back = { type: "signInReturned", path: "household", org: "smith-household", owner: "smith-household", repo: "ledger-data" } as const;
+    expect(run([start(), { ...back, error: null }])).toEqual({
+      kind: "step",
+      path: "household",
+      step: "connect",
+      org: "smith-household",
+      owner: "smith-household",
+      repo: "ledger-data",
+      error: null,
+      awaitingApproval: false,
+    });
+    expect(run([start(), { ...back, path: "personal", org: null, owner: null, error: "Sign-in didn't complete. Try again." }])).toMatchObject({
+      path: "personal",
+      step: "connect",
+      error: "Sign-in didn't complete. Try again.",
+    });
+    // A device that already opened something isn't moved.
+    expect(run([start({ saved: { target: alex, hasKey: true } }), { ...back, error: null }])).toEqual({ kind: "app", target: alex });
+  });
 });

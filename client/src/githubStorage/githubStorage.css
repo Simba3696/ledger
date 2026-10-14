@@ -165,3 +165,25 @@
   flex-direction: column;
   gap: 8px;
 }
+
+/* Sign in with GitHub (#10): the button above the token paste, and the
+   install prompt when the App can't reach the repository yet. */
+.gh-signin,
+.gh-install {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gh-install {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.gh-or {
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  margin: 4px 0;
+}

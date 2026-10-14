@@ -1,0 +1,6 @@
+# Cloudflare Workers settings for the sign-in helper (README.md). No
+# secrets and no ALLOWED_ORIGINS here: set those in Cloudflare
+# (.dev.vars.example says how).
+name = "ledger-signin-helper"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"

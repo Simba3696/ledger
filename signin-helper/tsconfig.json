@@ -1,0 +1,22 @@
+{
+  // The helper runs in a Workers-style runtime: Web APIs only, so no Node
+  // types anywhere (a `node:` import or `process` fails to compile). The
+  // tests stay Node-free too (test/vite-raw.d.ts).
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src", "test"]
+}

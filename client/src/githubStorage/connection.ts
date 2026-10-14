@@ -1,3 +1,4 @@
+import { clearSignInState, type AppTokens, type TokenStore } from "../backend/github/appAuth";
 import { forgetThisDevice, takeRestoredEpoch } from "../backend/sync/ledgerRepo";
 import { DeviceStoreUnavailableError, loadConnection, loadKey, saveConnection, saveKey, type Connection, type StoredKey } from "../backend/github/deviceStore";
 
@@ -10,6 +11,12 @@ import { DeviceStoreUnavailableError, loadConnection, loadKey, saveConnection, s
 
 /** Set once the device store turned out to be unusable in this tab. */
 let memory: { connection: Connection | null; key: StoredKey | null } | null = null;
+
+/** Bumped when Forget this device is about to delete the device store: a
+ * token store made before it never reads or writes again (#10). */
+let generation = 0;
+/** Token saves under way, which Forget waits for before deleting. */
+const saving = new Set<Promise<boolean>>();
 
 export interface Saved {
   connection: Connection | null;
@@ -48,6 +55,61 @@ export async function remember(connection: Connection, key: StoredKey): Promise<
   }
 }
 
+const TOKEN_FIELDS = ["expiresAt", "refreshToken", "refreshTokenExpiresAt"] as const;
+
+const tokensOf = (saved: Connection): AppTokens => {
+  const tokens: AppTokens = { token: saved.token };
+  for (const key of TOKEN_FIELDS) if (saved[key] !== undefined) tokens[key] = saved[key];
+  return tokens;
+};
+
+/** Where a signed-in App session (#10) keeps its tokens: the saved
+ * connection, when it is this one (same account and repo, kind "app").
+ * `connection` is read at each call, so it may still be filling in.
+ * Saves are compare-and-set on the refresh token, so a tab holding old
+ * tokens never overwrites newer ones another tab saved; the session calls
+ * both under its cross-tab lock. A connection not yet remembered
+ * (onboarding keeps it in memory until a ledger opens) saves nothing. */
+export function appTokenStore(connection: Pick<Connection, "owner" | "repo" | "login">): TokenStore {
+  const born = generation;
+  const same = (saved: Connection | null): saved is Connection =>
+    saved !== null && saved.kind === "app" && saved.owner === connection.owner && saved.repo === connection.repo && saved.login === connection.login;
+  const read = async (): Promise<Connection | null> => {
+    if (memory) return memory.connection;
+    try {
+      return await loadConnection();
+    } catch (err) {
+      if (err instanceof DeviceStoreUnavailableError) return null;
+      throw err;
+    }
+  };
+  return {
+    async load() {
+      if (generation !== born) return null;
+      const saved = await read();
+      return same(saved) ? tokensOf(saved) : null;
+    },
+    save(next, expected) {
+      const run = (async () => {
+        if (generation !== born) return false;
+        const saved = await read();
+        if (generation !== born || !same(saved) || saved.refreshToken !== expected) return false;
+        const updated: Connection = { ...saved, token: next.token };
+        for (const key of TOKEN_FIELDS) {
+          if (next[key] === undefined) delete updated[key];
+          else updated[key] = next[key];
+        }
+        if (memory) memory = { ...memory, connection: updated };
+        else await saveConnection(updated);
+        return true;
+      })();
+      saving.add(run);
+      void run.finally(() => saving.delete(run)).catch(() => {});
+      return run;
+    },
+  };
+}
+
 /** What a device holds that GitHub doesn't: changes not yet pushed, and
  * groups of its own changes a restore left behind (which no sync sends;
  * only Re-apply does). */
@@ -72,7 +134,13 @@ export async function forget(engine: ForgetEngine, options: { force?: boolean; c
   }
   let done: Awaited<ReturnType<typeof forgetThisDevice>>;
   try {
-    done = await forgetThisDevice(engine, { force: options.force });
+    done = await forgetThisDevice(engine, {
+      force: options.force,
+      beforeDelete: async () => {
+        generation++;
+        await Promise.allSettled([...saving]);
+      },
+    });
   } catch (err) {
     // No IndexedDB: the sync state was in memory (cleared already) and so
     // were the connection and key (cleared below).
@@ -83,6 +151,8 @@ export async function forget(engine: ForgetEngine, options: { force?: boolean; c
     memory = null;
     // A restore's marker for the reload after it (sessionStorage).
     takeRestoredEpoch();
+    // A sign-in started and not finished (#10): its state and verifier.
+    clearSignInState();
   }
   return done;
 }

@@ -1,0 +1,19 @@
+# The sign-in helper's settings (README.md). For `npx wrangler dev`, copy
+# this file to .dev.vars (gitignored) and fill it in. In production set
+# them in Cloudflare instead: the client secret with
+# `npx wrangler secret put GITHUB_APP_CLIENT_SECRET`, the other two as
+# variables (`npx wrangler secret put` works for them too). None goes in
+# wrangler.toml. A missing or blank one makes every request a 500
+# {"error":"helper_not_configured"}.
+
+# The GitHub App's Client ID, from its settings page (public).
+GITHUB_APP_CLIENT_ID=<your App's client ID>
+
+# A client secret generated on the App's settings page. Secret: never
+# commit it, never put it in wrangler.toml.
+GITHUB_APP_CLIENT_SECRET=<a client secret>
+
+# Comma-separated origins allowed to call the helper: the Pages site that
+# serves Ledger (scheme and host only, no path), plus any fork's or local
+# development origin. "*" is ignored.
+ALLOWED_ORIGINS=https://<owner>.github.io

@@ -157,6 +157,6 @@ describe("oracle: agrees with the engine's join and materialisation", () => {
       for (const [rk, regs] of state.rec) for (const [field, reg] of regs) expect(writes.has(`${rk}/${field} ${reg.t[0]} ${reg.t[1]} ${plainText(reg.v)}`)).toBe(true);
     });
     // About 2 s alone; past vitest's 5 s default beside the harness in a
-    // full parallel run.
-  }, 30_000);
+    // full parallel run, and past 30 s with two suites running at once.
+  }, 60_000);
 });
