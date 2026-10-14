@@ -249,6 +249,9 @@ Don't set these on Netlify:
 - `TZ`: the function's runtime reserves it. Use `APP_TIMEZONE`.
 - `NODE_ENV`: leave it to Netlify. Setting it to `production` for the build
   would skip installing the tools the build needs.
+- `VITE_DEFAULT_MODULES`: read only by the GitHub storage build (the
+  sections a new ledger starts with). This Netlify build ignores it; use
+  `ENABLED_MODULES`.
 
 ## 8. Create the Netlify site and deploy
 
