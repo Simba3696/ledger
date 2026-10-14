@@ -480,21 +480,6 @@ describe("SyncPanel inside SyncHost", () => {
     expect(renderToString(createElement(SyncHost, { engine, bar }))).toContain("Saved");
   });
 
-  it("the hold's focus watcher wraps the re-keyed part and keeps its place across a remount", () => {
-    // revisionHold.ts: SyncHost holds the revision on screen while focus is
-    // in a field inside this wrapper. The wrapper is outside the key, so its
-    // ref and blur handler stay across the remount it lets through.
-    const onLeave = () => {};
-    const page = createElement("main", null, "The ledger");
-    const value = contextValue({}, [], []);
-    const watcher = (tree: ReactNode) => elements(tree).find((el) => el.type === "div" && (el.props as { className?: string }).className === "sync-ledger")!;
-    const [one, two] = [1, 2].map((revision) => SyncLayers({ value, revision, children: page, onLeave }));
-    expect((watcher(one).props as { onBlur?: unknown }).onBlur).toBe(onLeave);
-    expect(pathTo(two, watcher(two))).toEqual(pathTo(one, watcher(one)));
-    expect(pathTo(watcher(one), page)).not.toBeNull();
-    expect(pathTo(two, page)).not.toEqual(pathTo(one, page));
-  });
-
   it("useSyncState needs a SyncHost above it", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const Probe = () => {

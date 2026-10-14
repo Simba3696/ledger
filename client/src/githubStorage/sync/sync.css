@@ -3,12 +3,6 @@
    left behind. The app's own colour and size tokens (index.css), so it
    follows the light and dark themes. */
 
-/* SyncHost's wrapper around the re-keyed Ledger, there only to watch focus
-   (revisionHold.ts): it takes no box, so the Ledger lays out as before. */
-.sync-ledger {
-  display: contents;
-}
-
 .sync-status {
   display: flex;
   flex-wrap: wrap;
