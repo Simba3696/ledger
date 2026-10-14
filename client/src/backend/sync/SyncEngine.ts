@@ -3080,7 +3080,8 @@ export class SyncEngine {
    * `basedOn` down through the listed geneses: `basedOn.epoch` with
    * `basedOn.seen`, then the epoch that one's genesis is based on with its
    * cut, and so on. A switch uses only the cuts of `needed` (the epoch it
-   * switches from and the one that epoch is based on), so the walk stops
+   * switches from and meta.basedOn: the one that epoch is based on, or the
+   * kept epoch standing for it), so the walk stops
    * once it reaches one of them (numbers fall down a line, so the other
    * can't follow: an epoch's base has a smaller number) or passes below
    * both. It also stops at a genesis that isn't listed or can't be read (a
@@ -3158,7 +3159,9 @@ export class SyncEngine {
     // projected again with the cut {}: it may offer more than E2b left
     // out, but loses nothing (stage 6 final review).
     // Since stage 8a the cut is read from the skipped epoch's line when it
-    // can be (genesis.line), and is {} only when it can't.
+    // can be (genesis.line), and is {} only when it can't. meta.basedOn is
+    // the anchor (below): when the switch into `from` skipped its base too,
+    // the epoch this device kept in `from`'s line, not that base.
     // A winner whose line passes through `from` holds what `from`'s genesis
     // took in, so the epoch `from` was based on needs no new projection:
     // its groups were projected with that same cut on the switch into
@@ -3203,11 +3206,23 @@ export class SyncEngine {
     }
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
-    // it behind. So is the epoch this one is based on, for a restore of the
-    // same number based on it with another cut (E1 -> E2a -> E2b -> E2c,
-    // all based on E1). An earlier one is kept only while a group from it is.
+    // it behind. So is the anchor, for a restore of the same number based
+    // on the same epoch with another cut (E1 -> E2a -> E2b -> E2c, all
+    // based on E1). An earlier one is kept only while a group from it is.
+    // The anchor (meta.basedOn from now on) is the epoch this device kept
+    // that the new genesis's line reaches first: the one it is based on,
+    // unless this device never joined that one. A device that skipped it
+    // holds that line only through the epoch it just projected with the
+    // line's cut: `from` when the line passes through it, else the
+    // fallback. A racing restore based on the same skipped epoch leaves
+    // behind what this one's genesis took in, so the anchor is projected
+    // again then, as the fallback (#7 follow-up, harness seed 150178: named
+    // after the skipped epoch, which is never in `old`, it projected
+    // nothing, and an own change only the losing genesis held was offered
+    // nowhere).
+    const anchor = basedOn === null ? undefined : skipped && !genesis.rejoin ? (fallback ?? from) : basedOn.epoch;
     const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
-    const keep = (epoch: string) => epoch !== from && (epoch === basedOn?.epoch || hasGroups(epoch));
+    const keep = (epoch: string) => epoch !== from && (epoch === anchor || hasGroups(epoch));
     const olds: OldEpoch[] = [...kept.filter((entry) => keep(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
 
     const device = newDeviceId();
@@ -3237,7 +3252,7 @@ export class SyncEngine {
       refEtag: null,
       writerToken: meta.writerToken,
       prev: { epoch: from, device: meta.deviceId },
-      ...(basedOn !== null ? { basedOn: basedOn.epoch } : {}),
+      ...(anchor !== undefined ? { basedOn: anchor } : {}),
     };
     const base = await seal(storedState(next), this.#key);
     const oldText = olds.length > 0 ? await seal(storedOld(olds), this.#key) : null;
@@ -3300,7 +3315,8 @@ export class SyncEngine {
 
   /** The `old` record to keep once only the groups `markers` are left:
    * the epoch this device last switched from (meta.prev) and the one its
-   * epoch's genesis is based on (meta.basedOn) are kept even with no group,
+   * epoch's genesis is based on, or the anchor standing for it (meta.basedOn,
+   * see #adoptEpoch), are kept even with no group,
    * since a restore that raced the one switched to may be based on either
    * with another cut, until the device switches again; an earlier epoch
    * only while a group from it is left. Undefined when that changes
