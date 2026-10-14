@@ -46,6 +46,12 @@ jobs:
       - name: Build the GitHub Pages client
         env:
           PAGES_BASE: ${{ github.event_name == 'pull_request' && format('/{0}/', github.event.repository.name) || format('{0}/', steps.pages.outputs.base_path) }}
+          # Sign in with GitHub (#10, signin-helper/README.md): all three are
+          # public, so they are Actions variables, not secrets. Without all
+          # three (a fork, say) the build has no button and no helper URL.
+          VITE_GITHUB_APP_CLIENT_ID: ${{ vars.VITE_GITHUB_APP_CLIENT_ID }}
+          VITE_GITHUB_APP_SLUG: ${{ vars.VITE_GITHUB_APP_SLUG }}
+          VITE_GITHUB_SIGNIN_HELPER_URL: ${{ vars.VITE_GITHUB_SIGNIN_HELPER_URL }}
         run: npm run build:pages -w client -- --base "$PAGES_BASE"
       - name: Check storage isolation
         run: npm run check:isolation
