@@ -752,6 +752,13 @@ export class SyncEngine {
   #oldText: string | null = null;
   /** A tidy of hidden groups is queued. */
   #tidying = false;
+  /** Own writes diffed and not yet saved (#commit, #commitOp). */
+  #saving = 0;
+  /** What joins brought in while an own write was diffed and not yet
+   * saved, and the state before the first of them, under the identity
+   * the write was diffed as: #commitOp tells that write's clashes with
+   * them as a join after it would have (section 4.2). */
+  #joinedWhileSaving: { epoch: string; device: string; pre: SyncState; source: SyncState; ops: [string, Op][]; states: Arrivals["states"][number][] } | null = null;
   /** The next epoch being written because no Lamport value is left. */
   #renumbering: Promise<void> | null = null;
   /** restore() is writing its genesis ("writing"), or wrote it ("written",
@@ -1100,7 +1107,14 @@ export class SyncEngine {
       if (problem) throw new Error(`The fenced op is malformed: ${problem}`);
     }
     const writer = { epoch: meta.epochKey, device: meta.deviceId };
-    return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    if (op === null) return this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    this.#saving++;
+    const saved = this.#enqueue(() => this.#commitOp(op, fenced.notices, L, writer, extras));
+    const settle = () => {
+      if (--this.#saving === 0) this.#joinedWhileSaving = null;
+    };
+    void saved.then(settle, settle);
+    return saved;
   }
 
   async #commitOp(op: Op | null, notices: FenceNotice[], L: number, writer: { epoch: string; device: string }, { resolves, settles }: CommitExtras): Promise<void> {
@@ -1131,7 +1145,23 @@ export class SyncEngine {
     const mine: Tag = [L, me];
     const fenceNotices = notices.map((n): [string, NoticeBody] => [fenceNoticeKey(n, mine), { kind: n.kind, theirs: n.theirs, mine, registers: n.registers }]);
     const settled = settles !== undefined && op !== null ? [settles] : [];
-    const noticeWrites = fenceNotices.length > 0 || settled.length > 0 ? await this.#noticeWrites(fenceNotices, settled) : null;
+    // A join that ran after this op was diffed, and before this save, told
+    // nothing about it: it wasn't applied yet. Its clashes with this op are
+    // told now, as a join after the save would have told them (section 4.2;
+    // harness seed 140353: an edit of a record another device's delete,
+    // joined in between, removed was otherwise lost with no word).
+    const between = op !== null && this.#joinedWhileSaving?.epoch === writer.epoch && this.#joinedWhileSaving.device === writer.device ? this.#joinedWhileSaving : null;
+    let late: [string, NoticeBody][] = [];
+    let afterOwn: SyncState | null = null;
+    if (between !== null && op !== null) {
+      afterOwn = cloneState(between.pre);
+      applyOp(afterOwn, me, op);
+      late = detectNotices(afterOwn, between.source, between, me)
+        .filter((notice) => notice.loser.L === op.L)
+        .map(({ key, ...body }): [string, NoticeBody] => [key, body]);
+    }
+    const told = [...fenceNotices, ...late];
+    const noticeWrites = told.length > 0 || settled.length > 0 ? await this.#noticeWrites(told, settled) : null;
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
@@ -1142,6 +1172,7 @@ export class SyncEngine {
     this.#assertWritable();
     await this.#mutate(nextMeta, writes);
 
+    if (between !== null && afterOwn !== null) between.pre = afterOwn;
     if (op) {
       const changes = applyOp(this.#state!, me, op);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
@@ -1208,6 +1239,12 @@ export class SyncEngine {
       await this.#mutate({ ...meta, ...bookkeeping, maxL: Math.max(meta.maxL, source.maxL), seen: vectorOf(seen) }, { tail: [text], ...(notices ? { notices: notices.writes } : {}) });
       if (notices) this.#keepNotices(notices.next);
 
+      if (this.#saving > 0) {
+        const between = (this.#joinedWhileSaving ??= { epoch: meta.epochKey, device: meta.deviceId, pre: cloneState(this.#state!), source: emptyState(), ops: [], states: [] });
+        joinInto(between.source, source);
+        between.ops.push(...ops);
+        between.states.push(...states);
+      }
       const changes = this.#fence.join(this.#state!, source);
       this.#doc = rematerialize(this.#doc!, readerOf(this.#state!), changes);
       // A re-apply marker joined may resolve a group left behind here.
