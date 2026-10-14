@@ -119,7 +119,11 @@ export type FlowEvent =
   /** The gate opened the ledger itself (a retry with what was saved). */
   | { type: "opened"; target: Target }
   | { type: "retry" }
-  | { type: "forgotten" };
+  | { type: "forgotten" }
+  /** Back from signing in with GitHub (#10) with nothing saved yet: the
+   * connect card of the path the sign-in started on, for the repo it was
+   * aimed at, with what went wrong if it failed. */
+  | { type: "signInReturned"; path: Path; org: string | null; owner: string | null; repo: string; error: string | null };
 
 export const WRONG_PASSPHRASE = "Wrong passphrase";
 export const NEEDS_UPDATE = "This ledger was saved by a newer version of Ledger. Update the app to open it.";
@@ -259,5 +263,9 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
 
     case "forgotten":
       return { kind: "welcome" };
+
+    case "signInReturned":
+      if (screen.kind !== "welcome" && screen.kind !== "step") return screen;
+      return { ...stepScreen(event.path, "connect", { org: event.org, owner: event.owner, repo: event.repo }), error: event.error };
   }
 }

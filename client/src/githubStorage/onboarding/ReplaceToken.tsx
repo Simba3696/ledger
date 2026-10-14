@@ -3,6 +3,7 @@ import { useFocusOnError } from "../focusOnError";
 import { Card, ErrorText } from "../Shell";
 import { checkPastedToken } from "../token";
 import type { Screen } from "./flow";
+import { SignInWithGitHub } from "./SignInWithGitHub";
 
 // Replace token (#8): GitHub answered 401, so the token expired or was
 // revoked. Everything on this device is kept, unsynced changes included;
@@ -11,16 +12,26 @@ import type { Screen } from "./flow";
 
 const TOKEN_EXPIRED = "GitHub no longer accepts this token (it expired or was revoked). Paste a new one.";
 
+/** In a GitHub sign-in session (#10): what the screen says instead, and
+ * the button to sign in again (when the build has it) beside the paste
+ * field. */
+interface SignInAgain {
+  message: string;
+  onSignIn: (() => Promise<void>) | null;
+}
+
 export function ReplaceToken({
   screen,
   onReplace,
   onForget,
+  signIn = null,
 }: {
   screen: Extract<Screen, { kind: "replaceToken" }>;
   onReplace: (token: string) => Promise<void>;
   /** For when no new token will come (access was removed): resolves to an
    * error to show, or null. */
   onForget: () => Promise<string | null>;
+  signIn?: SignInAgain | null;
 }) {
   const [token, setToken] = useState("");
   const [pasteError, setPasteError] = useState<string | null>(null);
@@ -57,10 +68,16 @@ export function ReplaceToken({
   useFocusOnError(error, busy, field);
   return (
     <Card title="Replace your token" focusKey="replace-token">
-      <p>{TOKEN_EXPIRED}</p>
+      <p>{signIn ? signIn.message : TOKEN_EXPIRED}</p>
       <p className="gh-note">
         It must reach <strong>{`${screen.target.owner}/${screen.target.repo}`}</strong>. Your changes on this device are kept.
       </p>
+      {signIn?.onSignIn && (
+        <>
+          <SignInWithGitHub disabled={busy} onSignIn={signIn.onSignIn} />
+          <p className="gh-or">or paste a token</p>
+        </>
+      )}
       <form onSubmit={(e) => void submit(e)} className="gh-choices">
         <fieldset disabled={busy}>
           <label>
