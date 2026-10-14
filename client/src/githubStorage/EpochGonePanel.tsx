@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { damagedFileMessage } from "../backend/sync/ledgerRepo";
 import type { RejoinResult, SyncEngine } from "../backend/sync/SyncEngine";
 import { ErrorText } from "./Shell";
 import { useSyncState } from "./sync/syncContext";
@@ -17,7 +16,7 @@ import { useSyncState } from "./sync/syncContext";
 const JOINED = "Joined the ledger in the repo. Your changes from this device are under Changes left behind: Re-apply them to keep them.";
 const JOINED_ALL = "Joined the ledger in the repo. Everything on this device is in it.";
 const OTHER_KEY =
-  "The ledger in the repo now uses a different passphrase, so this device's changes can't be carried into it. Download a backup of this device first: it keeps everything here, under this device's passphrase. Then forget this device and join with the new passphrase.";
+  "The ledger in the repo now uses a different passphrase, so this device's changes can't be carried into it. Download a backup of this device first: it keeps everything here, locked with this device's passphrase, and can only be restored whole. Then forget this device and join with the new passphrase.";
 
 /** Saves `text` as a file, as the browser downloads one. */
 function download(text: string, name: string): void {
@@ -47,6 +46,13 @@ export function EpochGonePanel({
   const [note, setNote] = useState<{ error: boolean; text: string } | null>(null);
   const [otherKey, setOtherKey] = useState(false);
   const [backedUp, setBackedUp] = useState(false);
+  // A different ledger winning makes the other-passphrase answer stale.
+  const winner = sync.epochGone?.winner ?? null;
+  const [answeredFor, setAnsweredFor] = useState<string | null>(null);
+  if (otherKey && answeredFor !== winner) {
+    setOtherKey(false);
+    setBackedUp(false);
+  }
   if (sync.epochGone === null && note === null) return null;
 
   /** rejoin's answer in words, or the D35 path. */
@@ -65,11 +71,12 @@ export function EpochGonePanel({
         return setNote({ error: true, text: "Couldn't read the whole repository from GitHub. Try again." });
       case "otherKey":
         setOtherKey(true);
+        setAnsweredFor(result.epoch);
         return setNote(null);
       case "needsUpdate":
         return setNote({ error: true, text: "The ledger in the repo was saved by a newer version of Ledger. Update the app to join it." });
       case "damaged":
-        return setNote({ error: true, text: damagedFileMessage(result.damagedFile) });
+        return setNote({ error: true, text: "The ledger in the repo can't be read on this device. Everything here is kept; ask whoever set the ledger up." });
     }
   }
 
@@ -110,7 +117,17 @@ export function EpochGonePanel({
   const gone = sync.epochGone;
   return (
     <div className="sync-messages gh-epoch-gone" data-testid="gh-epoch-gone">
-      {note && (note.error ? <ErrorText>{note.text}</ErrorText> : <p className="sync-message-line" role="status">{note.text}</p>)}
+      {note &&
+        (note.error ? (
+          <ErrorText>{note.text}</ErrorText>
+        ) : (
+          <p className="sync-message-line" role="status">
+            {note.text}{" "}
+            <button type="button" className="gh-secondary" onClick={() => setNote(null)} data-testid="gh-epoch-gone-ok">
+              OK
+            </button>
+          </p>
+        ))}
       {gone && !otherKey && (
         <div className="gh-actions">
           {gone.winner !== null ? (

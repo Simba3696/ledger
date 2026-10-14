@@ -361,6 +361,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       const created = await createFromDevice(open.engine, open.remote, key, open.connection.login);
       if (created.kind === "unknown") return CREATE_UNKNOWN;
       if (created.kind === "failed") return created.detail;
+      if (created.kind === "tooLarge") return `This device's ledger is too large to save as one file: ${created.detail}`;
       if (created.kind === "exists" && created.damagedFile) return damagedFileMessage(created.damagedFile);
       return await open.engine.rejoin();
     } catch (err) {

@@ -26,7 +26,8 @@ export type ForgetOutcome = { kind: "forgotten" } | { kind: "cancelled" } | { ki
  * on the device can be counted, and the question says so. */
 export async function confirmAndForget(engine: SyncEngine | null): Promise<ForgetOutcome> {
   let unsaved: Unsaved | null = engine ? pick(engine.getState()) : null;
-  const canSync = engine !== null && engine.getState().status !== "needsToken";
+  // Syncing can't help with a dead token or a gone epoch.
+  const canSync = engine !== null && engine.getState().status !== "needsToken" && engine.getState().epochGone === null;
   if (engine && unsaved && unsaved.pendingCount > 0 && canSync) {
     const sync = await confirmDialog({ message: `${lossText({ pendingCount: unsaved.pendingCount, leftBehindOwnCount: 0 })}. Sync now first?`, confirmLabel: "Sync now", cancelLabel: "Cancel" });
     if (!sync) return { kind: "cancelled" };
