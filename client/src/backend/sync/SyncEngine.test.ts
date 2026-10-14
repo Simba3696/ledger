@@ -9,7 +9,7 @@ import { FakeLocks, deferred, dumpDatabase, faultyIndexedDB, hookedStore, tamper
 import { clearSyncState, openSyncStore, type SyncStore } from "./persist";
 import { decodeDelta, seal, unseal, type DeviceKey } from "./records";
 import { genesisState } from "./state";
-import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, type EngineState, type SyncEngineOptions } from "./SyncEngine";
+import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, defaultSyncLog, type EngineState, type SyncEngineOptions } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -850,5 +850,25 @@ describe("nothing on the device is plaintext (AC15)", () => {
         "writerToken",
       ].sort(),
     );
+  });
+});
+
+describe("the default log", () => {
+  it("sends a line with no error to console.info, never console.error, and prints no 'undefined'", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    defaultSyncLog("the restore's genesis e000002-0000000b landed after all");
+    expect(error).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("ledger:sync: the restore's genesis e000002-0000000b landed after all");
+    expect(info.mock.calls[0]).toHaveLength(1);
+  });
+
+  it("sends a line with an error to console.error, with the error", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = new Error("boom");
+    defaultSyncLog("sync failed; it will be tried again", err);
+    expect(info).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith("ledger:sync: sync failed; it will be tried again", err);
   });
 });

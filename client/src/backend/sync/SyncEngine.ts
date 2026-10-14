@@ -362,6 +362,15 @@ export interface PageEvents {
   window?: EventTarget;
 }
 
+/** The engine's log when none is given. A line with an error is one
+ * (console.error, with the error); a line without one says what the engine
+ * decided, so it goes to console.info: the page's console errors stay for
+ * real failures, and no "undefined" is printed after a plain line. */
+export function defaultSyncLog(message: string, err?: unknown): void {
+  if (err === undefined) console.info(`ledger:sync: ${message}`);
+  else console.error(`ledger:sync: ${message}`, err);
+}
+
 export interface SyncEngineOptions {
   key: DeviceKey;
   /** The signed-in login: each op's display `by`. */
@@ -861,7 +870,7 @@ export class SyncEngine {
     this.#store = options.store ?? openSyncStore();
     this.#locks = options.locks === undefined ? (globalThis.navigator?.locks ?? null) : options.locks;
     this.#now = options.now ?? Date.now;
-    this.#log = options.log ?? ((message, err) => console.error(`ledger:sync: ${message}`, err));
+    this.#log = options.log ?? defaultSyncLog;
     this.#onCommitted = options.onCommitted ?? (() => {});
     this.#remote = options.remote ?? null;
     this.#events = options.events ?? {
