@@ -411,6 +411,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
   function forgotten() {
     // api.ts lets go of the old ledger's backend (and its document).
     installBackend(httpBackend);
+    ledgerViews.forget();
     setOpen(null);
     setView("ledger");
     work.current = { connection: null, remote: null, found: null, key: null };

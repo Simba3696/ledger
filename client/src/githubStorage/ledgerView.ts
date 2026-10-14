@@ -55,6 +55,13 @@ export class LedgerViewMemory {
     };
   }
 
+  /** This device was forgotten: nothing of the ledger is kept, and a
+   * report from the Ledger still on screen as it goes is ignored. */
+  forget(): void {
+    this.#scope = null;
+    this.#view = null;
+  }
+
   /** The next Ledger opens on the Dashboard (same month). */
   goHome(): void {
     if (this.#view) this.#view = { ...this.#view, tab: "dashboard" };

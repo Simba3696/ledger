@@ -103,6 +103,15 @@ describe("LedgerViewMemory", () => {
     expect(memory.slot("sam/ledger-data", modules(ALL)).initial).toBeNull();
   });
 
+  it("forgets the view when this device is forgotten, even for the same ledger", () => {
+    const memory = new LedgerViewMemory();
+    const slot = memory.slot("sam/ledger-data", modules(ALL));
+    memory.forget();
+    // A report from the Ledger still on screen as it goes doesn't bring it back.
+    commit(slot.report(debts));
+    expect(memory.slot("sam/ledger-data", modules(ALL)).initial).toBeNull();
+  });
+
   it("goes back to the Dashboard on request, keeping the month", () => {
     const memory = new LedgerViewMemory();
     commit(memory.slot("sam/ledger-data", modules(ALL)).report(debts));
