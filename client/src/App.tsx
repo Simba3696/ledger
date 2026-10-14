@@ -78,7 +78,7 @@ function App() {
   return <Ledger key={auth.session.user.id} session={auth.session} />;
 }
 
-function Ledger({ session }: { session: Session }) {
+function Ledger({ session }: { session: Session | null; headerActions?: import("react").ReactNode }) {
   const now = new Date();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [year, setYear] = useState(now.getFullYear());
@@ -181,7 +181,7 @@ function Ledger({ session }: { session: Session }) {
     }
   }
 
-  if (notAllowed) return <NotAllowed email={session.user.email} />;
+  if (notAllowed) return <NotAllowed email={session!.user.email} />;
 
   return (
     <div className="app">
@@ -195,7 +195,7 @@ function Ledger({ session }: { session: Session }) {
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
-          <SignOutButton />
+          {__LEDGER_STORAGE__ === "github" ? (arguments[0] as { headerActions?: import("react").ReactNode }).headerActions : <SignOutButton />}
         </div>
       </header>
 
@@ -278,3 +278,4 @@ function Ledger({ session }: { session: Session }) {
 }
 
 export default App;
+export { Ledger };
