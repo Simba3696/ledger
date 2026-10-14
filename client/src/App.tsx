@@ -94,9 +94,9 @@ function App() {
 
 function Ledger({ session }: { session: Session | null } & GithubLedgerProps) {
   const now = new Date();
-  const [tab, setTab] = useState<Tab>(__LEDGER_STORAGE__ === "github" ? ((arguments[0] as GithubLedgerProps).view?.initial?.tab ?? "dashboard") : "dashboard");
-  const [year, setYear] = useState(__LEDGER_STORAGE__ === "github" ? ((arguments[0] as GithubLedgerProps).view?.initial?.year ?? now.getFullYear()) : now.getFullYear());
-  const [month, setMonth] = useState(__LEDGER_STORAGE__ === "github" ? ((arguments[0] as GithubLedgerProps).view?.initial?.month ?? now.getMonth() + 1) : now.getMonth() + 1); // 1-12
+  const [tab, setTab] = useState<Tab>(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.tab ?? "dashboard" : "dashboard");
+  const [year, setYear] = useState(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.year ?? now.getFullYear() : now.getFullYear());
+  const [month, setMonth] = useState(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.month ?? now.getMonth() + 1 : now.getMonth() + 1); // 1-12
 
   // Null until GET /api/config answers; nothing module-specific renders or
   // fetches before then, so a disabled module's routes are never called.
