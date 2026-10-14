@@ -274,7 +274,7 @@ export type RejoinResult =
   | { kind: "unknown" }
   | { kind: "otherKey"; epoch: string }
   | { kind: "needsUpdate"; epoch: string }
-  | { kind: "damaged"; epoch: string; damagedFile: DamagedFile };
+  | { kind: "damaged"; epoch: string };
 
 export type RestoreResult =
   /** The backup is the new epoch's genesis. Clear this device's sync
@@ -639,6 +639,11 @@ interface NewEpoch {
    * device that skipped an epoch projects what it had with these exact
    * cuts instead of {} (stage 8a). */
   line?: ReadonlyMap<string, VersionVector>;
+  /** #8's rejoin from a gone epoch (D34, D36): the gone epoch is offered
+   * whole (cut {}, nothing filtered as held), groups shown now are
+   * carried as they are, and no kept epoch is projected again: the winner
+   * is a long-lived ledger, not a restore based on this device's line. */
+  rejoin?: true;
 }
 
 /** What a write's commit does besides its op. `resolves`: a left-behind
@@ -2682,16 +2687,22 @@ export class SyncEngine {
     const names = [...listing.files.keys()];
     const winner = winningEpoch(names);
     if (winner === null) return { kind: "empty" };
-    if (epochCounted(names, from)) return { kind: "notGone" };
+    // Only once the cycle has said the epoch is gone (two full listings in
+    // a row that don't count it): one listing may be stale, and a switch
+    // from an epoch that still counts would leave its groups shown for good.
+    if (epochCounted(names, from) || this.#epochGone?.epoch !== from) return { kind: "notGone" };
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const read = await this.#read(name, listing.files.get(name)!);
     if (!read.ok || read.read.file.kind !== "genesis") {
       const problem = read.ok ? "malformed" : read.problem;
       if (problem === "needsUpdate") return { kind: "needsUpdate", epoch: winner };
       if (problem === "foreignKey") return { kind: "otherKey", epoch: winner };
-      return { kind: "damaged", epoch: winner, damagedFile: damagedGenesis(winner, problem, epochJoined(names, winner)) };
+      // Not named as a file to delete or roll back: the winner is the
+      // household's ledger, and this device is the one that's gone (as
+      // #switchToListed does for a gone device, stage 6).
+      return { kind: "damaged", epoch: winner };
     }
-    if (!(await this.#switchToListed(listing, winner, true))) return { kind: "unknown" };
+    if (!(await this.#switchToListed(listing, winner, true, { rejoin: true }))) return { kind: "unknown" };
     void this.sync();
     return { kind: "joined", epoch: winner };
   }
@@ -3016,7 +3027,7 @@ export class SyncEngine {
    * household's valid ledger, which no advice may delete or roll back. The
    * state says the epoch is gone (EpochGone) instead, and #8 offers to join
    * the winner. A winner it can open is switched to as always. */
-  async #switchToListed(listing: Listing, winner: string, gone: boolean): Promise<boolean> {
+  async #switchToListed(listing: Listing, winner: string, gone: boolean, { rejoin = false }: { rejoin?: boolean } = {}): Promise<boolean> {
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const listed = listing.files.get(name)!;
     const read = await this.#read(name, listed);
@@ -3054,9 +3065,11 @@ export class SyncEngine {
     try {
       await turn.ready;
       this.#assertWritable();
-      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, ...(line ? { line } : {}) });
+      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, ...(line ? { line } : {}), ...(rejoin ? { rejoin: true as const } : {}) });
       // The cycle reads and records for the epoch it switched to.
-      if (switched && this.#cycleFor !== null) this.#cycleFor = this.#identity();
+      // A rejoin's switch leaves a running cycle labelled with the epoch it
+      // read, so nothing that cycle read is joined into the new one.
+      if (switched && !rejoin && this.#cycleFor !== null) this.#cycleFor = this.#identity();
       return switched;
     } finally {
       turn.end();
@@ -3133,7 +3146,7 @@ export class SyncEngine {
     // epoch, so nothing else would hide one the genesis took in.
     const groups = new Map<string, LeftBehindGroup>();
     for (const [marker, group] of this.#leftBehind) {
-      const carried = this.#isHidden(group, pre) ? null : withoutHeld(group, genesis.state);
+      const carried = this.#isHidden(group, pre) ? null : genesis.rejoin ? group : withoutHeld(group, genesis.state);
       if (carried !== null) groups.set(marker, carried);
     }
     const kept = await this.#readOld();
@@ -3153,8 +3166,10 @@ export class SyncEngine {
     // at `from`).
     const line = genesis.line ?? new Map<string, VersionVector>();
     const skipped = basedOn === null || (basedOn.epoch !== from && !kept.some((entry) => entry.epoch === basedOn.epoch));
-    const fallback = skipped && !line.has(from) ? meta.basedOn : undefined;
-    const cutFor = (epoch: string): VersionVector | null => (basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? (line.get(epoch) ?? {}) : null);
+    const fallback = skipped && !line.has(from) && !genesis.rejoin ? meta.basedOn : undefined;
+    // A rejoin projects no kept epoch again (D36): what this device kept
+    // from them stays as it was carried.
+    const cutFor = (epoch: string): VersionVector | null => (genesis.rejoin ? null : basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? (line.get(epoch) ?? {}) : null);
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
       if (cut === null || entry.epoch === from) continue;
@@ -3164,12 +3179,20 @@ export class SyncEngine {
       // device's own group never is on that word alone: only this device
       // holds its unpushed changes, and a group shown now stays unless the
       // projection replaces it under its marker.
-      const projected = leftBehind(entry.state, cut, into, { epoch: entry.epoch, me: entry.device }).filter((group) => group.own || !pre.ra.has(group.marker));
+      // Never in place of this device's own group under the same marker
+      // (its former device id, after a revisit): a projection of what the
+      // repo has can hold less than what this device kept unpushed.
+      const projected = leftBehind(entry.state, cut, into, { epoch: entry.epoch, me: entry.device })
+        .filter((group) => group.own || !pre.ra.has(group.marker))
+        .filter((group) => group.own || groups.get(group.marker)?.own !== true);
       const replaced = new Set(projected.map((group) => group.marker));
       for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && !(group.own && !replaced.has(marker))) groups.delete(marker);
       for (const group of projected) groups.set(group.marker, group);
     }
-    for (const group of leftBehind(pre, cutFor(from) ?? line.get(from) ?? {}, into, { epoch: from, me: meta.deviceId })) groups.set(group.marker, group);
+    for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
+      if (!group.own && groups.get(group.marker)?.own === true) continue;
+      groups.set(group.marker, group);
+    }
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
     // it behind. So is the epoch this one is based on, for a restore of the

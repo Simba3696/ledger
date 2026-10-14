@@ -196,5 +196,10 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
  * now, as a restore of it, which rejoin then switches the device into,
  * carrying whatever the genesis doesn't already hold. */
 export async function createFromDevice(engine: SyncEngine, remote: SyncRemote, key: DeviceKey, by: string, now: () => number = Date.now): Promise<CreateResult> {
-  return createLedger(remote, key, { doc: structuredClone(engine.current()), by, at: now(), reason: "restore" });
+  // Based on the gone epoch: should another device's create win a race,
+  // the switch to it projects that epoch again and offers this device's
+  // changes back, where a genesis alone would leave them nowhere.
+  const gone = engine.getState().epochGone?.epoch;
+  const basedOn = gone === undefined ? null : { epoch: gone, seen: {} };
+  return createLedger(remote, key, { doc: structuredClone(engine.current()), by, at: now(), reason: "restore", basedOn });
 }

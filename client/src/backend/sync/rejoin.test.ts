@@ -183,3 +183,114 @@ describe("Create a new ledger from this device, then rejoin (#8, no ledger left)
     expect(a.engine.getState().status).toBe("idle");
   });
 });
+
+/** What a device shows in May plus what its groups offer, by remarks. */
+function shownOrOffered(d: Device): string[] {
+  const offered = d.engine.leftBehind().flatMap((g) => g.items.map((i) => ("record" in i ? String((i.record as { remarks?: unknown }).remarks ?? "") : "")));
+  return [...remarks(d), ...offered];
+}
+
+describe("rejoin, part 4 review: nothing judged held against an old genesis (D36)", () => {
+  async function onE2From(doc: () => LedgerDocument, a: Device, others: Device[] = []): Promise<void> {
+    await plant(w, { kind: "genesis", epoch: E2 }, { fv: 1, kind: "genesis", epoch: E2, reason: "restore", by: "sam", at: 7, basedOn: { epoch: EPOCH, seen: {} }, doc: doc() });
+    await quiesce(w, a, ...others);
+  }
+
+  it("S1: an own delete, in the gone epoch, of a record epoch 1 got from a log is offered and Re-apply deletes it", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await b.backend.addEntry(entry("Bus"));
+    await quiesce(w, a, b);
+    await onE2From(() => structuredClone(a.engine.current()), a, [b]);
+    await a.backend.deleteEntry(2026, 5, (await a.backend.getMonth(2026, 5)).find((e) => e.remarks === "Bus")!.row);
+    await quiesce(w, a, b);
+    w.fake.removeFile(FULL, E2_PATH);
+    await cycle(w, a, a);
+    expect(await a.engine.rejoin()).toMatchObject({ kind: "joined" });
+    const own = a.engine.leftBehind().filter((g) => g.own);
+    expect(own).toHaveLength(1);
+    await a.engine.reapply(own[0].id);
+    expect(remarks(a)).toEqual([]);
+  });
+
+  it("S4: an own unlock that matches epoch 1's genesis but not what epoch 1 holds now is offered", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await c.backend.setMonthLock(2026, 4, true);
+    await quiesce(w, a, c);
+    await onE2From(() => structuredClone(a.engine.current()), a);
+    await a.backend.setMonthLock(2026, 4, false);
+    await quiesce(w, a);
+    w.fake.removeFile(FULL, E2_PATH);
+    await cycle(w, a, a);
+    expect(await a.engine.rejoin()).toMatchObject({ kind: "joined" });
+    await quiesce(w, a, c);
+    expect(a.engine.current().monthLocks["2026-04"]).toBe(true);
+    for (const g of a.engine.leftBehind().filter((x) => x.own)) await a.engine.reapply(g.id);
+    expect(a.engine.current().monthLocks["2026-04"]).not.toBe(true);
+  });
+
+  it("S3: going back into an epoch this device used before offers nothing of its old history there as its changes", async () => {
+    const a = await open({ login: "alex" });
+    const c = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Rent", 5));
+    await quiesce(w, a, c);
+    await onE2From(() => structuredClone(a.engine.current()), a);
+    w.fake.removeFile(FULL, E2_PATH);
+    await c.backend.updateEntry(2026, 5, (await c.backend.getMonth(2026, 5)).find((e) => e.remarks === "Rent")!.row, { amount: 9, remarks: "Rent", category: "food", isCard: false });
+    await quiesce(w, c);
+    await cycle(w, a, a);
+    expect(await a.engine.rejoin()).toMatchObject({ kind: "joined" });
+    await quiesce(w, a, c);
+    // Alex did nothing on epoch 2: nothing of its is offered, and Sam's 9 stands.
+    expect(a.engine.getState().leftBehindOwnCount).toBe(0);
+    expect(expenses(a)).toEqual(["Rent 9.00"]);
+  });
+
+  it("S5: an unpushed change carried through a rejoin into a former epoch survives the next switch out of it", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Pushed", 3));
+    await quiesce(w, a);
+    await a.backend.addEntry(entry("Unpushed", 4));
+    await onE2From(() => structuredClone(w.doc), a);
+    w.fake.removeFile(FULL, E2_PATH);
+    await cycle(w, a, a);
+    expect(await a.engine.rejoin()).toMatchObject({ kind: "joined" });
+    await quiesce(w, a);
+    const E3 = "e000002-0000000b";
+    await plant(w, { kind: "genesis", epoch: E3 }, { fv: 1, kind: "genesis", epoch: E3, reason: "restore", by: "sam", at: 9, basedOn: { epoch: EPOCH, seen: {} }, doc: structuredClone(w.doc) });
+    await cycle(w, a);
+    expect(shownOrOffered(a)).toContain("Unpushed");
+    expect(a.engine.leftBehind().some((g) => g.own)).toBe(true);
+  });
+
+  it("S7: a create from this device that then loses a race still offers this device's changes", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries"));
+    await quiesce(w, a);
+    w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
+    await cycle(w, a, a);
+    await a.backend.addEntry(entry("Lunch"));
+    expect((await createFromDevice(a.engine, { client: a.client, branch: "main" }, w.key, "alex")).kind).toBe("created");
+    expect(await a.engine.rejoin()).toMatchObject({ kind: "joined" });
+    // Another device's create from its own data landed just after, with a
+    // greater key.
+    const EB = "e000001-ffffffff";
+    await plant(w, { kind: "genesis", epoch: EB }, { fv: 1, kind: "genesis", epoch: EB, reason: "restore", by: "sam", at: 9, basedOn: null, doc: structuredClone(w.doc) });
+    await quiesce(w, a);
+    expect(shownOrOffered(a)).toEqual(expect.arrayContaining(["Groceries", "Lunch"]));
+  });
+
+  it("S6: rejoin refuses until the cycle has said the epoch is gone (one listing may be stale)", async () => {
+    const a = await open({ login: "alex" });
+    await onE2From(() => structuredClone(w.doc), a);
+    await a.backend.addEntry(entry("Lunch"));
+    await quiesce(w, a);
+    w.fake.removeFile(FULL, E2_PATH);
+    // The cycle hasn't listed since: nothing says the epoch is gone yet.
+    const before = puts(w).length;
+    expect(await a.engine.rejoin()).toEqual({ kind: "notGone" });
+    expect(puts(w).length).toBe(before);
+    expect(a.engine.leftBehind()).toEqual([]);
+  });
+});
