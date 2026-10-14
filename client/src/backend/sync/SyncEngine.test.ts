@@ -315,6 +315,32 @@ describe("commit path (section 3.5)", () => {
     expect(d.engine.getState().revision).toBe(1);
   });
 
+  it("tells the device whose edit a delete joined after its diff, and before its save, removed (harness seed 140353)", async () => {
+    // The write is diffed while a join of Sam's delete waits in the
+    // mutation queue, so it is saved after that join: the same clash as
+    // when the delete arrives after the save, and told the same way
+    // (section 4.2 rule 2), never silently lost.
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await sam.backend.deleteEntry(2026, 5, (await sam.backend.getMonth(2026, 5))[0].row);
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, sam.ops[1]]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+
+    expect(remarks(d)).toEqual([]);
+    expect(d.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", winner: expect.objectContaining({ device: X }), target: expect.objectContaining({ coll: "e", month: "2026-05", name: "Groceries" }) })]);
+  });
+
   it("persists a remote join and its bookkeeping in one transaction", async () => {
     const one = await device();
     const sam = new Replica(X, emptyDocument(), { actor: "sam" });
