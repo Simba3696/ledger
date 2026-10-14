@@ -15,7 +15,7 @@
     "test:client": "npm run test -w client",
     "test:helper": "npm run test -w signin-helper",
     "test:e2e": "tsx e2e/regression.ts && tsx e2e/expensesOnly.ts",
-    "test:e2e:github": "tsx e2e/githubStorage.ts",
+    "test:e2e:github": "tsx e2e/githubStorage.ts && tsx e2e/githubSignIn.ts",
     "screenshots": "tsx e2e/screenshots.ts",
     "import-xlsx": "tsx scripts/import-xlsx.ts",
     "build": "npm run build -w client && npm run build -w server",
