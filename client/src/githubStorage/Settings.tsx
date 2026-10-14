@@ -40,6 +40,7 @@ export function Settings({
   onReplaceToken,
   onForgotten,
   deviceKey,
+  backupNotice = null,
   onRestored,
   onTokenRejected,
 }: {
@@ -53,6 +54,8 @@ export function Settings({
   onForgotten: () => void;
   /** This device's key, for opening a backup sealed under it (#9). */
   deviceKey: DeviceKey | null;
+  /** Why the backup picked before is gone (a refused token meanwhile). */
+  backupNotice?: string | null;
   /** A restore landed: clear this device's sync state and reload (#9). */
   onRestored: () => Promise<void>;
   onTokenRejected: () => void;
@@ -241,7 +244,7 @@ export function Settings({
           </section>
         )}
 
-        <BackupPanel engine={engine} deviceKey={deviceKey} repo={`${connection.owner}/${connection.repo}`} onRestored={onRestored} onTokenRejected={onTokenRejected} />
+        <BackupPanel engine={engine} deviceKey={deviceKey} repo={connection} notice={backupNotice} onRestored={onRestored} onTokenRejected={onTokenRejected} />
 
         <section className="gh-settings-section" aria-labelledby="gh-settings-device">
           <h3 id="gh-settings-device">This device</h3>

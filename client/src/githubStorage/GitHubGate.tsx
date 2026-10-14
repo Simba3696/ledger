@@ -9,7 +9,8 @@ import { DialogHost } from "../components/Dialog";
 import { GitHubAuthError, RepoNotFoundError } from "../backend/github/contents";
 import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
-import { createLedger, damagedFileMessage, findLedger, type LedgerFound } from "../backend/sync/ledgerRepo";
+import { compareEpochKeys } from "../backend/sync/epoch";
+import { createLedger, damagedFileMessage, findLedger, takeRestoredEpoch, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
 import type { RejoinResult, SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
@@ -94,6 +95,10 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
    * again. */
   const [view, setView] = useState<"ledger" | "settings">("ledger");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  /** After a reload that followed a restore: whether it landed (#9). */
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
+  /** Settings' backup was interrupted by a refused token (#9). */
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
@@ -117,6 +122,15 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
       try {
         const opened = await openLedger(connection, key, start, deps);
         if (opened.kind === "open") {
+          // The reload after a restore (#9): did this tab's restore land, or
+          // did another win? (takeRestoredEpoch)
+          const mine = takeRestoredEpoch();
+          const now = opened.engine.epochKey;
+          if (mine !== null && now !== null) {
+            if (now === mine) setRestoreNote("Restored from the backup.");
+            else if (compareEpochKeys(now, mine) > 0) setRestoreNote("Someone else restored a backup at the same time, and theirs is the ledger now. Restore yours again from Settings if you still need it.");
+            else setRestoreNote("Your restore may still be on its way to GitHub. Ledger switches to it once it lands.");
+          }
           work.current.remote = opened.remote;
           work.current.connection = connection;
           setOpen({ engine: opened.engine, backend: opened.backend, token: opened.token, remote: opened.remote, connection });
@@ -471,6 +485,14 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         bar={
           <>
             <SyncPanel />
+            {restoreNote && (
+              <p className="sync-message-line" role="status" data-testid="gh-restore-note">
+                {restoreNote}{" "}
+                <button type="button" className="gh-secondary" onClick={() => setRestoreNote(null)}>
+                  OK
+                </button>
+              </p>
+            )}
             <EpochGonePanel engine={open.engine} onCreate={onCreateFromDevice} onForget={onForget} />
             {view === "settings" && (
               <Shell>
@@ -479,14 +501,19 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
               backend={open.backend}
               connection={{ ...target, login: open.connection.login, expiresAt: open.connection.expiresAt }}
               onDone={(changed) => {
+                setBackupNotice(null);
                 if (changed) setSettingsRevision((n) => n + 1);
                 setView("ledger");
               }}
               onReplaceToken={replaceToken}
               onForgotten={forgotten}
               deviceKey={work.current.key}
+              backupNotice={backupNotice}
               onRestored={afterRestore}
-              onTokenRejected={() => dispatch({ type: "tokenRejected" })}
+              onTokenRejected={() => {
+                setBackupNotice("GitHub refused the token, so nothing was restored. Pick the backup file again.");
+                dispatch({ type: "tokenRejected" });
+              }}
             />
               </Shell>
             )}

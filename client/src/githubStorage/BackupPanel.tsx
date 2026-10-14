@@ -1,10 +1,9 @@
 import { useState, type FormEvent } from "react";
-import { GitHubAuthError } from "../backend/github/contents";
-import { damagedFileMessage } from "../backend/sync/ledgerRepo";
-import { RESTORE_UNKNOWN, epochGoneMessage, type SyncEngine } from "../backend/sync/SyncEngine";
+import type { SyncEngine } from "../backend/sync/SyncEngine";
 import { confirmDialog } from "../components/dialogs";
 import { backupFileName, DAMAGED, downloadFile, readBackupFile, type BackupRead, type BackupSummary } from "./backup";
-import { lossText } from "./forgetFlow";
+import { restoreWithQuestions, RESTORED_RELOAD } from "./restoreFlow";
+import type { ConnectTarget } from "./token";
 import type { DeviceKey } from "../backend/sync/records";
 import { ErrorText } from "./Shell";
 
@@ -13,8 +12,6 @@ import { ErrorText } from "./Shell";
 // open ledger as a new epoch (SyncEngine.restore), which every device
 // switches to, its unsynced changes offered back. Needs a DialogHost on
 // screen (Settings mounts one).
-
-const NOT_RESTORED = "Couldn't reach GitHub. Nothing was restored.";
 
 function describe(s: BackupSummary): string {
   const span = s.from === null ? "no expenses" : `${s.expenses} expense${s.expenses === 1 ? "" : "s"} from ${s.from} to ${s.to}`;
@@ -25,6 +22,7 @@ export function BackupPanel({
   engine,
   deviceKey,
   repo,
+  notice = null,
   onRestored,
   onTokenRejected,
 }: {
@@ -32,13 +30,15 @@ export function BackupPanel({
   /** This device's key: a backup sealed under it opens without asking. */
   deviceKey: DeviceKey | null;
   /** "owner/repo", for the confirmation. */
-  repo: string;
+  repo: ConnectTarget;
+  /** Said when the panel opens: why a backup picked before is gone. */
+  notice?: string | null;
   /** After the restore landed: clear this device's sync state and reload. */
   onRestored: () => Promise<void>;
   onTokenRejected: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ error: boolean; text: string } | null>(null);
+  const [note, setNote] = useState<{ error: boolean; text: string } | null>(notice ? { error: true, text: notice } : null);
   const [file, setFile] = useState<File | null>(null);
   const [needsPassphrase, setNeedsPassphrase] = useState(false);
   const [passphrase, setPassphrase] = useState("");
@@ -90,52 +90,43 @@ export function BackupPanel({
 
   async function restore() {
     if (!read) return;
-    const confirmed = await confirmDialog({
-      message: `Replace all data in ${repo} with this backup (${describe(read.summary)})? The current version stays in the repo's history on GitHub, and every device switches to the backup.`,
-      confirmLabel: "Replace with backup",
-      destructive: true,
-    });
-    if (!confirmed) return;
     setBusy(true);
     setNote(null);
     try {
-      let result = await engine.restore(read.doc);
-      if (result.kind === "unsynced" && result.pendingCount > 0) {
-        const sync = await confirmDialog({ message: `${lossText({ pendingCount: result.pendingCount, leftBehindOwnCount: 0 })}. Sync now first?`, confirmLabel: "Sync now", cancelLabel: "Cancel" });
-        if (!sync) return;
-        await engine.syncNow();
-        result = await engine.restore(read.doc);
-      }
-      if (result.kind === "unsynced") {
-        const anyway = await confirmDialog({ message: `${lossText(result)}, and will be left out of the restore. Restore anyway?`, confirmLabel: "Restore anyway", destructive: true });
-        if (!anyway) return;
-        result = await engine.restore(read.doc, { discardUnsynced: true });
-      }
-      switch (result.kind) {
-        case "restored":
-        case "replaced":
-          return await onRestored();
-        case "unknown":
-          return setNote({ error: true, text: RESTORE_UNKNOWN });
-        case "tooLarge":
-          return setNote({ error: true, text: `This backup is too large to restore: ${result.detail}` });
-        case "invalid":
-          return setNote({ error: true, text: DAMAGED });
+      const outcome = await restoreWithQuestions(engine, read.doc, { repo, summary: describe(read.summary) }, (q) => confirmDialog(q));
+      switch (outcome.kind) {
+        case "landed":
+          try {
+            await onRestored();
+          } catch {
+            setNote({ error: true, text: RESTORED_RELOAD });
+          }
+          return;
+        case "waitDamaged":
+          // Reload only once the damaged file is gone (ADR-0008, D26).
+          setNote({ error: true, text: outcome.message });
+          return waitUntilClear();
+        case "tokenRefused":
+          return onTokenRejected();
         case "failed":
-          return setNote({
-            error: true,
-            text: result.damagedFile ? damagedFileMessage(result.damagedFile) : result.epochGone ? epochGoneMessage(result.epochGone) : result.detail,
-          });
-        case "unsynced":
-          return setNote({ error: true, text: `${lossText(result)}. Nothing was restored.` });
+          return setNote({ error: true, text: outcome.message });
+        case "cancelled":
+          return;
       }
-    } catch (err) {
-      // Thrown before any genesis PUT may have landed (#7 stage 8a).
-      if (err instanceof GitHubAuthError) return onTokenRejected();
-      setNote({ error: true, text: NOT_RESTORED });
     } finally {
       setBusy(false);
     }
+  }
+
+  /** After a restore another one beat with a file this device can't open:
+   * reloads once the engine no longer reports it. */
+  function waitUntilClear() {
+    const stop = engine.subscribe(() => {
+      if (engine.getState().damagedFile === null) {
+        stop();
+        void onRestored().catch(() => setNote({ error: true, text: RESTORED_RELOAD }));
+      }
+    });
   }
 
   function submitPassphrase(e: FormEvent) {

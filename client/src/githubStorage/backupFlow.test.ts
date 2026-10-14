@@ -64,6 +64,13 @@ describe("backup and restore (#9)", () => {
   it("AC 4: a backup restores on a fresh device into an empty repo, under the backup's passphrase", async () => {
     const a = await alexWith("Groceries", "Bus");
     const backup = await a.engine.exportBackup();
+    // AC 2: an encrypted file, its header naming the cipher.
+    expect(() => JSON.parse(backup)).toThrow();
+    expect(JSON.parse(backup.split("\n")[0])).toMatchObject({ alg: "AES-GCM-256" });
+    // AC 5: a wrong passphrase reads nothing further and sends nothing.
+    const before = fake.requests.length;
+    expect(await readBackupFile(file(backup), null, "not the passphrase")).toEqual({ ok: false, message: "Wrong passphrase" });
+    expect(fake.requests.length).toBe(before);
     // Device B: nothing saved, its own empty repo.
     const bo = await connect("github_pat_bo", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
     expect(bo.found).toEqual({ kind: "none" });
@@ -97,6 +104,9 @@ describe("backup and restore (#9)", () => {
     const read = await readBackupFile(file(backup), a.key);
     if (!read.ok) throw new Error(JSON.stringify(read));
     expect(await a.engine.restore(read.doc)).toMatchObject({ kind: "restored" });
+    // AC 12: the restore's genesis commit message.
+    const genesisPut = fake.requests.filter((r) => r.method === "PUT" && r.path.endsWith(".genesis.enc")).at(-1)!;
+    expect(JSON.parse(genesisPut.body!).message).toBe("Restore from backup");
     // Sam switches on its next cycle: X is back, and stays.
     await sam.engine.syncNow();
     await sam.engine.syncNow();
@@ -140,16 +150,28 @@ describe("backup and restore (#9)", () => {
     opened.engine.stop();
   }, 60_000);
 
-  it("AC 16: a 10-year ledger round-trips through a backup file", async () => {
+  it("AC 16: a 10-year ledger round-trips through export and restore", async () => {
     const big = runOnDocument(planLedger());
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
     const key = await keyFor(PASSPHRASE);
-    const started = performance.now();
-    const text = await seal(big, key);
-    const read = await readBackupFile(file(text), key);
-    const ms = Math.round(performance.now() - started);
+    const created = await createLedger(alex.remote, key, { doc: big, by: "alex", at: Date.now(), reason: "restore" });
+    if (created.kind !== "created") throw new Error(created.kind);
+    const opened = await openLedger(alex.connection, key, { epoch: created.epoch, sha: created.sha, state: created.state }, { fetch: fake.fetch, store: new MemoryStore(), monotonic: clock });
+    if (opened.kind !== "open") throw new Error(opened.kind);
+    let at = performance.now();
+    const backup = await opened.engine.exportBackup();
+    const exportMs = performance.now() - at;
+    at = performance.now();
+    const read = await readBackupFile(file(backup), key);
+    const readMs = performance.now() - at;
     if (!read.ok) throw new Error(JSON.stringify(read));
+    at = performance.now();
+    expect(await opened.engine.restore(read.doc)).toMatchObject({ kind: "restored" });
+    const restoreMs = performance.now() - at;
     expect(read.summary.expenses).toBe(Object.values(big.expenses).reduce((n, m) => n + m.length, 0));
-    expect(JSON.stringify(read.doc)).toBe(JSON.stringify(big));
-    console.log(`AC16 backup: ${read.summary.expenses} expenses, ${text.length} bytes, sealed and read back in ${ms} ms`);
-  }, 120_000);
+    expect(JSON.stringify(read.doc)).toBe(JSON.stringify(opened.engine.current()));
+    // The figures #9 asks to record (printed with --silent=false).
+    console.info(`AC16: ${read.summary.expenses} expenses, backup ${backup.length} bytes, export ${Math.round(exportMs)} ms, read ${Math.round(readMs)} ms, restore ${Math.round(restoreMs)} ms (Node, fake GitHub)`);
+    opened.engine.stop();
+  }, 180_000);
 });
