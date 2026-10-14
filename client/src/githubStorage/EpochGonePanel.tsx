@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { RejoinResult, SyncEngine } from "../backend/sync/SyncEngine";
+import { backupFileName, downloadFile } from "./backup";
 import { ErrorText } from "./Shell";
 import { useSyncState } from "./sync/syncContext";
 
@@ -17,16 +18,6 @@ const JOINED = "Joined the ledger in the repo. Your changes from this device are
 const JOINED_ALL = "Joined the ledger in the repo. Everything on this device is in it.";
 const OTHER_KEY =
   "The ledger in the repo now uses a different passphrase, so this device's changes can't be carried into it. Download a backup of this device first: it keeps everything here, locked with this device's passphrase, and can only be restored whole. Then forget this device and join with the new passphrase.";
-
-/** Saves `text` as a file, as the browser downloads one. */
-function download(text: string, name: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
 
 export function EpochGonePanel({
   engine,
@@ -95,7 +86,7 @@ export function EpochGonePanel({
   async function backup() {
     setBusy(true);
     try {
-      download(await engine.exportBackup(), `ledger-backup-${new Date().toISOString().slice(0, 10)}.enc`);
+      downloadFile(await engine.exportBackup(), backupFileName());
       setBackedUp(true);
     } catch (err) {
       setNote({ error: true, text: err instanceof Error ? err.message : String(err) });
