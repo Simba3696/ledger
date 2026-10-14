@@ -50,6 +50,9 @@ const FORBIDDEN_IN_DEFAULT = [
   'ledger-data',
   'Forget this device',
   'ledger-backup',
+  'login/oauth',
+  'ledger:github-signin',
+  'user/installations',
 ]
 
 // No file in the default build may have these in its name.
