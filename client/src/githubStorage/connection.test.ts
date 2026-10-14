@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import { forgetDevice, type Connection } from "../backend/github/deviceStore";
-import { loadSaved, remember, resetMemoryForTests } from "./connection";
+import { forget, loadSaved, remember, resetMemoryForTests } from "./connection";
 
 // #8's connection wrapper over #6's deviceStore. Fictional data only.
 
@@ -39,5 +39,24 @@ describe("the saved connection and key (#8)", () => {
     } finally {
       Object.defineProperty(globalThis, "indexedDB", { value: real, configurable: true });
     }
+  });
+});
+
+describe("Forget this device in the wrapper (#8)", () => {
+  it("in a browser that keeps nothing, forgets what the tab holds and succeeds", async () => {
+    const real = globalThis.indexedDB;
+    Object.defineProperty(globalThis, "indexedDB", { value: undefined, configurable: true });
+    try {
+      await remember(connection, await testKey());
+      expect(await forget(null)).toEqual({ ok: true });
+      expect(await loadSaved()).toEqual({ connection: null, key: null, remembered: false });
+    } finally {
+      Object.defineProperty(globalThis, "indexedDB", { value: real, configurable: true });
+    }
+  });
+
+  it("forced, it drops only what the person was told about: more since then is refused", async () => {
+    const engine = { getState: () => ({ pendingCount: 3, leftBehindOwnCount: 0 }), syncNow: async () => {} } as never;
+    expect(await forget(engine, { force: true, confirmed: { pendingCount: 2, leftBehindOwnCount: 0 } })).toEqual({ ok: false, pendingCount: 3, leftBehindOwnCount: 0 });
   });
 });

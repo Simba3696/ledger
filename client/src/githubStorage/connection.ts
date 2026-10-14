@@ -48,13 +48,37 @@ export async function remember(connection: Connection, key: StoredKey): Promise<
   }
 }
 
+/** What a device holds that GitHub doesn't: changes not yet pushed, and
+ * groups of its own changes a restore left behind (which no sync sends;
+ * only Re-apply does). */
+export interface Unsaved {
+  pendingCount: number;
+  leftBehindOwnCount: number;
+}
+
+type ForgetEngine = Parameters<typeof forgetThisDevice>[0];
+
 /** Forget this device (#8): its sync state and its connection and key,
  * on the device and in this tab's memory. Nothing on GitHub changes.
- * Refused while this device has changes GitHub doesn't have (unsynced, or
- * its own left behind by a restore), unless `force`: #7's
- * forgetThisDevice syncs first and says how many. */
-export async function forget(engine: Parameters<typeof forgetThisDevice>[0], options: { force?: boolean } = {}): ReturnType<typeof forgetThisDevice> {
-  const done = await forgetThisDevice(engine, options);
+ * Refused while this device has changes GitHub doesn't have, unless
+ * `force`: #7's forgetThisDevice syncs first and says how many. Forced, it
+ * drops only what the person was told about (`confirmed`): more since then
+ * is refused, and they're asked again. A browser that keeps nothing on the
+ * device (the in-memory fallback) has nothing to delete there. */
+export async function forget(engine: ForgetEngine, options: { force?: boolean; confirmed?: Unsaved } = {}): ReturnType<typeof forgetThisDevice> {
+  if (options.force && options.confirmed && engine) {
+    const { pendingCount, leftBehindOwnCount } = engine.getState();
+    if (pendingCount > options.confirmed.pendingCount || leftBehindOwnCount > options.confirmed.leftBehindOwnCount) return { ok: false, pendingCount, leftBehindOwnCount };
+  }
+  let done: Awaited<ReturnType<typeof forgetThisDevice>>;
+  try {
+    done = await forgetThisDevice(engine, { force: options.force });
+  } catch (err) {
+    // No IndexedDB: the sync state was in memory (cleared already) and so
+    // were the connection and key (cleared below).
+    if (!(err instanceof DeviceStoreUnavailableError)) throw err;
+    done = { ok: true };
+  }
   if (done.ok) {
     memory = null;
     // A restore's marker for the reload after it (sessionStorage).
