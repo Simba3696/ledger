@@ -10,15 +10,16 @@ import type { DocumentBackend } from "../backend/document/DocumentBackend";
 import type { Connection } from "../backend/github/deviceStore";
 import { damagedFileMessage, findLedger, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
-import type { SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
+import type { RejoinResult, SyncEngine, SyncRemote } from "../backend/sync/SyncEngine";
 import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
 import { confirmAndForget } from "./forgetFlow";
-import { ConnectFailed, connect, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
+import { EpochGonePanel } from "./EpochGonePanel";
+import { ConnectFailed, connect, createFromDevice, createNew, openLedger, remoteFor, startFromRepo, unlock, type Deps, type Start, type TokenHolder } from "./ledgerAccess";
 import { readInvite } from "./links";
 import { ConnectStep } from "./onboarding/ConnectStep";
 import { CreateLedger } from "./onboarding/CreateLedger";
-import { flow, initialScreen, type FlowEvent, type Path, type Target } from "./onboarding/flow";
+import { CREATE_UNKNOWN, flow, initialScreen, type FlowEvent, type Path, type Target } from "./onboarding/flow";
 import { Blocked, Misconfigured, Unsupported } from "./onboarding/Messages";
 import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
@@ -29,7 +30,7 @@ import { Settings } from "./Settings";
 import { Shell } from "./Shell";
 import { SyncHost } from "./sync/SyncHost";
 import { SyncPanel } from "./sync/SyncPanel";
-import { connectError, OTHER_REPO } from "./token";
+import { connectError, OTHER_REPO, TOKEN_REFUSED } from "./token";
 
 // GitHub mode's gate (#8): from a fresh browser to an open ledger. flow.ts
 // decides which screen shows; this does the work each step needs (the
@@ -349,6 +350,28 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
     return outcome.kind === "failed" ? outcome.message : null;
   }
 
+  /** "Create a new ledger from this device" (no ledger left in the repo):
+   * a genesis of what it shows, then the join into it. A ledger that
+   * appeared meanwhile (another device's, or a create that won a race) is
+   * joined instead. What rejoin answered, or an error to show. */
+  async function onCreateFromDevice(): Promise<RejoinResult | string> {
+    const key = work.current.key;
+    if (!open || !key) return "This device can't create a ledger now.";
+    try {
+      const created = await createFromDevice(open.engine, open.remote, key, open.connection.login);
+      if (created.kind === "unknown") return CREATE_UNKNOWN;
+      if (created.kind === "failed") return created.detail;
+      if (created.kind === "exists" && created.damagedFile) return damagedFileMessage(created.damagedFile);
+      return await open.engine.rejoin();
+    } catch (err) {
+      if (tokenRefused(err)) {
+        dispatch({ type: "tokenRejected" });
+        return TOKEN_REFUSED;
+      }
+      return connectError(err, targetOf(open.connection), { write: true }).message;
+    }
+  }
+
   /** Try again from a blocked screen: with what this device saved, open
    * the ledger again; with a connection from the steps, look at the repo
    * again; with neither, back to the connect card. */
@@ -394,6 +417,7 @@ export function GitHubGate({ deps = {} }: { deps?: Deps }) {
         bar={
           <>
             <SyncPanel />
+            <EpochGonePanel engine={open.engine} onCreate={onCreateFromDevice} onForget={onForget} />
             {view === "settings" && (
               <Shell>
                 <Settings
