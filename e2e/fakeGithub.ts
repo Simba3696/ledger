@@ -20,28 +20,35 @@
  * answers for it. Fictional data only.
  */
 import type { BrowserContext, Route } from "playwright";
-import { createFakeGitHub, type FakeGitHub, type FakeRepo, type FakeToken } from "../client/src/backend/github/fakeGitHub.js";
+import {
+  BROWSER_VISIBLE_HEADERS,
+  PREFLIGHT_ALLOWED_HEADERS,
+  createFakeGitHub,
+  type FakeGitHub,
+  type FakeRepo,
+  type FakeToken,
+} from "../client/src/backend/github/fakeGitHub.js";
 import { parseRepoFileName } from "../client/src/backend/sync/epoch.js";
 
 const API = "https://api.github.com";
 const FONT_HOSTS = new Set(["fonts.googleapis.com", "fonts.gstatic.com"]);
 
-/** What GitHub's API answers every cross-origin request with (October
- * 2026), so the page may read the response; the fake already left out every
- * header a browser would hide. */
+/** What GitHub's API answers every cross-origin request with, so the page
+ * may read the response. The header lists are the fake's own (recorded
+ * from api.github.com), so the adapter can't drift from them; the fake
+ * already left out every header a browser would hide. */
 const CORS_RESPONSE_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
-  "access-control-expose-headers":
-    "ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset",
+  "access-control-expose-headers": [...BROWSER_VISIBLE_HEADERS].join(", "),
 };
 
-/** GitHub's answer to a CORS preflight. Chromium usually answers preflights
- * itself while requests are intercepted; this covers it if one is routed. */
+/** GitHub's answer to a CORS preflight. Chromium answers preflights itself
+ * while Playwright intercepts requests, so this runs only if one is ever
+ * routed here. */
 const PREFLIGHT_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE",
-  "access-control-allow-headers":
-    "Authorization, Content-Type, If-Match, If-Modified-Since, If-None-Match, If-Unmodified-Since, Accept-Encoding, X-GitHub-OTP, X-Requested-With, User-Agent, GraphQL-Features, X-Github-Next-Global-ID, X-GitHub-Api-Version, X-Fetch-Nonce, Copilot-Integration-Id, DD-CLIENT-TOKEN, X-Client-Application",
+  "access-control-allow-headers": [...PREFLIGHT_ALLOWED_HEADERS].join(", "),
   "access-control-max-age": "86400",
 };
 
@@ -59,7 +66,7 @@ export interface RoutedRequest {
   /** Path and query after https://api.github.com. */
   path: string;
   /** GitHub's status, or how the request failed. */
-  status: number | "offline" | "network" | "timeout";
+  status: number | "offline" | "network";
   /** The token's login, when the fake knows the token. */
   login: string | null;
   /** The file a PUT wrote under ledger/, and whether it sent a sha. */
@@ -159,11 +166,12 @@ export function createFakeGitHubAdapter({
     try {
       res = await fake.fetchAs(device)(`${API}${path}`, { method, headers, body });
     } catch (err) {
-      // The fake failing a request as the network would: a dropped
-      // connection, a timeout, or a header CORS would refuse.
-      const timedOut = err instanceof Error && err.name === "TimeoutError";
-      entry.status = timedOut ? "timeout" : "network";
-      await route.abort(timedOut ? "timedout" : "failed");
+      // The fake fails a request as the network would only when a check
+      // injects that (none does), or when the page sent a header GitHub's
+      // CORS preflight refuses: either way a problem for the run.
+      entry.status = "network";
+      errors.push(`${name}: the fake GitHub refused ${method} ${path}: ${err instanceof Error ? err.message : String(err)}`);
+      await route.abort("failed");
       return;
     }
     entry.status = res.status;
