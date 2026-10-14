@@ -432,6 +432,7 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | `APP_TIMEZONE` | server, function | IANA zone for "today" (default `Asia/Kolkata`) |
 | `AUTH_DISABLED` | local only | `true` skips JWT checks; refused under `NODE_ENV=production`, `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT`. `npm run dev` and e2e don't use it (they sign in as the seeded owner), and e2e refuses to run with it set |
 | `ENABLED_MODULES` | server, function | Comma-separated sections to serve: `expenses`, `finances`, `debts`, `emi`, `credit-cards`, `subscriptions`. Unset or blank = all. Unknown names fail at startup (§5.1, [ADR-0006](../adr/0006-enabled-modules-per-deployment.md)) |
+| `VITE_DEFAULT_MODULES` | client (build time), GitHub storage build only | The sections a new ledger starts with ticked on the Create screen (#8), with `ENABLED_MODULES`'s rules: unset or blank = all; an unknown name shows a "misconfigured" screen instead of onboarding. Read only in `client/src/githubStorage/defaults.ts`; the Supabase build ignores it |
 | `PORT` | local only | Dev server port (default 4000; a second checkout running alongside another sets its own, e.g. 4100) |
 | `VITE_DEV_PORT` | local only | Vite dev server port (default 5173; e.g. 5273 in a second checkout). `scripts/kill-ports.js` reads it too |
 | `VITE_API_PROXY_TARGET` | local only | Where the Vite dev server proxies `/api` (default `http://localhost:4000`); must match `PORT` |
