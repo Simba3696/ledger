@@ -234,7 +234,7 @@ async function open(h: Harness, slot: Slot, store: MemoryStore, init?: { epoch: 
     actor: slot.login,
     store: gate,
     locks: null,
-    log: (message, err) => h.log.push(`${slot.name}: ${message}${err ? ` (${err instanceof Error ? err.message : String(err)})` : ""}`),
+    log: (level, message, err) => h.log.push(`${slot.name}: ${level}: ${message}${err ? ` (${err instanceof Error ? err.message : String(err)})` : ""}`),
     remote: { client: client(h, slot, life, () => engine), branch: "main" },
     events: {},
     random: () => 0.5,
@@ -525,7 +525,7 @@ function expectInEffect(slot: Slot, marker: string, result: ReapplyResult, befor
     slot.engine
       .notices()
       .filter((n) => !before.has(n.key))
-      .flatMap((n) => ("registers" in n.notice ? n.notice.registers.map((r) => r.key) : [])),
+      .flatMap((n) => ("registers" in n.notice ? n.notice.registers.map((r) => r.key) : n.notice.kind === "deleted" ? [`${n.notice.target.coll}/${n.notice.target.id}`] : [])),
   );
   for (const item of result.applied) {
     let missing: string[];
@@ -533,7 +533,9 @@ function expectInEffect(slot: Slot, marker: string, result: ReapplyResult, befor
     else {
       const record = recordIn(doc, item.coll, item.id);
       if (item.kind === "delete") missing = record === undefined ? [] : [`${item.coll}/${item.id}`];
-      else if (record === undefined) missing = [`${item.coll}/${item.id}`];
+      // A delete joined while the re-apply saved removed the record: it is
+      // told by a "deleted" notice (section 4.2 rule 2), Add it back.
+      else if (record === undefined) missing = told.has(`${item.coll}/${item.id}`) ? [] : [`${item.coll}/${item.id}`];
       else missing = Object.entries(item.fields).filter(([field, value]) => plainText(record[field]) !== plainText(value) && !told.has(`${item.coll}/${item.id}/${field}`)).map(([field]) => `${item.coll}/${item.id}/${field}`);
     }
     if (missing.length > 0) throw new Error(`re-apply of ${marker} on ${slot.name} says ${itemTexts(item).join(", ")} applied, but ${missing.join(", ")} is neither in effect nor told`);

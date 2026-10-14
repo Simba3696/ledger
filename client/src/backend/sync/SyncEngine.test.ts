@@ -9,7 +9,7 @@ import { FakeLocks, deferred, dumpDatabase, faultyIndexedDB, hookedStore, tamper
 import { clearSyncState, openSyncStore, type SyncStore } from "./persist";
 import { decodeDelta, seal, unseal, type DeviceKey } from "./records";
 import { genesisState } from "./state";
-import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, type EngineState, type SyncEngineOptions } from "./SyncEngine";
+import { DEVICE_SAVE_FAILED, OTHER_TAB, SyncEngine, defaultSyncLog, type EngineState, type SyncEngineOptions } from "./SyncEngine";
 import { SyncedHost } from "./SyncedHost";
 import { Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -313,6 +313,32 @@ describe("commit path (section 3.5)", () => {
     expect(isWritableDocument(d.engine.current())).toBe(true);
     // The remote change bumped the revision; the own write didn't.
     expect(d.engine.getState().revision).toBe(1);
+  });
+
+  it("tells the device whose edit a delete joined after its diff, and before its save, removed (harness seed 140353)", async () => {
+    // The write is diffed while a join of Sam's delete waits in the
+    // mutation queue, so it is saved after that join: the same clash as
+    // when the delete arrives after the save, and told the same way
+    // (section 4.2 rule 2), never silently lost.
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await sam.backend.deleteEntry(2026, 5, (await sam.backend.getMonth(2026, 5))[0].row);
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, sam.ops[1]]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+
+    expect(remarks(d)).toEqual([]);
+    expect(d.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", winner: expect.objectContaining({ device: X }), target: expect.objectContaining({ coll: "e", month: "2026-05", name: "Groceries" }) })]);
   });
 
   it("persists a remote join and its bookkeeping in one transaction", async () => {
@@ -850,5 +876,34 @@ describe("nothing on the device is plaintext (AC15)", () => {
         "writerToken",
       ].sort(),
     );
+  });
+});
+
+describe("the default log", () => {
+  function spies() {
+    return {
+      info: vi.spyOn(console, "info").mockImplementation(() => {}),
+      warn: vi.spyOn(console, "warn").mockImplementation(() => {}),
+      error: vi.spyOn(console, "error").mockImplementation(() => {}),
+    };
+  }
+
+  it("sends routine progress to console.info only, with no 'undefined' after it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("info", "the restore's genesis e000002-0000000b landed after all");
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(info.mock.calls).toEqual([["ledger:sync: the restore's genesis e000002-0000000b landed after all"]]);
+  });
+
+  it("sends a warning to console.warn, and a failure to console.error, whether or not an error object comes with it", () => {
+    const { info, warn, error } = spies();
+    defaultSyncLog("warn", "the repo refused 4 writes of this device's log in a row; trying again on the next trigger");
+    defaultSyncLog("error", "this device's own log would be refused (too large); it is not sent");
+    const err = new Error("boom");
+    defaultSyncLog("error", "sync failed; it will be tried again", err);
+    expect(info).not.toHaveBeenCalled();
+    expect(warn.mock.calls).toEqual([["ledger:sync: the repo refused 4 writes of this device's log in a row; trying again on the next trigger"]]);
+    expect(error.mock.calls).toEqual([["ledger:sync: this device's own log would be refused (too large); it is not sent"], ["ledger:sync: sync failed; it will be tried again", err]]);
   });
 });
