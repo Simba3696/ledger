@@ -214,7 +214,8 @@ const passphrase = (label: string) => `${label} ${randomBytes(9).toString("base6
 const PASS = { personal: passphrase("personal"), household: passphrase("household"), other: passphrase("other"), tenYear: passphrase("ten year") };
 
 const SECTION_IDS = ["expenses", "finances", "debts", "emi", "credit-cards", "subscriptions"];
-const ALLOWED_KEYS = new Set(["ledger-theme", "ledger-upcoming-collapsed", "ledger-emi-projection-scale"]);
+// The shared app's own display settings, which both builds keep.
+const ALLOWED_KEYS = new Set(["ledger-theme", "ledger-upcoming-collapsed", "ledger-emi-projection-scale", "ledger-dashboard-average-window"]);
 const LOCKED_TAIL = "is locked. Unlock it first from the app if you really need to add an entry there.";
 
 /** A console error or warning (or an uncaught page error). */
@@ -792,7 +793,7 @@ async function main() {
     }));
     const badNames = [...names.databases, ...names.local, ...names.session].filter((n) => !n.startsWith("ledger:") && !ALLOWED_KEYS.has(n));
     check(
-      "6. Every IndexedDB and Web Storage name this build adds starts with ledger: (the three ledger-* keys allowed)",
+      "6. Every IndexedDB and Web Storage name this build adds starts with ledger: (the shared app's ledger-* display settings allowed)",
       badNames.length === 0 && names.databases.includes("ledger:github"),
       names,
     );
@@ -1178,7 +1179,7 @@ async function main() {
     check(`11. A ${tenExpenses}-expense, 10-year ledger seeded into the fake opens in a fresh context`, (await T.page.locator(".tabs").count()) === 1);
     {
       const year = 2020;
-      await T.page.locator(".dashboard-header select").selectOption(String(year));
+      await T.page.locator(".dashboard-header select:not([aria-label=\"Average line\"])").selectOption(String(year));
       await T.page.locator(".dashboard-total span", { hasText: `Total for ${year}` }).waitFor();
       await T.page.waitForSelector(".loading-overlay", { state: "detached" });
       const cents = Object.entries(tenYears.expenses)
