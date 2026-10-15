@@ -295,7 +295,9 @@ export class FormDrafts {
       for (const d of was.drafts) if (!drafts.some((x) => x.key === d.key)) drafts.push(d);
       for (const r of was.rows) if (!rows.some((x) => x.key === r.key)) rows.push({ ...r, tries: 0 });
     }
-    const focus = this.#focusOf(active, scan) ?? (was?.focus ?? null);
+    // A focus not yet put back is kept only while nothing else has it.
+    const idle = active === null || tagOf(active) === "BODY";
+    const focus = this.#focusOf(active, scan) ?? (idle ? (was?.focus ?? null) : null);
     this.#captured = drafts.length > 0 || rows.length > 0 || focus ? { drafts, rows, focus } : null;
     this.#pending = null;
   }
@@ -337,7 +339,9 @@ export class FormDrafts {
       if (acted.has(d.scope)) continue;
       const f = scan.byKey.get(d.key);
       if (!f || f.kind !== d.kind) continue;
-      const drop = () => p.drafts.splice(p.drafts.indexOf(d), 1);
+      const drop = () => {
+        p.drafts = p.drafts.filter((x) => x !== d);
+      };
       if (this.#claimed.has(f.el)) {
         drop();
         continue;
