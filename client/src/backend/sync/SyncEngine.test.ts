@@ -413,6 +413,40 @@ describe("commit path (section 3.5)", () => {
     expect(two.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", loser: { L: newer.L, device: two.engine.deviceId } })]);
   });
 
+  it("tells an overwrite once, with the newer value as mine, when the join between a newer write's diff and its save already told it for an older edit (#14)", async () => {
+    // The same window as above, for rule 1: Sam's edit (60) beats both of
+    // Alex's (45, saved, then 50, diffed while the join waits). Joined
+    // after the save, it is told once, "mine" being 50; "Use mine" on a
+    // second notice naming 45 would set back a value Alex had replaced.
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    // Sam's edit gets an L above both of Alex's, never having seen either.
+    for (const remarks of ["Bus", "Rent", "Tea"]) await sam.backend.addEntry({ ...ENTRY, remarks });
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 60 });
+    const edit = sam.ops.at(-1)!;
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, edit]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 50 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+
+    const newer = d.engine.pushableOps().at(-1)!;
+    expect(newer.L).toBeLessThan(edit.L);
+    expect(d.engine.current().expenses["2026-05"].map((e) => e.amount)).toEqual(["60.00"]);
+    expect(d.engine.notices().map((v) => v.notice)).toEqual([
+      expect.objectContaining({ kind: "overwrite", winner: expect.objectContaining({ L: edit.L, device: X }), loser: { L: newer.L, device: d.engine.deviceId }, registers: [expect.objectContaining({ theirs: "60.00", mine: "50.00" })] }),
+    ]);
+  });
+
   it("persists a remote join and its bookkeeping in one transaction", async () => {
     const one = await device();
     const sam = new Replica(X, emptyDocument(), { actor: "sam" });
