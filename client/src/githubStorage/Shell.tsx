@@ -29,16 +29,39 @@ export function Shell({ children }: { children: ReactNode }) {
 
 /** One screen's card. Its heading takes focus whenever `focusKey` changes,
  * so a screen reader hears each step, and keyboard focus starts there. */
-export function Card({ title, focusKey, children }: { title: string; focusKey: string; children: ReactNode }) {
+/** A card's close button, top right of its heading: a panel opened over the
+ * ledger (Settings) closes the way a dialog does. */
+export interface CardClose {
+  label: string;
+  onClose: () => void;
+  disabled?: boolean;
+  testId?: string;
+}
+
+export function Card({ title, focusKey, close, children }: { title: string; focusKey: string; close?: CardClose; children: ReactNode }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     heading.current?.focus();
   }, [focusKey]);
+  const h2 = (
+    <h2 id={`gh-${focusKey}`} ref={heading} tabIndex={-1}>
+      {title}
+    </h2>
+  );
   return (
     <section className="auth-card gh-card" aria-labelledby={`gh-${focusKey}`}>
-      <h2 id={`gh-${focusKey}`} ref={heading} tabIndex={-1}>
-        {title}
-      </h2>
+      {close ? (
+        <div className="gh-card-head">
+          {h2}
+          <button type="button" className="gh-close" aria-label={close.label} title={close.label} disabled={close.disabled} onClick={close.onClose} data-testid={close.testId}>
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      ) : (
+        h2
+      )}
       {children}
     </section>
   );

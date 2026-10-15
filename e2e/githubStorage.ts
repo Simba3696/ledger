@@ -516,7 +516,7 @@ async function main() {
     await waitHeading(page, "Settings");
   }
   async function closeSettings(page: Page) {
-    await page.click('[data-testid="gh-settings-done"]');
+    await page.click('[data-testid="gh-settings-close"]');
     await page.waitForSelector(".tabs");
   }
   const errorText = async (page: Page) => (await page.locator(".error").allInnerTexts()).map((t) => t.trim());

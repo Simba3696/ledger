@@ -14,7 +14,8 @@ import { checkPastedToken } from "./token";
 // GitHub mode's Settings (#8), opened from the header's gear: the
 // connection (and a new token), the sections and time zone, the household
 // invite, and Forget this device. It replaces the ledger on screen inside
-// SyncHost, so the sync status stays live; Done brings the ledger back,
+// SyncHost, so the sync status stays live; its close button (the X, top
+// right) brings the ledger back,
 // remounted when something changed, so its nav reflects the sections.
 
 const EXPIRY_WARNING_DAYS = 14;
@@ -141,13 +142,7 @@ export function Settings({
   return (
     <>
       <DialogHost />
-      <Card title="Settings" focusKey="settings">
-        <div className="gh-actions">
-          <span />
-          <button type="button" className="submit-btn" disabled={busy} onClick={() => onDone(changed)} data-testid="gh-settings-done">
-            Done
-          </button>
-        </div>
+      <Card title="Settings" focusKey="settings" close={{ label: "Close settings", onClose: () => onDone(changed), disabled: busy, testId: "gh-settings-close" }}>
 
         <section className="gh-settings-section" aria-labelledby="gh-settings-connection">
           <h3 id="gh-settings-connection">Connection</h3>

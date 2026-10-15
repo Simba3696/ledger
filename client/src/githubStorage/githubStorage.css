@@ -47,6 +47,46 @@
   text-align: left;
 }
 
+/* A card heading with a close button (Settings): the X sits top right,
+ * a 40px tap target whose outer edge lines up with the card's padding. */
+.gh-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gh-close {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  margin: -8px -10px -8px 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.gh-close:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.gh-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.gh-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .gh-actions {
   display: flex;
   justify-content: space-between;
