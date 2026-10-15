@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerDocument } from "../document/types";
 import { testKey } from "./localTestkit";
 import { repoPath } from "./repoFiles";
-import { EPOCH, FULL, cycle, device, entry, plant, quiesce, remarks, repoOps, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
+import { EPOCH, FULL, cycle, device, entry, plant, quiesce, remarks, repoOps, row, world, type Device, type DeviceOptions, type World } from "./cycleTestkit";
 import type { SyncEngine } from "./SyncEngine";
 
 // A device's own group left behind by a losing restore, when the winning
@@ -312,5 +312,216 @@ describe("a genesis in the line that can't be read (#14)", () => {
 
   it("the same when it can't be fetched at the first switch, only at the second", async () => {
     await run("unreachable once");
+  });
+});
+
+// Review of #14: what a genesis held back must never come back once
+// superseded. A part trimmed by a genesis is owed again only while that
+// genesis may still lose, and never with a value a later write replaced.
+const amounts = (d: Device) => (d.engine.current().expenses["2026-05"] ?? []).map((e) => `${e.remarks}=${e.amount}`);
+const offeredOf = (d: Device) => d.engine.leftBehind().map((g) => ({ epoch: g.epoch, own: g.own, items: g.items.map((i) => (i.kind === "edit" ? `edit ${JSON.stringify(i.fields)}` : i.kind === "add" ? `add ${i.record.remarks}=${i.record.amount}` : i.kind)) }));
+const offersValue = (d: Device, value: string) => JSON.stringify(offeredOf(d)).includes(value);
+
+describe("a held-back part is never offered once superseded (#14 review)", () => {
+  /** Alex's E1 edit to 45 is left behind by E2, then held by E3's genesis
+   * (a sequential restore of a backup with 45), then superseded by 70. */
+  async function heldThenEdited(): Promise<Device> {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a);
+    const with45 = structuredClone(a.engine.current());
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    expect(offersValue(a, "45.00")).toBe(true);
+    await plantRestore("e000003-0000000a", with45, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    expect(a.engine.leftBehind()).toEqual([]);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, a);
+    return a;
+  }
+
+  it("after a later own edit, through two racing restores based on the epoch that held it", async () => {
+    const a = await heldThenEdited();
+    const with70 = structuredClone(a.engine.current());
+    const cut = { [a.engine.deviceId!]: a.engine.pushableOps().at(-1)!.L };
+    await plantRestore("e000004-0000000a", with70, cut, "e000003-0000000a");
+    await cycle(w, a);
+    await plantRestore("e000004-0000000b", with70, cut, "e000003-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000b");
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=70.00"] });
+  });
+
+  it("after a later own edit, through sequential restores and then a race", async () => {
+    const a = await heldThenEdited();
+    const with70 = structuredClone(a.engine.current());
+    let prev = "e000003-0000000a";
+    for (const n of [4, 5, 6, 7]) {
+      const epoch = `e00000${n}-0000000a`;
+      const last = a.engine.pushableOps().at(-1)?.L;
+      await plantRestore(epoch, with70, last === undefined ? {} : { [a.engine.deviceId!]: last }, prev);
+      await cycle(w, a);
+      expect(a.engine.epochKey).toBe(epoch);
+      expect(a.engine.leftBehind()).toEqual([]);
+      prev = epoch;
+    }
+    await plantRestore("e000008-0000000a", with70, {}, prev);
+    await cycle(w, a);
+    await plantRestore("e000008-0000000b", with70, {}, prev);
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000008-0000000b");
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=70.00"] });
+  });
+
+  it("an own group re-applied in an epoch that then lost, and edited again there, is offered once, with the newer value", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a);
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await plantRestore("e000003-0000000a", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    const [group] = a.engine.leftBehind();
+    await a.engine.reapply(group.id);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, a);
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=70.00"] });
+
+    // E3b, based on E2 too, wins: the re-apply and the 70 are in no ledger.
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect(offeredOf(a).filter((g) => g.own).flatMap((g) => g.items)).toEqual([expect.stringContaining("70.00")]);
+  });
+});
+
+// Second review of #14: a rejoin settles no line, so what decides is the
+// rejoined epoch itself. Alex's E1 45 is offered on the switch to E2a; E3a
+// and E3b, both based on E2a, both hold 45; the switch E3a -> E3b trims it
+// again; E3b's genesis is deleted on GitHub; Sam rejoins E3a and edits the
+// amount to 70 there; Alex rejoins E3a too. E3a's genesis held 45, and a
+// later write there replaced it: offering "E1: edit amount 45.00" would set
+// Sam's 70 back.
+describe("a rejoin never offers a part the rejoined epoch held or superseded (#14 second review)", () => {
+  it("is not offered E1's 45 once Sam set 70 in the rejoined epoch, whose genesis held 45", async () => {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a, b);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a, b);
+    const with45 = structuredClone(a.engine.current());
+
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a, b);
+    expect(offersValue(a, "45.00")).toBe(true);
+    await plantRestore("e000003-0000000a", with45, {}, "e000002-0000000a");
+    await cycle(w, a, b);
+    expect([a.engine.epochKey, b.engine.epochKey]).toEqual(["e000003-0000000a", "e000003-0000000a"]);
+    expect(a.engine.leftBehind()).toEqual([]);
+    await plantRestore("e000003-0000000b", with45, {}, "e000002-0000000a");
+    await cycle(w, a, b);
+    expect([a.engine.epochKey, b.engine.epochKey]).toEqual(["e000003-0000000b", "e000003-0000000b"]);
+    expect(offeredOf(a)).toEqual([]);
+
+    // E3b's genesis is deleted; Sam rejoins E3a first and edits the amount there.
+    w.fake.removeFile(FULL, "ledger/e000003-0000000b.genesis.enc");
+    await cycle(w, b, b);
+    expect(await b.engine.rejoin()).toEqual({ kind: "joined", epoch: "e000003-0000000a" });
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, b);
+    await cycle(w, a, a);
+    expect(await a.engine.rejoin()).toEqual({ kind: "joined", epoch: "e000003-0000000a" });
+    await quiesce(w, a, b);
+    // A superseded value is never offered.
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=70.00"] });
+  });
+});
+
+// More of the same guard: a part a genesis held, then superseded in that
+// epoch or a later one, is never offered when that genesis loses. Each
+// passes on main (which never offers such a part again); they hold the
+// line for the code that offers what a losing genesis held.
+describe("a part a losing genesis held is never offered once superseded (#14)", () => {
+  /** Alex's E1 edit to 45 offered on the switch to E2, then held by E3a's
+   * genesis (based on E2), with Sam on E3a too. */
+  async function heldByE3a(): Promise<{ a: Device; b: Device; before: LedgerDocument; with45: LedgerDocument }> {
+    const a = await open({ login: "alex" });
+    const b = await open({ login: "sam" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await a.backend.addEntry(entry("Bus ticket", 5));
+    await quiesce(w, a, b);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a, b);
+    const with45 = structuredClone(a.engine.current());
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a, b);
+    expect(offersValue(a, "45.00")).toBe(true);
+    await plantRestore("e000003-0000000a", with45, {}, "e000002-0000000a");
+    await cycle(w, a, b);
+    expect([a.engine.epochKey, b.engine.epochKey]).toEqual(["e000003-0000000a", "e000003-0000000a"]);
+    expect(a.engine.leftBehind()).toEqual([]);
+    return { a, b, before, with45 };
+  }
+
+  it("by another device's edit there, joined before the switch", async () => {
+    const { a, b, before } = await heldByE3a();
+    await b.backend.updateEntry(2026, 5, await row(b, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, b, a);
+    expect(amounts(a)).toContain("Groceries=70.00");
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: false, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
+  });
+
+  it("by a delete of its record there", async () => {
+    const { a, before } = await heldByE3a();
+    await a.backend.deleteEntry(2026, 5, await row(a, "Groceries"));
+    await quiesce(w, a);
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    // The delete itself is offered: the winner still has Groceries.
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: ["delete"] }]);
+  });
+
+  it("by an own edit in a later epoch whose genesis held it too, when a race two levels up leaves both out", async () => {
+    const { a, with45, before } = await heldByE3a();
+    await plantRestore("e000004-0000000a", with45, {}, "e000003-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000a");
+    expect(a.engine.leftBehind()).toEqual([]);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, a);
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await plantRestore("e000004-0000000b", before, {}, "e000003-0000000b");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect(offeredOf(a)).toEqual([{ epoch: "e000004-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
   });
 });
