@@ -348,6 +348,31 @@ describe("FormDrafts: Add Expense", () => {
     expect(actions.focused).toBeNull();
   });
 
+  it("forgets a focus not put back yet once the person has focused something else, at the next remount", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = addExpenseForm();
+    const root = ledger(before.form);
+    drafts.event("focusin", before.remarks, true);
+
+    drafts.beforeRemount(root, before.remarks);
+    remount(root);
+    drafts.afterRemount(0);
+    expect(drafts.step(root, 0)).toBe(true);
+
+    // Before the form is back, the person moves to the month picker, and
+    // another join remounts again.
+    const picker = h("select", { class: "select", value: "10" });
+    root.append(picker);
+    drafts.beforeRemount(root, picker);
+    const after = addExpenseForm();
+    remount(root, after.form);
+    drafts.afterRemount(10);
+    for (let t = 10; t < 20 && drafts.step(root, t); t++);
+
+    expect(actions.focused).toBeNull();
+  });
+
   it("keeps a checkbox and a select the person changed (Credit Cards, Subscriptions)", () => {
     const actions = fakeActions();
     const drafts = new FormDrafts(actions);
