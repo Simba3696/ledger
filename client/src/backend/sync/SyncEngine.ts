@@ -3464,8 +3464,13 @@ export class SyncEngine {
     // offered, but kept (#14, #heldAcross): owed again should that genesis
     // lose.
     const heldNow: HeldPart[] = [];
-    const holdBack = (whole: LeftBehindGroup) => {
-      const held = heldIn(whole, genesis.state);
+    const holdBack = (whole: LeftBehindGroup, checked = false) => {
+      const trimmed = heldIn(whole, genesis.state);
+      // A carried group's part may already be superseded in the epoch being
+      // left (written over there after it was shown): never kept then. The
+      // projection of that epoch is its own writes, which nothing in it
+      // supersedes.
+      const held = trimmed === null || checked ? trimmed : unsupersededIn(trimmed, pre);
       if (held !== null) heldNow.push({ by: [genesis.epoch], group: held });
     };
     // Groups shown now are carried, less what the new genesis already holds
@@ -3551,7 +3556,7 @@ export class SyncEngine {
     // projected again whenever a winner's line may leave this genesis out.
     if (!genesis.rejoin) {
       for (const whole of leftBehind(pre, fromCut, into, { epoch: from, me: meta.deviceId }, { all: true })) {
-        if (whole.own || groups.get(whole.marker)?.own !== true) holdBack(whole);
+        if (whole.own || groups.get(whole.marker)?.own !== true) holdBack(whole, true);
       }
     }
     // The epoch switched from is kept even with no group: a restore that
