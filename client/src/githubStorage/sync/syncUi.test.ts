@@ -333,6 +333,21 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
   });
 });
 
+describe("the unreadable screen", () => {
+  /** SyncHost over an engine that only reports `state`. */
+  const host = (state: Partial<EngineState>) => {
+    const engine = { subscribe: () => () => {}, getState: () => ({ ...STATE, status: "unreadable", hasDocument: false, ...state }), notices: () => [], leftBehind: () => [], retry: async () => {}, startAsNewDevice: async () => {} };
+    return renderToString(createElement(SyncHost, { engine: engine as unknown as SyncEngine }));
+  };
+
+  it("offers a new start for records it can't read, but never for a device sealed under the key it joined with (review of D32)", () => {
+    expect(host({ unreadable: "malformed" })).toContain("Start as a new device");
+    const sealed = host({ unreadable: "keyChanged", keyNeeded: { salt: "c2FsdA==", iter: 600000 } });
+    expect(sealed).toContain("Enter it to open them.");
+    expect(sealed).not.toContain("Start as a new device");
+  });
+});
+
 describe("a group's heading", () => {
   it("names a ledger started at the same moment (a racing create's join, D32), not a backup restored", () => {
     const into = { epoch: "e000001-ffffffff", by: "sam", at: Date.UTC(2026, 9, 15) };
