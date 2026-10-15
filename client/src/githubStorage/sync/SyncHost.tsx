@@ -65,9 +65,14 @@ export function SyncHost({ engine, bar, children }: { engine: SyncEngine; bar?: 
         <button type="button" onClick={() => void engine.retry()}>
           Try again
         </button>
-        <button type="button" onClick={() => void engine.startAsNewDevice()}>
-          Start as a new device
-        </button>
+        {/* A device sealed under the key it joined with (D32) needs only the
+            passphrase, which the gate asks for: a new start would park
+            everything on it. */}
+        {state.unreadable !== "keyChanged" && (
+          <button type="button" onClick={() => void engine.startAsNewDevice()}>
+            Start as a new device
+          </button>
+        )}
       </div>
     );
   }
