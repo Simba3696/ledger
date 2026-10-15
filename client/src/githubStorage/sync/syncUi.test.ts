@@ -19,7 +19,7 @@ import { SyncHost, SyncLayers } from "./SyncHost";
 import { SyncMessages, VOLATILE } from "./SyncMessages";
 import { SyncPanel } from "./SyncPanel";
 import { SyncStatus } from "./SyncStatus";
-import { actionLabel, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
+import { actionLabel, leftBehindHeading, leftBehindItemText, monthLabel, noticeText, reapplyText, refusalText, reviewText, statusText, valueText } from "./labels";
 import { useSyncState, type SyncStateValue } from "./syncContext";
 import { nextFocus } from "./reviewFocus";
 import syncCss from "./sync.css?raw";
@@ -329,6 +329,15 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
     const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
     expect(html).toContain("Added Taxi");
     expect(html).not.toContain("to review");
+  });
+});
+
+describe("a group's heading", () => {
+  it("names a ledger started at the same moment (a racing create's join, D32), not a backup restored", () => {
+    const into = { epoch: "e000001-ffffffff", by: "sam", at: Date.UTC(2026, 9, 15) };
+    expect(leftBehindHeading(group(true, A, { into }))).toMatch(/^sam started the ledger in the repo on .+. 1 change made on this device wasn't in it.$/);
+    expect(leftBehindHeading(group(false, B, { into }))).toMatch(/^1 change from sam wasn't in the ledger sam started on .+.$/);
+    expect(leftBehindHeading(group(true, A))).toContain("kai restored a backup on");
   });
 });
 
