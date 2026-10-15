@@ -525,3 +525,66 @@ describe("a part a losing genesis held is never offered once superseded (#14)", 
     expect(offeredOf(a)).toEqual([{ epoch: "e000004-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
   });
 });
+
+// Two geneses in one line both held the part: it is owed only once the
+// winner's line leaves both out, and then offered once (#14).
+describe("a part two geneses of one line held (#14)", () => {
+  it("is offered once when a race two levels up leaves both out", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a);
+    const with45 = structuredClone(a.engine.current());
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await plantRestore("e000003-0000000a", with45, {}, "e000002-0000000a");
+    await cycle(w, a);
+    await plantRestore("e000004-0000000a", with45, {}, "e000003-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000a");
+    expect(a.engine.leftBehind()).toEqual([]);
+
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await plantRestore("e000004-0000000b", before, {}, "e000003-0000000b");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000b");
+    expect(offeredOf(a)).toEqual([{ epoch: EPOCH, own: true, items: [`edit ${JSON.stringify({ amount: "45.00" })}`] }]);
+  });
+});
+
+// A rejoin's winner based on the epoch a held part came from, under a cut
+// that covers it: the winner's restorer saw the change and left it out, so
+// it is not owed (#14; the cut is judged from that epoch's kept state).
+describe("a held part under the rejoined winner's cut (#14)", () => {
+  it("is not offered", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const before = structuredClone(a.engine.current());
+    await a.backend.addEntry(entry("Bus ticket", 5));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const both = structuredClone(a.engine.current());
+
+    // E2a (cut {}) holds Bus ticket: nothing offered, Bus ticket held.
+    await plantRestore("e000002-0000000a", both, {});
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000002-0000000a");
+    expect(a.engine.leftBehind()).toEqual([]);
+    // E2a's genesis is deleted. The epoch left is E2-0 (a lesser key, based
+    // on E1, which saw Bus ticket and restored a backup without it).
+    await plantRestore("e000002-00000001", before, { [deviceInE1]: pushed });
+    w.fake.removeFile(FULL, "ledger/e000002-0000000a.genesis.enc");
+    await cycle(w, a, a);
+    expect(a.engine.getState().epochGone).toEqual({ epoch: "e000002-0000000a", winner: "e000002-00000001" });
+    expect(await a.engine.rejoin()).toEqual({ kind: "joined", epoch: "e000002-00000001" });
+    expect(remarks(a)).toEqual(["Groceries"]);
+    expect(offersValue(a, "Bus ticket")).toBe(false);
+    expect(offeredOf(a)).toEqual([]);
+  });
+});
