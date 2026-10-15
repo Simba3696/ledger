@@ -156,13 +156,13 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     const result = await a.engine.rekeyAndJoin(HOUSEHOLD);
     if (result.kind !== "joined") throw new Error(result.kind);
     a.engine.stop();
-    for (let i = 0; i < 50 && b.engine.getState().status === "locked"; i++) await nextTask();
+    for (const until = Date.now() + 10_000; b.engine.getState().status === "locked" && Date.now() < until; ) await nextTask();
     expect(b.engine.getState()).toMatchObject({ unreadable: "keyChanged", keyNeeded: { salt: theirKey.salt, iter: theirKey.iter } });
     await expect(b.backend.addEntry(entry("Tea"))).rejects.toBeDefined();
     b.engine.stop();
     const c = await device({ ...w, key: result.key }, { login: "alex", store, locks });
     running.push(c.engine);
-    for (let i = 0; i < 50 && c.engine.getState().status === "locked"; i++) await nextTask();
+    for (const until = Date.now() + 10_000; c.engine.getState().status === "locked" && Date.now() < until; ) await nextTask();
     expect(c.engine.epochKey).toBe(THEIRS);
     await c.backend.addEntry(entry("Tea"));
     expect(remarks(c)).toContain("Tea");
