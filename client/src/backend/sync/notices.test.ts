@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { NOTICE_CAP, checkNotice, detectNotices, overCap, type Detected } from "./notices";
+import { NOTICE_CAP, checkNotice, detectNotices, overCap, supersededNotices, type Detected, type StoredNotice } from "./notices";
 import { cloneState, emptyState, joinInto, opState, type Op, type SyncState } from "./state";
 import { compareTags } from "./tags";
 import { createOrderKey } from "./keys";
@@ -510,5 +510,39 @@ describe("stored notices", () => {
     const kept = new Map(Array.from({ length: NOTICE_CAP + 3 }, (_, i) => [`k${String(i).padStart(2, "0")}`, i + 1] as [string, number]));
     expect(overCap(kept)).toEqual(["k00", "k01", "k02"]);
     expect(overCap(new Map([["a", 1]]))).toEqual([]);
+  });
+
+  it("supersededNotices changes only older own notices of a winner that arrived in the join: what the save tells again, and registers it wrote again (#14)", () => {
+    const rec = (id: string) => ({ kind: "record" as const, coll: "e" as const, id, month: "2026-05", name: "Groceries" });
+    const reg = (id: string, field: string, mine: string) => ({ key: `e/${id}/${field}`, theirs: "60.00", mine });
+    const winner = { L: 9, device: B, by: "sam" };
+    const at = { seq: 1, at: 0 };
+    const stored = new Map<string, StoredNotice>([
+      // Told by the join against older own ops: replaced.
+      ["del", { kind: "deleted", winner, loser: { L: 3, device: A }, target: rec("r1"), ...at }],
+      ["ow", { kind: "overwrite", winner, loser: { L: 3, device: A }, target: rec("r2"), registers: [reg("r2", "amount", "45.00"), reg("r2", "remarks", "x")], ...at }],
+      // Untouched: another winner, another record, a loser not older, another device's loser, a fence notice.
+      ["otherWinner", { kind: "deleted", winner: { L: 8, device: B, by: "sam" }, loser: { L: 3, device: A }, target: rec("r1"), ...at }],
+      ["otherRecord", { kind: "deleted", winner, loser: { L: 3, device: A }, target: rec("r3"), ...at }],
+      ["notOlder", { kind: "deleted", winner, loser: { L: 5, device: A }, target: rec("r4"), ...at }],
+      ["notMine", { kind: "deleted", winner, loser: { L: 3, device: deviceId(0xc) }, target: rec("r1"), ...at }],
+      ["fence", { kind: "kept", theirs: [9, B], mine: [3, A], registers: [reg("r1", "amount", "45.00")], ...at }],
+      // The newer write set this register again and beat the winner: no late notice, still dropped.
+      ["beaten", { kind: "overwrite", winner, loser: { L: 3, device: A }, target: rec("r5"), registers: [reg("r5", "amount", "45.00")], ...at }],
+      // A winner that didn't arrive in the join: untouched, whatever was written.
+      ["notArrived", { kind: "overwrite", winner: { L: 7, device: B, by: "sam" }, loser: { L: 3, device: A }, target: rec("r5"), registers: [reg("r5", "amount", "45.00")], ...at }],
+    ]);
+    const late: Detected[] = [
+      { key: "k1", kind: "deleted", winner, loser: { L: 5, device: A }, target: rec("r1") },
+      { key: "k2", kind: "overwrite", winner, loser: { L: 5, device: A }, target: rec("r2"), registers: [reg("r2", "amount", "50.00")] },
+      { key: "k4", kind: "deleted", winner, loser: { L: 5, device: A }, target: rec("r4") },
+    ];
+    const own = { L: 5, wrote: new Set(["e/r2/amount", "e/r5/amount"]) };
+    const arrived = (w: { L: number; device: string }) => w.L !== 7;
+    const { drop, keep } = supersededNotices(stored, own, late, A, arrived);
+    expect(drop).toEqual(["del", "ow", "beaten"]);
+    // The older overwrite keeps the register the newer write didn't touch, and its seq and at.
+    expect(keep).toEqual([["ow", { kind: "overwrite", winner, loser: { L: 3, device: A }, target: rec("r2"), registers: [reg("r2", "remarks", "x")], ...at }]]);
+    expect(supersededNotices(stored, { L: 5, wrote: new Set() }, [], A, arrived)).toEqual({ drop: [], keep: [] });
   });
 });

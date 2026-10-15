@@ -28,7 +28,7 @@ import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHe
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
-import { checkNotice, detectNotices, overCap, type Arrivals, type Detected, type StoredNotice } from "./notices";
+import { checkNotice, detectNotices, overCap, supersededNotices, type Arrivals, type Detected, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
   LOCAL_FORMAT_VERSION,
@@ -1187,17 +1187,38 @@ export class SyncEngine {
     // harness seed 140353: an edit of a record another device's delete,
     // joined in between, removed was otherwise lost with no word).
     const between = op !== null && this.#joinedWhileSaving?.epoch === writer.epoch && this.#joinedWhileSaving.device === writer.device ? this.#joinedWhileSaving : null;
-    let late: [string, NoticeBody][] = [];
+    let late: Detected[] = [];
     let afterOwn: SyncState | null = null;
     if (between !== null && op !== null) {
       afterOwn = cloneState(between.pre);
       applyOp(afterOwn, me, op);
-      late = detectNotices(afterOwn, between.source, between, me)
-        .filter((notice) => notice.loser.L === op.L)
-        .map(({ key, ...body }): [string, NoticeBody] => [key, body]);
+      late = detectNotices(afterOwn, between.source, between, me).filter((notice) => notice.loser.L === op.L);
     }
-    const told = [...fenceNotices, ...late];
-    const noticeWrites = told.length > 0 || settled.length > 0 ? await this.#noticeWrites(told, settled) : null;
+    // That join told its clashes against an older own write, this one not
+    // applied yet: what it told about a register this op wrote again, or a
+    // clash this save tells again naming this op, is no longer so, as a
+    // join after the save would show (#14). Such an older notice goes, or
+    // keeps only its other registers, in its place in the list.
+    // A winner arrived in that join only where the join changed something:
+    // a register or deletion the state before it didn't already hold with
+    // that tag. A snapshot carries every register its device holds, so it
+    // carries again winners told long before; a notice of one of those is
+    // no business of this save (a review of #14).
+    const arrivedTags = new Set<string>();
+    if (between !== null && op !== null) {
+      const changed = (was: Tag | undefined, now: Tag) => (was === undefined || was[0] !== now[0] || was[1] !== now[1] ? arrivedTags.add(`${now[0]}.${now[1]}`) : undefined);
+      for (const [rk, regs] of between.source.rec) for (const [field, reg] of regs) changed(between.pre.rec.get(rk)?.get(field)?.t, reg.t);
+      for (const [key, reg] of between.source.unit) changed(between.pre.unit.get(key)?.t, reg.t);
+      for (const [rk, deletion] of between.source.del) {
+        const was = between.pre.del.get(rk);
+        changed(was === undefined ? undefined : [was.L, was.by], [deletion.L, deletion.by]);
+      }
+    }
+    const arrived = (winner: { L: number; device: string }) => arrivedTags.has(`${winner.L}.${winner.device}`);
+    const superseded = between !== null && op !== null ? supersededNotices(this.#notices, { L: op.L, wrote: new Set(op.set.map(([key]) => key)) }, late, me, arrived) : { drop: [], keep: [] };
+    const told = [...fenceNotices, ...late.map(({ key, ...body }): [string, NoticeBody] => [key, body])];
+    const dropped = [...settled, ...superseded.drop];
+    const noticeWrites = told.length > 0 || dropped.length > 0 ? await this.#noticeWrites(told, dropped, superseded.keep) : null;
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
@@ -2913,13 +2934,16 @@ export class SyncEngine {
   }
 
   /** The notice writes that store `added` (by key) and remove `drop` in a
-   * mutation: a key already stored is left as it is (a pair is told once),
+   * mutation (and store `restored` again as they are, after `drop`): a key
+   * already stored is left as it is (a pair is told once),
    * each new one is numbered after the last, and past the cap the oldest
    * go. Null when nothing changes; otherwise the writes, and the notices to
    * keep (#keepNotices) once they commit. */
-  async #noticeWrites(added: [key: string, notice: NoticeBody][], drop: string[] = []): Promise<{ writes: NonNullable<Mutation["notices"]>; next: Map<string, StoredNotice> } | null> {
+  async #noticeWrites(added: [key: string, notice: NoticeBody][], drop: string[] = [], restored: [key: string, notice: StoredNotice][] = []): Promise<{ writes: NonNullable<Mutation["notices"]>; next: Map<string, StoredNotice> } | null> {
     const next = new Map(this.#notices);
     for (const key of drop) next.delete(key);
+    // Stored again as they are, seq and at kept (a notice trimmed in place).
+    for (const [key, notice] of restored) next.set(key, notice);
     let seq = this.#noticeSeq;
     const at = this.#now();
     const fresh: string[] = [];
@@ -2930,7 +2954,7 @@ export class SyncEngine {
     }
     const over = overCap(new Map([...next].map(([key, notice]) => [key, notice.seq])));
     for (const key of over) next.delete(key);
-    const put = await Promise.all(fresh.filter((key) => next.has(key)).map(async (key): Promise<[string, string]> => [key, await seal(next.get(key)!, this.#key)]));
+    const put = await Promise.all([...restored.map(([key]) => key), ...fresh].filter((key) => next.has(key)).map(async (key): Promise<[string, string]> => [key, await seal(next.get(key)!, this.#key)]));
     const remove = [...drop, ...over].filter((key) => this.#notices.has(key));
     if (put.length === 0 && remove.length === 0) return null;
     return { writes: { put, delete: remove }, next };

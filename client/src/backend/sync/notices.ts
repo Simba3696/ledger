@@ -224,6 +224,51 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
   return [...found.values()];
 }
 
+function sameTarget(a: NoticeTarget, b: NoticeTarget): boolean {
+  if (a.kind === "unit") return b.kind === "unit" && a.key === b.key;
+  return b.kind === "record" && a.coll === b.coll && a.id === b.id;
+}
+
+/** What an own write saved after a join that ran between its diff and its
+ * save (ADR-0008 #14) changes among the `stored` notices. That join told its
+ * clashes against the state without the write, so against an older own
+ * write; joined after the save, they would have been told against the state
+ * with it. So, for a stored notice whose winner `arrived` in that join and
+ * whose loser is an older own op (below `own.L`): a "deleted" notice goes
+ * when the save tells the same delete of the same record again (`late`),
+ * naming the newer write; an overwrite loses every register the newer
+ * write set again (`own.wrote`, register keys), whether that write then
+ * lost to the winner (a late notice names it) or beat it, or set the
+ * winner's own value (no one is told), and every register a late notice of
+ * the same winner and target names. A notice left with no register goes
+ * (`drop`); one left with some is stored again with the rest, keeping its
+ * place in the list (`keep`, with its own seq and at). Any other stored
+ * notice is untouched. */
+export function supersededNotices(
+  stored: ReadonlyMap<string, StoredNotice>,
+  own: { L: number; wrote: ReadonlySet<string> },
+  late: readonly Detected[],
+  me: string,
+  arrived: (winner: { L: number; device: string }) => boolean,
+): { drop: string[]; keep: [key: string, notice: StoredNotice][] } {
+  const drop: string[] = [];
+  const keep: [string, StoredNotice][] = [];
+  for (const [key, old] of stored) {
+    if ((old.kind !== "overwrite" && old.kind !== "deleted") || old.loser.device !== me || old.loser.L >= own.L || !arrived(old.winner)) continue;
+    const newer = late.filter((n) => n.kind === old.kind && n.winner.L === old.winner.L && n.winner.device === old.winner.device && sameTarget(n.target, old.target));
+    if (old.kind === "deleted") {
+      if (newer.length > 0) drop.push(key);
+      continue;
+    }
+    const named = new Set(newer.flatMap((n) => (n.kind === "overwrite" ? n.registers.map((r) => r.key) : [])));
+    const left = old.registers.filter((r) => !named.has(r.key) && !own.wrote.has(r.key));
+    if (left.length === old.registers.length) continue;
+    drop.push(key);
+    if (left.length > 0) keep.push([key, { ...old, registers: left }]);
+  }
+  return { drop, keep };
+}
+
 // --- Stored notices -----------------------------------------------------------
 
 /** A remote write the user hadn't seen when they saved (the stale-UI fence,
