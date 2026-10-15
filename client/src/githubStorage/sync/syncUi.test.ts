@@ -298,6 +298,7 @@ const group = (own: boolean, device: string, extra: Partial<LeftBehindView> = {}
   into: { epoch: "e000002-0000000b", by: "kai", at: Date.UTC(2026, 4, 12) },
   resolvedElsewhere: false,
   figures: false,
+  waitsForEntries: false,
   items: [{ kind: "add", coll: "e", id: ID, record: { id: ID, remarks: own ? "Taxi" : "Bus", amount: "20.00" }, fields: {}, month: "2026-05" }],
   ...extra,
 });

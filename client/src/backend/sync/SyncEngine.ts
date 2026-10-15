@@ -310,6 +310,9 @@ export interface LeftBehindView {
   /** This device's month figures and settings from before it joined a
    * racing create's winner (D32): re-applying them replaces the winner's. */
   figures: boolean;
+  /** A figures group whose entries group is still shown: it can't be
+   * re-applied until that one is re-applied or discarded (ENTRIES_FIRST). */
+  waitsForEntries: boolean;
   items: LeftBehindItem[];
 }
 
@@ -3005,6 +3008,7 @@ export class SyncEngine {
         into: group.into,
         resolvedElsewhere: state.ra.has(group.marker),
         figures: group.figures === true,
+        waitsForEntries: this.#waitsForEntries(group, state),
         items: leftBehindItems(group),
       }));
   }
@@ -3025,9 +3029,20 @@ export class SyncEngine {
     await this.#amend((doc) => {
       const group = this.#leftBehind.get(id);
       if (!group) throw new ApiError(404, ALREADY_RESOLVED);
+      // A lock or a module turned off among the figures would make the
+      // entries skipped, and lost (D32, D28): the entries go first.
+      if (this.#waitsForEntries(group, this.#state!)) throw new ApiError(409, ENTRIES_FIRST);
       result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
     }, { resolves: id });
     return result!;
+  }
+
+  /** Whether `group` is a figures group (D32) whose entries group is still
+   * shown. */
+  #waitsForEntries(group: LeftBehindGroup, state: SyncState): boolean {
+    if (group.waitsFor === undefined) return false;
+    const entries = this.#leftBehind.get(group.waitsFor);
+    return entries !== undefined && !this.#isHidden(entries, state);
   }
 
   /** Discard (section 9.4): an op with only the group's marker. */

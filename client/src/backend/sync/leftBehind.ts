@@ -66,6 +66,10 @@ export interface LeftBehindGroup {
    * (D32), kept apart from its entries: the winner has its own for them,
    * and re-applying these replaces those (splitFigures). */
   figures?: true;
+  /** A figures group's entries group (its marker): the figures can't be
+   * re-applied while that one is shown, as a lock or a module turned off
+   * among them would make its entries skipped, and lost (D28). */
+  waitsFor?: string;
 }
 
 /** The restore a projection is for: the new epoch's genesis state and who
@@ -195,7 +199,7 @@ export function splitFigures(group: LeftBehindGroup, device: string): [entries: 
   if (figureSet.length === 0) return [group, null];
   const entrySet = group.set.filter(([key]) => isField(key));
   const entries = entrySet.length === 0 && group.del.length === 0 ? null : { ...group, set: entrySet };
-  const figures: LeftBehindGroup = { ...group, marker: `${group.epoch}/${device}`, device, set: figureSet, del: [], records: {}, figures: true };
+  const figures: LeftBehindGroup = { ...group, marker: `${group.epoch}/${device}`, device, set: figureSet, del: [], records: {}, figures: true, ...(entries ? { waitsFor: entries.marker } : {}) };
   return [entries, figures];
 }
 
