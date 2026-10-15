@@ -447,6 +447,94 @@ describe("commit path (section 3.5)", () => {
     ]);
   });
 
+  it("leaves no stale overwrite notice when the newer write, saved after the join, beats the winner the join told against an older edit (#14 review)", async () => {
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    const m1 = d.engine.pushableOps().at(-1)!;
+    for (const remarks of ["A", "B", "C", "D", "E"]) await d.backend.addEntry({ ...ENTRY, remarks });
+    // Sam's edit: an L between M1 and M2, never having seen M1.
+    for (const remarks of ["Bus", "Rent"]) await sam.backend.addEntry({ ...ENTRY, remarks });
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 60 });
+    const edit = sam.ops.at(-1)!;
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, sam.ops[1]], [X, sam.ops[2]], [X, edit]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, (await d.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 50 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+    const m2 = d.engine.pushableOps().at(-1)!;
+    expect({ m1: m1.L, w: edit.L, m2: m2.L }).toEqual({ m1: m1.L, w: edit.L, m2: m2.L });
+    expect(m1.L < edit.L && edit.L < m2.L).toBe(true);
+    expect(d.engine.current().expenses["2026-05"].filter((e) => e.remarks === "Groceries").map((e) => e.amount)).toEqual(["50.00"]);
+    // Joined after the save, Sam's edit replaces nothing of Alex's (M2 beats it): no notice.
+    expect(d.engine.notices().map((v) => ({ notice: v.notice, actions: v.actions }))).toEqual([]);
+  });
+
+  it("keeps no register in an older notice that the newer write rewrote, even to the winner's value (#14 review)", async () => {
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45, remarks: "x" });
+    for (const remarks of ["Bus", "Rent", "Tea"]) await sam.backend.addEntry({ ...ENTRY, remarks });
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 60, remarks: "y" });
+    const edit = sam.ops.at(-1)!;
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, edit]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 60, remarks: "z" });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+    // Joined after the save: one notice, remarks only (amount 60 = 60 tells no one).
+    expect(d.engine.notices().map((v) => v.notice.kind === "overwrite" ? v.notice.registers.map((r) => `${r.key.split("/").at(-1)} theirs=${String(r.theirs)} mine=${String(r.mine)}`) : v.notice.kind)).toEqual([["remarks theirs=y mine=z"]]);
+  });
+
+  it("an older notice the newer write only partly rewrote keeps the rest, and its place in the list (#14 review)", async () => {
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45, remarks: "x" });
+    for (const remarks of ["Bus", "Rent", "Tea"]) await sam.backend.addEntry({ ...ENTRY, remarks });
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 60, remarks: "y" });
+    const edit = sam.ops.at(-1)!;
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, edit]] });
+    await held.reached.promise;
+    held.on = false;
+    // The newer write rewrites the amount only (Sam's edit still beats it).
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 50, remarks: "x" });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+
+    // As if joined after the save: remarks against the older edit, amount
+    // against the newer one; the older notice was told first and stays first.
+    const told = d.engine.notices().map((v) => v.notice as Extract<typeof v.notice, { kind: "overwrite" }>);
+    const byField = Object.fromEntries(told.map((n) => [n.registers.map((r) => r.key.split("/").at(-1)).join(","), n]));
+    expect(Object.keys(byField).sort()).toEqual(["amount", "remarks"]);
+    expect(byField.amount.registers[0]).toMatchObject({ theirs: "60.00", mine: "50.00" });
+    expect(byField.remarks.registers[0]).toMatchObject({ theirs: "y", mine: "x" });
+    expect(byField.remarks.seq).toBe(1);
+    expect(byField.amount.seq).toBe(2);
+  });
+
   it("persists a remote join and its bookkeeping in one transaction", async () => {
     const one = await device();
     const sam = new Replica(X, emptyDocument(), { actor: "sam" });
