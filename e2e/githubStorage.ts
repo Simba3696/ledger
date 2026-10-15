@@ -934,6 +934,127 @@ async function main() {
       );
     }
 
+    // #13: B's change, joined on A, remounts A's ledger (SyncHost re-keys
+    // it); what A was typing comes back, with the focus and selection.
+    {
+      await Promise.all([waitSaved(A.page), waitSaved(B.page)]);
+      await Promise.all([listed(A.page), listed(B.page)]);
+      /** A's form and edit row as on screen, and whether they are the ones
+       * marked before the join (not remounted). */
+      const formOnA = () =>
+        A.page.evaluate(() => {
+          const form = document.querySelector<HTMLFormElement & { marked?: boolean }>(".add-expense-form")!;
+          const remarks = form.querySelector<HTMLInputElement>('input[type="text"]')!;
+          return {
+            remounted: !form.marked,
+            amount: form.querySelector<HTMLInputElement>('input[type="number"]')!.value,
+            remarks: remarks.value,
+            category: form.querySelector(".category-chip.selected")?.textContent ?? null,
+            payment: form.querySelector(".payment-toggle .selected")?.textContent ?? null,
+            focused: document.activeElement === remarks,
+            selection: [remarks.selectionStart, remarks.selectionEnd],
+          };
+        });
+      const form = A.page.locator(".add-expense-form");
+      await form.locator('input[type="number"]').fill("33");
+      await form.locator("button.category-chip", { hasText: "Food" }).click();
+      await form.locator(".payment-toggle button", { hasText: "Credit Card" }).click();
+      await form.locator('input[type="text"]').click();
+      await A.page.keyboard.type("E2E Half typed");
+      await form.locator('input[type="text"]').evaluate((el: HTMLInputElement) => {
+        el.setSelectionRange(4, 8);
+        (el.form as HTMLFormElement & { marked?: boolean }).marked = true;
+      });
+      await addExpense(B.page, "11", "E2E Sam while A types");
+      const joined = await waitUntil(
+        async () => {
+          await nudge(A.page);
+          const rows = await A.page.locator(".entry-row:not(.row-editing) .entry-remarks").allInnerTexts();
+          return rows.some((t) => t.trim() === "E2E Sam while A types") && (await formOnA()).remounted;
+        },
+        60_000,
+        2000,
+      );
+      const kept = await formOnA();
+      check(
+        "8. A half-typed Add Expense on A keeps its amount, remarks, category, card, focus and selection when B's change remounts A's ledger (#13)",
+        joined &&
+          kept.amount === "33" &&
+          kept.remarks === "E2E Half typed" &&
+          kept.category === "Food" &&
+          kept.payment === "Credit Card" &&
+          kept.focused &&
+          kept.selection[0] === 4 &&
+          kept.selection[1] === 8,
+        kept,
+      );
+      // Typing goes on in the same field, and the save goes through.
+      await A.page.keyboard.press("End");
+      await A.page.keyboard.type(" ok");
+      await A.page.click('button.submit-btn:has-text("Add Expense")');
+      await row(A.page, "E2E Half typed ok").waitFor();
+      const saved = await waitUntil(() => remoteHas(HOUSEHOLD_REPO, PASS.household, "E2E Half typed ok"), 45_000, 1000);
+      const { doc } = await fold(HOUSEHOLD_REPO, PASS.household);
+      const added = expenseNamed(doc, "E2E Half typed ok");
+      check(
+        "8. ...and saving it then adds that expense (₹33, Food, card) on A and in the repo, with no notice",
+        saved &&
+          (await amountOf(A.page, "E2E Half typed ok")) === "₹33.00" &&
+          Number(added?.amount) === 33 &&
+          added?.category === "food" &&
+          added?.cardNote === "CC" &&
+          (await form.locator('input[type="text"]').inputValue()) === "" &&
+          (await A.page.locator(".sync-status-review").count()) === 0,
+        added,
+      );
+
+      // An open edit row is reopened, with what was typed into it.
+      await waitSaved(A.page);
+      await menu(A.page, "E2E Half typed ok", "Edit");
+      const editing = A.page.locator(".row-editing");
+      await editing.locator('input[type="number"]').fill("34");
+      await editing.locator('input[type="text"]').fill("E2E Edit kept");
+      await editing.evaluate((el: HTMLElement & { marked?: boolean }) => {
+        el.marked = true;
+      });
+      await addExpense(B.page, "12", "E2E Sam while A edits");
+      const rowOnA = () =>
+        A.page.evaluate(() => {
+          const edit = document.querySelector<HTMLElement & { marked?: boolean }>(".row-editing");
+          const remarks = edit?.querySelector<HTMLInputElement>('input[type="text"]');
+          return {
+            reopened: edit !== null && !edit.marked,
+            amount: edit?.querySelector<HTMLInputElement>('input[type="number"]')?.value ?? null,
+            remarks: remarks?.value ?? null,
+            focused: remarks !== undefined && document.activeElement === remarks,
+          };
+        });
+      const rejoined = await waitUntil(
+        async () => {
+          await nudge(A.page);
+          const rows = await A.page.locator(".entry-row:not(.row-editing) .entry-remarks").allInnerTexts();
+          return rows.some((t) => t.trim() === "E2E Sam while A edits") && (await rowOnA()).reopened;
+        },
+        60_000,
+        2000,
+      );
+      const reopened = await rowOnA();
+      await editing.locator('button:has-text("Save")').click();
+      await row(A.page, "E2E Edit kept").waitFor();
+      const editSaved = await waitUntil(() => remoteHas(HOUSEHOLD_REPO, PASS.household, "E2E Edit kept"), 45_000, 1000);
+      check(
+        "8. An open edit row on A is reopened with what was typed and the focus when B's change remounts A's ledger, and its save goes through (#13)",
+        rejoined &&
+          reopened.amount === "34" &&
+          reopened.remarks === "E2E Edit kept" &&
+          reopened.focused &&
+          editSaved &&
+          (await amountOf(A.page, "E2E Edit kept")) === "₹34.00" &&
+          (await A.page.locator(".sync-status-review").count()) === 0,
+        reopened,
+      );
+    }
+
     /** B's PUTs of its own files from `mark` until the first that landed. */
     const attemptsUntilLanded = (mark: number): RoutedRequest[] => {
       const own = putsOf("B", mark).filter((p) => p.put && !/\.genesis\.enc$/.test(p.put.path));
