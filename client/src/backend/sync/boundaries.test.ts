@@ -204,7 +204,7 @@ describe("dates at the ends of the calendar (0001 and 9999)", () => {
 });
 
 describe("month keys past year 9999 (a remote op may use any 1-10 digit year)", () => {
-  it("expenses, finances, card bills and locks in years 10000 and 9999999999: every read answers, and local writes go on", async () => {
+  it("expenses, finances, card bills and locks in years 10000 and 9999999999: every read answers, and local writes go on (years past 9999 a 400, #12)", async () => {
     const r = new Replica(X, w.doc, { actor: "sam" });
     await r.backend.addEntry(entry("Far"));
     const [create] = r.ops;
@@ -225,12 +225,14 @@ describe("month keys past year 9999 (a remote op may use any 1-10 digit year)", 
     const a = await open({ login: "alex" });
     expect(Object.keys(a.engine.current().expenses).sort()).toEqual(["10000-01", "9999999999-12"]);
     // Reads are asked for the years the app offers (2018 to next year) and,
-    // here, for year 10000. (A read for a year near 2^31 is O(years) in the
-    // shared finance math, a memory blow-up the year picker never asks for.)
+    // here, for year 10000, which answers the server's own 400: years have
+    // four digits (#12), so the shared finance math's walk stays short. The
+    // far records stay joined, and nothing else is held up.
     for (const [year, month] of [[2026, 5], [10000, 1]] as const) await everyRead(a.backend, year, month);
     await expect(a.backend.addEntry(entry("Near"))).resolves.toBeDefined();
-    await expect(a.backend.setMonthIncome(10000, 2, { salary: 5, otherIncome: null, savings: [] })).resolves.toBeDefined();
-    await expect(a.backend.setMonthLock(10000, 1, false)).resolves.toBeDefined();
+    await expect(a.backend.setMonthIncome(10000, 2, { salary: 5, otherIncome: null, savings: [] })).rejects.toMatchObject({ status: 400 });
+    await expect(a.backend.setMonthLock(10000, 1, false)).rejects.toMatchObject({ status: 400 });
+    expect(Object.keys(a.engine.current().expenses)).toEqual(expect.arrayContaining(["10000-01", "9999999999-12"]));
     await quiesce(w, a);
     expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
   });
