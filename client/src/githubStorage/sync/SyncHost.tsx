@@ -1,5 +1,6 @@
 import { Fragment, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { OTHER_TAB, type EngineState, type SyncEngine } from "../../backend/sync/SyncEngine";
+import { DraftKeeper } from "./DraftKeeper";
 import { SyncContext, type SyncStateValue } from "./syncContext";
 
 /** The words for each `unreadable` reason (design section 12). */
@@ -81,12 +82,16 @@ export function SyncHost({ engine, bar, children }: { engine: SyncEngine; bar?: 
  * everything, `bar` first and outside the re-keyed part, and `children`
  * keyed on `revision`. React keeps an element's state while the type and
  * key at each level above it stay the same, so a new revision remounts
- * the children and leaves `bar` mounted. */
+ * the children and leaves `bar` mounted. The DraftKeeper around the keyed
+ * part stays mounted too, and puts back what the person was typing once
+ * the children have remounted (#13, drafts.ts). */
 export function SyncLayers({ value, revision, bar, children }: { value: SyncStateValue; revision: number; bar?: ReactNode; children?: ReactNode }) {
   return (
     <SyncContext.Provider value={value}>
       {bar}
-      <Fragment key={revision}>{children}</Fragment>
+      <DraftKeeper revision={revision}>
+        <Fragment key={revision}>{children}</Fragment>
+      </DraftKeeper>
     </SyncContext.Provider>
   );
 }

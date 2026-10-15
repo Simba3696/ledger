@@ -403,7 +403,7 @@ function entriesList(drafts: FormDrafts, entries: { row: number; remarks: string
     trigger.onClick = () => {
       trigger.attrs.set("aria-expanded", "true");
       const item = (label: string, onClick: () => void) => {
-        const b = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", { class: "overflow-menu-item-icon" }, "✏️"), label);
+        const b = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", { class: "overflow-menu-item-icon" }, "✏️"), h("span", {}, label));
         b.onClick = onClick;
         return h("li", { role: "none" }, b);
       };
