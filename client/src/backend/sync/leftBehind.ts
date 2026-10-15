@@ -319,6 +319,29 @@ export function unsupersededIn(part: LeftBehindGroup, state: SyncState): LeftBeh
   return records === null ? left : { ...left, records };
 }
 
+/** `part` (of a group from the epoch whose state is `state`) less what
+ * that state shows was written at or under `cut`: the registers and
+ * deletions tagged by a device at an L within its cut entry. A register or
+ * deletion the state doesn't hold is kept, since nothing says where it
+ * was. For a part a genesis held whose epoch turns out to be in the
+ * winner's line under another cut than the one it was projected with
+ * (#14): what that cut covers, the winner's line saw. */
+export function aboveCutIn(part: LeftBehindGroup, state: SyncState, cut: VersionVector): LeftBehindGroup | null {
+  const above = (t: readonly [number, string]) => t[1] !== GENESIS_TAG[1] && t[0] > (Object.hasOwn(cut, t[1]) ? cut[t[1]] : 0);
+  return restrict(
+    part,
+    (key) => {
+      const parsed = parseRegisterKey(key);
+      const reg = parsed?.kind === "field" ? state.rec.get(`${parsed.coll}/${parsed.id}`)?.get(parsed.field) : state.unit.get(key);
+      return reg === undefined || above(reg.t);
+    },
+    (rk) => {
+      const deletion = state.del.get(rk);
+      return deletion === undefined || above([deletion.L, deletion.by]);
+    },
+  );
+}
+
 /** Two parts of one group (the same marker) as one: `a`'s value and record
  * snapshot win where both have one. */
 export function mergeGroups(a: LeftBehindGroup, b: LeftBehindGroup): LeftBehindGroup {
