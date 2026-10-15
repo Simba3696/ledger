@@ -212,7 +212,7 @@ export function statusText(state: Pick<EngineState, "status" | "pendingCount" | 
     case "needsPassphrase":
       return "Needs attention: the ledger can't be opened with this passphrase.";
     case "missing":
-      return "Needs attention: the ledger isn't in the GitHub repo.";
+      return "Needs attention: the ledger's GitHub repository, or the ledger in it, can't be found.";
     case "needsUpdate":
       return LEDGER_UPDATED;
     case "needsAttention":

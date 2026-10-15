@@ -38,7 +38,7 @@ const STALE_401_MS = TIMEOUT_MS;
 const CALLBACK_PARAMS = ["code", "state", "installation_id", "setup_action", "error", "error_description", "error_uri"];
 
 export const SIGN_IN_INCOMPLETE = "Sign-in didn't complete. Try again.";
-export const SIGN_IN_EXPIRED = "Your GitHub sign-in expired. Sign in again.";
+export const SIGN_IN_EXPIRED = "GitHub no longer accepts your sign-in. Sign in again.";
 const SIGN_IN_UNREACHABLE = "Couldn't reach the sign-in service. Check your connection and try again.";
 
 /** The GitHub App and helper this build was given. All public. */

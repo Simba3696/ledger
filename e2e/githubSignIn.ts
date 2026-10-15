@@ -422,11 +422,11 @@ async function main() {
       await addExpense(page, "19", "E2E Pending");
       await heading(page, "Replace your token").waitFor({ timeout: 45_000 });
     });
-    const expiredShown = (await page.getByText("Your GitHub sign-in expired. Sign in again.").count()) === 1;
+    const expiredShown = (await page.getByText("GitHub no longer accepts your sign-in. Sign in again.").count()) === 1;
     const cleared = await storedConnection(page);
     const pendingRemote = expenseNamed((await folded(adapter)).doc, "E2E Pending") !== undefined;
     check(
-      "S10. A refused refresh: Replace token says \"Your GitHub sign-in expired. Sign in again.\" with the button beside the paste field, the stored App tokens are cleared, and the unsynced change isn't on GitHub yet (AC7)",
+      "S10. A refused refresh: Replace token says \"GitHub no longer accepts your sign-in. Sign in again.\" with the button beside the paste field, the stored App tokens are cleared, and the unsynced change isn't on GitHub yet (AC7)",
       expiredShown &&
         (await page.locator('[data-testid="gh-signin"]').count()) === 1 &&
         (await page.locator('[data-testid="gh-replace-token"]').count()) === 1 &&

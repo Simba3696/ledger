@@ -323,7 +323,8 @@ either way.
 3. Carry on as in part 2 or 3: create the ledger, or type the passphrase.
 
 Signing in lasts as long as GitHub allows (Ledger renews it by itself). If
-it ever ends, Ledger shows **Your GitHub sign-in expired. Sign in again.**
+it ever ends, because it expired or you took Ledger's access away, Ledger shows
+**GitHub no longer accepts your sign-in. Sign in again.**
 Your changes on that device are kept, and they reach GitHub once you sign
 in again or paste a token. To take Ledger's access away, open GitHub's
 **Settings**, then **Applications**, then **Authorized GitHub Apps**.
@@ -345,6 +346,6 @@ in again or paste a token. To take Ledger's access away, open GitHub's
 | "1 to review" next to the sync status, and a note like "*Sam* changed Groceries · amount to 160.00; your 150.00 was replaced." | Two devices changed the same thing before syncing. Every device settles on the same one, the same way, without asking; the device whose change was replaced gets this note. | Press **1 to review**. Press **Use 150.00** (the button names your value) to put yours back, or **Dismiss** to keep theirs. |
 | "Offline, 2 changes not saved yet" with **Try again** | Ledger couldn't reach GitHub, or GitHub kept refusing its saves for now. Your changes are kept on this device. | Check your connection, then press **Try again**. Ledger also tries again by itself when you come back online or reopen the app. |
 | "Ledger is open in another tab. Close it there to use it here." | Only one tab per browser can use Ledger at a time. | Close the other tab. |
-| "Needs attention: the ledger isn't in the GitHub repo." | The repository no longer has the ledger's files (deleted, or the repository was emptied or replaced). | Restore from a backup (part 6), or check you're connected to the right repository. |
+| "Needs attention: the ledger's GitHub repository, or the ledger in it, can't be found." | The repository was deleted, or no longer has the ledger's files (emptied or replaced). | Restore from a backup (part 6), or check you're connected to the right repository. |
 | "This ledger was saved by a newer version of Ledger. Update the app to open it." | Another device uses a newer Ledger than this site. | Reload the page; if you run your own copy, update your fork (part 8). |
 | "This backup was made by a newer version of Ledger. Update the app and try again." | The backup comes from a newer Ledger. | As above, then pick the backup again. |
