@@ -139,6 +139,11 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
    * findLedger found, and the key once derived or loaded. */
   const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
+  /** openWith, for the engine watcher (an effect that outlives renders):
+   * `deps` is a new object on each render, so a dependency on openWith
+   * would run the watcher again on each one, and it would tell a refused
+   * token again after Replace token (#8). */
+  const openWithRef = useRef<(connection: Connection, key: DeviceKey, start: Start | null) => Promise<boolean>>(async () => false);
   /** forgotten(), for the engine watcher (an effect that outlives renders). */
   const forgottenRef = useRef<() => void>(() => {});
   /** What the start effect needs for a return from github.com (#10). */
@@ -278,7 +283,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
             const connection = work.current.connection;
             if (next.kind === "keyChanged" || !connection) return dispatch({ type: "keyChanged" });
             work.current.key = next.key;
-            if (await openWith(connection, next.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
+            if (await openWithRef.current(connection, next.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
           } catch (err) {
             if (work.current.connection) failed(err, work.current.connection);
           }
@@ -317,7 +322,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     };
     check();
     return engine.subscribe(check);
-  }, [engine, remote, failed, openWith]);
+  }, [engine, remote, failed]);
 
   async function onConnect(path: Path, token: string, owner: string | null, repo: string) {
     try {
@@ -571,6 +576,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
   }
 
   forgottenRef.current = forgotten;
+  openWithRef.current = openWith;
   // The sign-in result is this page load's, read once by the start effect.
   signInRef.current = { result: signIn, replaceToken, onConnectApp };
 
