@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OTHER_REPO } from "../token";
-import { CREATE_UNKNOWN, flow, initialScreen, LISTING_CUT, NEEDS_UPDATE, STEPS, WRONG_PASSPHRASE, type FlowEvent, type Screen, type Target } from "./flow";
+import { CREATE_UNKNOWN, flow, initialScreen, LISTING_CUT, NEEDS_UPDATE, RACE_OTHER_KEY, STEPS, WRONG_PASSPHRASE, type FlowEvent, type Screen, type Target } from "./flow";
 
 const alex: Target = { owner: "alex", repo: "ledger-data", ownerIsOrg: false };
 const household: Target = { owner: "smith-household", repo: "ledger-data", ownerIsOrg: true };
@@ -130,5 +130,23 @@ describe("the GitHub gate's flow (#8)", () => {
     });
     // A device that already opened something isn't moved.
     expect(run([start({ saved: { target: alex, hasKey: true } }), { ...back, error: null }])).toEqual({ kind: "app", target: alex });
+  });
+
+  it("the loser of a racing create, its ledger open, joins on the race-lost Unlock (D32): Back is the ledger again, and so is a join", () => {
+    const app: Screen = { kind: "app", target: alex };
+    const joining = run([{ type: "joinRace" }], app);
+    expect(joining).toEqual({ kind: "unlock", target: alex, path: null, reason: "raceLost", error: null, joining: true });
+    expect(run([{ type: "back" }], joining)).toEqual(app);
+    expect(run([{ type: "wrongPassphrase" }], joining)).toMatchObject({ kind: "unlock", joining: true, error: WRONG_PASSPHRASE });
+    // Two different passphrases: the D35 way on, said on the card.
+    expect(run([{ type: "raceOtherKey" }], joining)).toMatchObject({ kind: "unlock", joining: true, error: RACE_OTHER_KEY });
+    expect(run([{ type: "unlockFailed", message: "Couldn't read the whole repository from GitHub. Try again." }], joining)).toMatchObject({ error: "Couldn't read the whole repository from GitHub. Try again." });
+    expect(run([{ type: "unlocked" }], joining)).toEqual(app);
+    // Only from an open ledger.
+    expect(run([{ type: "joinRace" }], { kind: "welcome" })).toEqual({ kind: "welcome" });
+    // Onboarding's race-lost Unlock (createLedger "replaced") still goes back to connecting.
+    const replaced = run([{ type: "created", created: { kind: "replaced" } }], { kind: "create", target: alex, path: "personal", error: null });
+    expect(replaced).toEqual({ kind: "unlock", target: alex, path: "personal", reason: "raceLost", error: null });
+    expect(run([{ type: "back" }], replaced)).toMatchObject({ kind: "step", step: "connect" });
   });
 });

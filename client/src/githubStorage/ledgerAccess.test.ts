@@ -7,7 +7,7 @@ import { MemoryStore } from "../backend/sync/cycleTestkit";
 import { FakeLocks } from "../backend/sync/localTestkit";
 import { docText } from "../backend/sync/testkit";
 import { forget, loadSaved, remember, resetMemoryForTests } from "./connection";
-import { ConnectFailed, connect, createNew, keyFor, openLedger, unlock, type Deps } from "./ledgerAccess";
+import { ConnectFailed, afterUndecryptable, connect, createNew, keyFor, openLedger, unlock, type Deps } from "./ledgerAccess";
 
 // #8's connect, create, unlock and open, against the fake GitHub (which
 // answers an empty repo as GitHub does). Fictional data only.
@@ -99,6 +99,19 @@ describe("onboarding against the fake GitHub (#8)", () => {
     // device's create won with its own): Unlock is needed.
     const stranger = await openLedger(alex.connection, await keyFor(PASSPHRASE), null, { fetch: fake.fetch, store: new MemoryStore() });
     expect(stranger.kind).toBe("keyChanged");
+  }, 60_000);
+
+  it("a device that doesn't decrypt with this tab's key: the key another tab saved reopens it, else Unlock when the ledger's key changed, else it stays (D32)", async () => {
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
+    const created = await createNew(alex, PASSPHRASE, choices);
+    const other = await keyFor(PASSPHRASE);
+    // Another tab joined a racing create's winner and saved its key.
+    expect(await afterUndecryptable(alex.remote, other, created.key)).toEqual({ kind: "reopen", key: created.key });
+    // Nothing newer saved, and the ledger in the repo is under another salt.
+    expect(await afterUndecryptable(alex.remote, other, other)).toEqual({ kind: "keyChanged" });
+    expect(await afterUndecryptable(alex.remote, other, null)).toEqual({ kind: "keyChanged" });
+    // The ledger's own key: the device really can't be read; it stays.
+    expect(await afterUndecryptable(alex.remote, created.key, created.key)).toEqual({ kind: "stay" });
   }, 60_000);
 
   it("a repo with no ledger reports it found nothing, so the gate offers Create", async () => {
