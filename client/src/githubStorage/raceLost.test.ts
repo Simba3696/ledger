@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { EngineState } from "../backend/sync/SyncEngine";
-import { RACE_LOST, RaceLostPanel } from "./RaceLostPanel";
+import { RACE_LOST, RACE_LOST_BACKUP, RaceLostPanel } from "./RaceLostPanel";
 import { SyncLayers } from "./sync/SyncHost";
 import type { SyncStateValue } from "./sync/syncContext";
 
@@ -42,9 +42,17 @@ const render = (raceLost: EngineState["raceLost"]) =>
 
 describe("RaceLostPanel (D32)", () => {
   it("says what happened and offers the join, and the backup-and-forget way for two different passphrases", () => {
-    const html = render({ winner: "e000001-0000000b" });
+    const html = render({ winner: "e000001-0000000b", joinable: true });
     expect(html).toContain(RACE_LOST.replaceAll("'", "&#x27;"));
     expect(html).toContain('data-testid="gh-join-race"');
+    expect(html).toContain('data-testid="gh-race-backup"');
+    expect(html).toContain('data-testid="gh-race-forget"');
+  });
+
+  it("for a ledger started from a backup, says the backup way and offers no join (review of D32)", () => {
+    const html = render({ winner: "e000001-0000000b", joinable: false });
+    expect(html).toContain(RACE_LOST_BACKUP.replaceAll("'", "&#x27;"));
+    expect(html).not.toContain('data-testid="gh-join-race"');
     expect(html).toContain('data-testid="gh-race-backup"');
     expect(html).toContain('data-testid="gh-race-forget"');
   });

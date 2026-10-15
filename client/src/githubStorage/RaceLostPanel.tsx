@@ -14,6 +14,7 @@ import { useSyncState } from "./sync/syncContext";
 
 export const RACE_LOST =
   "Someone else in your household created the ledger at the same moment as this device, and theirs is the one in the repo. Join it with the household passphrase: everything you entered here is kept, and offered back to re-apply.";
+export const RACE_LOST_BACKUP = "";
 const OTHER_PASSPHRASE = "If you two chose different passphrases, download a backup of this device first, then forget this device and join with the other passphrase.";
 
 export function RaceLostPanel({
