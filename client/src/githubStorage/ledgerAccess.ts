@@ -278,9 +278,20 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
   return { kind: "open", engine, backend, token, remote };
 }
 
-/** What the gate does when this tab can't decrypt the device (D32). */
-export async function afterUndecryptable(_remote: SyncRemote, _key: DeviceKey, _saved: DeviceKey | null): Promise<{ kind: "reopen"; key: DeviceKey } | { kind: "keyChanged" } | { kind: "stay" }> {
-  return { kind: "stay" };
+/** What the gate does when the device's sync state doesn't decrypt with
+ * this tab's key (unreadable "undecryptable"). Another tab may have joined
+ * a racing create's winner (D32), sealing everything under that ledger's
+ * key and saving it: a saved key under another salt reopens the device.
+ * Failing that, a ledger in the repo under another salt than this tab's
+ * key means the device was sealed for it (the tab that joined stopped
+ * before saving the key): Unlock asks for the passphrase, and the key it
+ * derives for that ledger opens the device. Otherwise the device really
+ * can't be read with this key, and stays as it is. */
+export async function afterUndecryptable(remote: SyncRemote, key: DeviceKey, saved: DeviceKey | null): Promise<{ kind: "reopen"; key: DeviceKey } | { kind: "keyChanged" } | { kind: "stay" }> {
+  const other = (k: { salt: string; iter: number }) => k.salt !== key.salt || k.iter !== key.iter;
+  if (saved !== null && other(saved)) return { kind: "reopen", key: saved };
+  const found = await findLedger(remote);
+  return found.kind === "ledger" && other(found) ? { kind: "keyChanged" } : { kind: "stay" };
 }
 
 /** "Create a new ledger from this device" (#8, the join from a gone epoch

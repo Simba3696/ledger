@@ -54,6 +54,7 @@ const FORBIDDEN_IN_DEFAULT = [
   'ledger:github-signin',
   'user/installations',
   'sync-ledger',
+  'created the ledger at the same moment as this device',
 ]
 
 // No file in the default build may have these in its name.

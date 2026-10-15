@@ -12,7 +12,8 @@ type UnlockScreen = Extract<Screen, { kind: "unlock" }>;
 const WHY: Record<UnlockScreen["reason"], string> = {
   existing: "This repository already holds a ledger. Enter its passphrase to open it on this device.",
   createdMeanwhile: "Someone created the ledger while you were setting up. Enter the household passphrase to open it.",
-  raceLost: "Someone else in your household created the ledger at the same moment. Enter the household passphrase to join it; nothing from this device is in it yet, so nothing is lost.",
+  raceLost:
+    "Someone else in your household created the ledger at the same moment, and theirs is the one in the repo. Enter the household passphrase to join it. Nothing on this device is lost: anything you entered here is offered back, to re-apply.",
   keyChanged: "The ledger's passphrase is different from the one this device knows. Enter the current passphrase.",
 };
 
@@ -59,7 +60,7 @@ export function Unlock({
               Back
             </button>
             <button type="submit" className="submit-btn" disabled={busy || passphrase === ""} data-testid="gh-unlock">
-              {busy ? "Opening..." : "Open ledger"}
+              {screen.joining ? (busy ? "Joining..." : "Join ledger") : busy ? "Opening..." : "Open ledger"}
             </button>
           </div>
         </fieldset>

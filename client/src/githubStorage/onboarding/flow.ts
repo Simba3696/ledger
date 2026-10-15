@@ -136,7 +136,8 @@ export type FlowEvent =
 export const WRONG_PASSPHRASE = "Wrong passphrase";
 export const NEEDS_UPDATE = "This ledger was saved by a newer version of Ledger. Update the app to open it.";
 export const LISTING_CUT = "Couldn't read the whole repository from GitHub. Try again.";
-export const RACE_OTHER_KEY = "";
+export const RACE_OTHER_KEY =
+  "That is this device's own passphrase, and the ledger in the repo uses a different one, so this device can't join it this way. Go back, download a backup of this device, then forget this device and join with the other passphrase.";
 export const CREATE_UNKNOWN = "Couldn't confirm with GitHub that the ledger was saved. Try again.";
 
 function stepScreen(path: Path, step: Step, from: Partial<Extract<Screen, { kind: "step" }>> = {}): Extract<Screen, { kind: "step" }> {
@@ -195,6 +196,8 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
         const at = steps.indexOf(screen.step);
         return at > 0 ? { ...screen, step: steps[at - 1], error: null, awaitingApproval: false } : { kind: "welcome" };
       }
+      // The race-lost Unlock over an open ledger goes back to it (D32).
+      if (screen.kind === "unlock" && screen.joining) return { kind: "app", target: screen.target };
       if (screen.kind === "create" || screen.kind === "unlock" || screen.kind === "blocked") return backToConnect(screen.target, screen.path);
       return screen;
     }
@@ -274,9 +277,13 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
       return { kind: "welcome" };
 
     case "joinRace":
+      return screen.kind === "app" ? { kind: "unlock", target: screen.target, path: null, reason: "raceLost", error: null, joining: true } : screen;
+
     case "raceOtherKey":
+      return screen.kind === "unlock" ? { ...screen, error: RACE_OTHER_KEY } : screen;
+
     case "unlockFailed":
-      return screen;
+      return screen.kind === "unlock" ? { ...screen, error: event.message } : screen;
 
     case "signInReturned":
       if (screen.kind !== "welcome" && screen.kind !== "step") return screen;

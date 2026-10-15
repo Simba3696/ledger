@@ -18,8 +18,10 @@ import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
 import { confirmAndForget } from "./forgetFlow";
 import { EpochGonePanel } from "./EpochGonePanel";
+import { RaceLostPanel } from "./RaceLostPanel";
 import {
   ConnectFailed,
+  afterUndecryptable,
   connect,
   createFromDevice,
   createNew,
@@ -35,13 +37,13 @@ import {
 import { readInvite } from "./links";
 import { ConnectStep, type ConnectSignIn } from "./onboarding/ConnectStep";
 import { CreateLedger } from "./onboarding/CreateLedger";
-import { CREATE_UNKNOWN, flow, initialScreen, type FlowEvent, type Path, type Screen, type Target } from "./onboarding/flow";
+import { CREATE_UNKNOWN, LISTING_CUT, NEEDS_UPDATE, flow, initialScreen, type FlowEvent, type Path, type Screen, type Target } from "./onboarding/flow";
 import { Blocked, Misconfigured, Unsupported } from "./onboarding/Messages";
 import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
 import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
-import { readBackupFile } from "./backup";
+import { backupFileName, downloadFile, readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
 import { LedgerViewMemory } from "./ledgerView";
 import { SectionLoadBoundary } from "./SectionLoadBoundary";
@@ -258,8 +260,30 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     if (!engine || !remote) return;
     let last: string | null = null;
     let joining = false;
+    let rekeyed = false;
     const check = () => {
       const state = engine.getState();
+      // The device doesn't decrypt with this tab's key: another tab may have
+      // joined a racing create's winner under that ledger's key (D32).
+      const tabKey = work.current.key;
+      if (state.unreadable === "undecryptable" && !rekeyed && tabKey) {
+        rekeyed = true;
+        void (async () => {
+          try {
+            const saved = await loadSaved();
+            const next = await afterUndecryptable(remote, tabKey, saved.key);
+            if (next.kind === "stay") return;
+            engine.stop();
+            setOpen(null);
+            const connection = work.current.connection;
+            if (next.kind === "keyChanged" || !connection) return dispatch({ type: "keyChanged" });
+            work.current.key = next.key;
+            if (await openWith(connection, next.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
+          } catch (err) {
+            if (work.current.connection) failed(err, work.current.connection);
+          }
+        })();
+      }
       if (state.status === "needsToken" && last !== "needsToken") dispatch({ type: "tokenRejected" });
       last = state.status;
       const key = work.current.key;
@@ -293,7 +317,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     };
     check();
     return engine.subscribe(check);
-  }, [engine, remote, failed]);
+  }, [engine, remote, failed, openWith]);
 
   async function onConnect(path: Path, token: string, owner: string | null, repo: string) {
     try {
@@ -430,7 +454,39 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     }
   }
 
+  /** The race-lost Unlock over an open ledger (D32): the engine joins the
+   * winner with the household passphrase, and once it has, the key it
+   * returns is the one this device keeps. */
+  async function onJoinRace(passphrase: string) {
+    if (!open) return;
+    try {
+      const result = await open.engine.rekeyAndJoin(passphrase);
+      switch (result.kind) {
+        case "joined":
+          work.current.key = result.key;
+          setRemembered(await remember(open.connection, result.key));
+          return dispatch({ type: "unlocked" });
+        case "notRaceLost":
+          return dispatch({ type: "unlocked" });
+        case "wrongPassphrase":
+          return dispatch({ type: "wrongPassphrase" });
+        case "otherKey":
+          return dispatch({ type: "raceOtherKey" });
+        case "unknown":
+          return dispatch({ type: "unlockFailed", message: LISTING_CUT });
+        case "needsUpdate":
+          return dispatch({ type: "unlockFailed", message: NEEDS_UPDATE });
+        case "damaged":
+          return dispatch({ type: "unlockFailed", message: "The ledger in the repo can't be read on this device. Everything here is kept." });
+      }
+    } catch (err) {
+      if (tokenRefused(err)) return dispatch({ type: "tokenRejected" });
+      dispatch({ type: "unlockFailed", message: connectError(err, targetOf(open.connection), { write: true }).message });
+    }
+  }
+
   async function onUnlock(passphrase: string) {
+    if (screen.kind === "unlock" && screen.joining) return onJoinRace(passphrase);
     const { connection } = work.current;
     if (!connection) return;
     try {
@@ -619,6 +675,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
               </p>
             )}
             <EpochGonePanel engine={open.engine} onCreate={onCreateFromDevice} onForget={onForget} />
+            <RaceLostPanel onJoin={() => dispatch({ type: "joinRace" })} onBackup={async () => downloadFile(await open.engine.exportBackup(), backupFileName())} onForget={onForget} />
             {view === "settings" && (
               <Shell>
                 <Settings
