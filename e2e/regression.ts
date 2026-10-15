@@ -227,6 +227,24 @@ async function main() {
       (await page.locator(".category-chart", { hasText: "Food :" }).count()) > 0,
     );
 
+    // --- Moving-average line, read from the hover tooltips above ---
+    // The fixture has no previous year, so a 3-month average exists only from
+    // March on. From then, the current month's window is two filler months
+    // (Other, 10 each) plus the seeded month (Food 100 + Transportation 50).
+    if (monthIndex >= 2) {
+      const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
+      const totalAverage = inr.format(Math.round(((10 + 10 + 150) / 3) * 100) / 100);
+      const foodAverage = inr.format(Math.round((100 / 3) * 100) / 100);
+      check(
+        "The main chart's tooltip shows the month's 3-month average",
+        (await page.locator(".chart-wrap", { hasText: `3-month average : ${totalAverage}` }).count()) > 0,
+      );
+      check(
+        "The Food mini-chart's tooltip shows its own 3-month average",
+        (await page.locator(".category-chart", { hasText: `3-month average : ${foodAverage}` }).count()) > 0,
+      );
+    }
+
     // The hover-sync check above leaves a tooltip popup floating right over
     // the bar we're about to click next (same month, same first mini-chart)
     // — move away first so that overlay doesn't intercept the click.
@@ -266,6 +284,27 @@ async function main() {
     // actually reappear with real data loaded (not just the DOM shell)
     // rather than a fixed delay that may finish before that's done.
     await waitForDashboardData();
+    await page.waitForTimeout(300);
+
+    // --- Average window selector ---
+    const averageSelect = page.locator('select[aria-label="Average line"]');
+    check(
+      "The main chart's legend names the 3-month average by default",
+      (await page.locator(".chart-wrap .recharts-legend-item-text", { hasText: "3-month average" }).count()) === 1,
+    );
+    const miniCharts = await page.locator(".category-chart").count();
+    const miniLines = await page.locator(".category-chart .recharts-line").count();
+    check("Every category mini-chart draws an average line", miniLines === miniCharts && miniCharts > 0);
+    await averageSelect.selectOption("6");
+    await page.waitForTimeout(300);
+    check(
+      "Choosing 6 months relabels the average line",
+      (await page.locator(".chart-wrap .recharts-legend-item-text", { hasText: "6-month average" }).count()) === 1,
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await waitForDashboardData();
+    check("The chosen average window is remembered after a reload", (await averageSelect.inputValue()) === "6");
+    await averageSelect.selectOption("3");
     await page.waitForTimeout(300);
 
     await clickChartMonth(monthIndex);
@@ -526,6 +565,9 @@ async function main() {
     // browser logs the failed fetch as a console error regardless, so filter
     // this one known-expected occurrence out rather than let it fail the "no
     // console errors" check at the end.
+    // The error is logged asynchronously, so wait (up to 3 s) for it to arrive
+    // before removing it; otherwise a late copy can outlive the removal.
+    for (let i = 0; i < 20 && !consoleErrors.some((e) => e.includes("403")); i++) await page.waitForTimeout(150);
     const expected403 = consoleErrors.findIndex((e) => e.includes("403"));
     if (expected403 !== -1) consoleErrors.splice(expected403, 1);
 
@@ -1057,6 +1099,20 @@ async function main() {
     check(
       "Sorting by EMI Amount descending puts the ₹1,000/mo entry first",
       emiAmountDesc.indexOf("E2E Coral") < emiAmountDesc.indexOf("E2E Amber"),
+    );
+
+    // Total Amount is each loan's original total: Coral ₹12,000, Amber ₹2,000.
+    await page.click('.emi-sort button:has-text("Total Amount")'); // ascending: smallest loan first
+    const totalAmountAsc = await emiNames();
+    check(
+      "Sorting by Total Amount ascending puts the ₹2,000 loan first",
+      totalAmountAsc.indexOf("E2E Amber") < totalAmountAsc.indexOf("E2E Coral"),
+    );
+    await page.click('.emi-sort button:has-text("Total Amount")'); // descending: largest loan first
+    const totalAmountDesc = await emiNames();
+    check(
+      "Sorting by Total Amount descending puts the ₹12,000 loan first",
+      totalAmountDesc.indexOf("E2E Coral") < totalAmountDesc.indexOf("E2E Amber"),
     );
 
     // % Paid (foreclosure hint): Coral is 83% paid, Amber is a fresh 0% —
@@ -1687,7 +1743,7 @@ async function main() {
     await page.waitForSelector(".auth-card >> text=This account is not allowed on this deployment.");
     check("A 403 from the API shows the not-allowed screen, not the app", (await page.locator(".tabs").count()) === 0);
     // Every simulated 403 is expected (React's dev StrictMode requests config twice).
-    dropConsoleErrors(consoleErrors, "403");
+    await dropConsoleErrors(page, consoleErrors, "403");
     await page.unroute("**/api/config");
     await page.locator(".auth-card").getByRole("button", { name: "Sign out" }).click();
     await page.waitForSelector("form.auth-card");
@@ -1706,7 +1762,7 @@ async function main() {
       "A 401 from the API signs out and explains why",
       (await page.locator(".auth-notice").innerText()).includes("Sign in again"),
     );
-    dropConsoleErrors(consoleErrors, "401");
+    await dropConsoleErrors(page, consoleErrors, "401");
     await page.unroute("**/api/categories");
 
     await browser.close();
