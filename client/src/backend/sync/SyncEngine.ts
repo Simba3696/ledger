@@ -529,6 +529,8 @@ export const RESTORE_UNKNOWN = "A backup restore may still be on its way to GitH
 export const NOTICE_GONE = "That notice was already dealt with.";
 /** Why reapply() or discard() is refused: the group is gone. */
 export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
+/** Why a figures group (D32) waits: its entries group is still shown. */
+export const ENTRIES_FIRST = "Re-apply or discard your entries first.";
 /** Why a write diffed in one epoch (or under one device id) is refused
  * when the epoch switched (or the device rehomed) before it was saved. */
 const CHANGED_WHILE_SAVING = "Ledger changed while this was saving. Try again.";

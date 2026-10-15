@@ -5,7 +5,7 @@ import { FULL, MemoryStore, cycle, device, entry, nextTask, plant, puts, quiesce
 import { FakeLocks } from "./localTestkit";
 import type { DeviceKey } from "./records";
 import { genesisState } from "./state";
-import type { SyncEngine } from "./SyncEngine";
+import { ENTRIES_FIRST, type SyncEngine } from "./SyncEngine";
 import { Replica, Rng, deviceId, testEnv } from "./testkit";
 
 // The racing-create window closed (ADR-0008, owner decision D32, option A):
@@ -290,4 +290,63 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     await quiesce(w, a, y);
     for (const d of [a, y]) expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe(50000);
   }, 60_000);
+
+  describe("the figures group after the entries (review of D32, round 2)", () => {
+    // Alex lost the race, entered Lunch in May and locked May. Re-applying
+    // the figures first would lock May before Lunch came back, and Lunch
+    // would be skipped as a locked month, its group resolved: lost.
+    async function joined() {
+      const { a, y } = await lostRace();
+      await a.backend.setMonthLock(2026, 5, true);
+      await cycle(w, a);
+      expect(await a.engine.rekeyAndJoin(HOUSEHOLD)).toMatchObject({ kind: "joined" });
+      await quiesce(w, a, y);
+      const own = a.engine.leftBehind().filter((g) => g.own);
+      const isFigures = (g: object) => (g as { figures?: boolean }).figures === true;
+      return { a, y, entries: own.find((g) => !isFigures(g))!, figures: own.find((g) => isFigures(g))! };
+    }
+    const lunchKept = async (a: Device, y: Device) => {
+      await quiesce(w, a, y);
+      for (const d of [a, y]) expect(remarks(d).sort()).toEqual(["Groceries", "Lunch"]);
+    };
+
+    it("re-applying the figures while the entries are shown is refused and writes nothing; the list says why", async () => {
+      const { a, entries, figures } = await joined();
+      expect((figures as unknown as { waitsForEntries: boolean }).waitsForEntries).toBe(true);
+      expect((entries as unknown as { waitsForEntries: boolean }).waitsForEntries).toBe(false);
+      const before = { mutations: a.store.mutations.length, puts: puts(w).length };
+      await expect(a.engine.reapply(figures.id)).rejects.toMatchObject({ status: 409, message: ENTRIES_FIRST });
+      expect({ mutations: a.store.mutations.length, puts: puts(w).length }).toEqual(before);
+      expect(a.engine.leftBehind().filter((g) => g.own)).toHaveLength(2);
+    }, 60_000);
+
+    it("entries first, then figures: Lunch is kept, and then May is locked", async () => {
+      const { a, y, entries, figures } = await joined();
+      expect((await a.engine.reapply(entries.id)).skipped).toEqual([]);
+      expect((figures as unknown as { waitsForEntries: boolean }).waitsForEntries).toBe(true);
+      expect((a.engine.leftBehind().find((g) => g.id === figures.id) as unknown as { waitsForEntries: boolean }).waitsForEntries).toBe(false);
+      await a.engine.reapply(figures.id);
+      await lunchKept(a, y);
+      for (const d of [a, y]) expect(d.engine.current().monthLocks["2026-05"]).toBeDefined();
+    }, 60_000);
+
+    it("figures discarded first, then the entries: Lunch is kept and May stays open", async () => {
+      const { a, y, entries, figures } = await joined();
+      await a.engine.discard(figures.id);
+      await a.engine.reapply(entries.id);
+      await lunchKept(a, y);
+      for (const d of [a, y]) expect(d.engine.current().monthLocks["2026-05"]).toBeUndefined();
+    }, 60_000);
+
+    it("entries discarded first: the figures can then be re-applied, and nothing else goes", async () => {
+      const { a, y, entries, figures } = await joined();
+      await a.engine.discard(entries.id);
+      await a.engine.reapply(figures.id);
+      await quiesce(w, a, y);
+      for (const d of [a, y]) {
+        expect(remarks(d)).toEqual(["Groceries"]);
+        expect(d.engine.current().monthLocks["2026-05"]).toBeDefined();
+      }
+    }, 60_000);
+  });
 });
