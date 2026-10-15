@@ -53,6 +53,7 @@ const FORBIDDEN_IN_DEFAULT = [
   'login/oauth',
   'ledger:github-signin',
   'user/installations',
+  'sync-ledger',
 ]
 
 // No file in the default build may have these in its name.
