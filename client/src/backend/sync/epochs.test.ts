@@ -1399,11 +1399,11 @@ describe("racing creates with two salts (D26)", () => {
   // Stage 8a (the stage 6 design question "racing creates with two salts
   // still leave a window"): two creates whose genesis PUTs land within one
   // listing's time of each other are both told `created`, since each one's
-  // listing after its PUT ran before the other's genesis landed. Closing
-  // it needs the engine to move to a newer epoch under another salt, which
-  // is not built. This pins what happens instead: the device whose genesis
-  // lost stops sync safely, names the other ledger, keeps its writes on the
-  // device, and writes nothing to GitHub; the winner syncs on.
+  // listing after its PUT ran before the other's genesis landed. This pins
+  // what happens until the person joins: the device whose genesis lost
+  // stops sync safely, names the other ledger, keeps its writes on the
+  // device, and writes nothing to GitHub; the winner syncs on. The join
+  // with the household passphrase (D32) is rekeyJoin.test.ts.
   it("the remaining window: creates landing within one listing's time are both told created; the loser stops safely and loses nothing", async () => {
     w.fake.removeFile(FULL, `ledger/${EPOCH}.genesis.enc`);
     const [keyA, keyB] = [await testKey(), await testKey()];
