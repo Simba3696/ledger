@@ -380,6 +380,39 @@ describe("commit path (section 3.5)", () => {
     expect(d.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", winner: expect.objectContaining({ device: X }), target: expect.objectContaining({ coll: "e", month: "2026-05", name: "Groceries" }) })]);
   });
 
+  it("tells a delete once when the join between a newer write's diff and its save already told it for an older edit of the same record (#14)", async () => {
+    // Alex's older edit (45) is saved; Sam deletes Groceries without having
+    // seen it; the join of that delete waits in the mutation queue while
+    // Alex's newer edit (50) is diffed, so the join tells the delete against
+    // the older edit and the save tells it again against the newer one.
+    // Joined after the save, the delete is told once, naming the newer
+    // edit: so it must be here (one clash, one notice).
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    await sam.backend.deleteEntry(2026, 5, (await sam.backend.getMonth(2026, 5))[0].row);
+
+    held.on = true;
+    const theirs = d.engine.join({ ops: [[X, sam.ops[1]]] });
+    await held.reached.promise;
+    held.on = false;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 50 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+
+    const newer = d.engine.pushableOps().at(-1)!;
+    expect(remarks(d)).toEqual([]);
+    expect(d.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", winner: expect.objectContaining({ device: X }), loser: { L: newer.L, device: d.engine.deviceId } })]);
+    // And so it stays after a reload.
+    const two = await reload(d);
+    expect(two.engine.notices().map((v) => v.notice)).toEqual([expect.objectContaining({ kind: "deleted", loser: { L: newer.L, device: two.engine.deviceId } })]);
+  });
+
   it("persists a remote join and its bookkeeping in one transaction", async () => {
     const one = await device();
     const sam = new Replica(X, emptyDocument(), { actor: "sam" });
