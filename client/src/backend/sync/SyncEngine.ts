@@ -230,9 +230,14 @@ export interface EpochGone {
   winner: string | null;
 }
 
-/** EngineState.raceLost: the epoch-1 create that won the race. */
+/** EngineState.raceLost: the epoch-1 create that won the race, and whether
+ * this device can join it (rekeyAndJoin): only when its own genesis is a
+ * create. One started from a backup (a restore into an empty repo) holds
+ * the backup's content, which the join never offers back, so its way on
+ * is D35's: a backup of this device, then Forget and join. */
 export interface RaceLost {
   winner: string;
+  joinable: boolean;
 }
 
 /** What rekeyAndJoin() did (ADR-0008, D32). */
@@ -244,6 +249,9 @@ export type RekeyResult =
   | { kind: "joined"; epoch: string; key: DeviceKey }
   /** Not the loser of a racing create (any more): nothing done. */
   | { kind: "notRaceLost" }
+  /** This device's ledger started from a backup: the join would lose what
+   * the backup held, so nothing is done (D35's way on, RaceLost). */
+  | { kind: "fromBackup"; epoch: string }
   /** The passphrase doesn't open the winner: nothing written. */
   | { kind: "wrongPassphrase"; epoch: string }
   /** The passphrase is this device's own, and the winner uses another:
@@ -892,6 +900,8 @@ export class SyncEngine {
   #epochGone: EpochGone | null = null;
   /** EngineState.raceLost, the same object while it doesn't change. */
   #raceLost: RaceLost | null = null;
+  /** #ownGenesisReason's answer for the own genesis's blob sha. */
+  #ownReason: { sha: string; reason: GenesisContent["reason"] | null } | null = null;
   /** The epoch the last full listing didn't count, if it didn't: one such
    * listing may be stale, so epochGone waits for a second (#noteGone), and
    * every cycle lists again while this is set. */
@@ -2856,6 +2866,20 @@ export class SyncEngine {
     return first(winner) && first(from) && compareEpochKeys(winner, from) > 0 && meta.basedOn === undefined && meta.prev === undefined && !epochJoined(listing.files.keys(), from);
   }
 
+  /** Why this device's own genesis was written ("create", or "restore" for
+   * a ledger started from a backup), as the listing has it, read once per
+   * blob sha; null when it isn't listed or can't be read. */
+  async #ownGenesisReason(listing: Listing): Promise<GenesisContent["reason"] | null> {
+    const name = repoFileName({ kind: "genesis", epoch: this.#meta!.epochKey });
+    const listed = listing.files.get(name);
+    if (!listed) return null;
+    if (this.#ownReason?.sha === listed.sha) return this.#ownReason.reason;
+    const read = await this.#read(name, listed);
+    const reason = read.ok && read.read.file.kind === "genesis" ? read.read.file.reason : null;
+    this.#ownReason = { sha: listed.sha, reason };
+    return reason;
+  }
+
   /** The join of a racing create's winner (ADR-0008, owner decision D32,
    * option A). Two devices created a ledger at the same moment, each under
    * its own passphrase's salt, and this one's lost (EngineState.raceLost):
@@ -2886,6 +2910,7 @@ export class SyncEngine {
     const from = this.#meta.epochKey;
     const winner = winningEpoch([...listing.files.keys()]);
     if (winner === null || !this.#lostRaceTo(listing, winner)) return { kind: "notRaceLost" };
+    if ((await this.#ownGenesisReason(listing)) !== "create") return { kind: "fromBackup", epoch: winner };
     const name = repoFileName({ kind: "genesis", epoch: winner });
     const listed = listing.files.get(name)!;
     if (listed.size > this.#bounds.read.bytes) return { kind: "damaged", epoch: winner };
@@ -3279,8 +3304,9 @@ export class SyncEngine {
       // The other creator of a racing create won (D32): rekeyAndJoin can
       // join it with the household passphrase.
       const raced = problem === "foreignKey" && this.#lostRaceTo(listing, winner);
+      const joinable = raced && (await this.#ownGenesisReason(listing)) === "create";
       if (!raced) this.#raceLost = null;
-      else if (this.#raceLost?.winner !== winner) this.#raceLost = { winner };
+      else if (this.#raceLost?.winner !== winner || this.#raceLost.joinable !== joinable) this.#raceLost = { winner, joinable };
       // Another device already joined it: never named as one to delete.
       const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
       // The same object while nothing changes, so no listener is told again.
