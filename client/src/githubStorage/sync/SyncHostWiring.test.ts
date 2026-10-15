@@ -1,6 +1,7 @@
 import { Fragment, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EngineState, SyncEngine } from "../../backend/sync/SyncEngine";
+import { DraftKeeper } from "./DraftKeeper";
 import { SyncHost, SyncLayers } from "./SyncHost";
 
 // The stale-UI fence (design section 3.4) needs the screen to show exactly
@@ -71,5 +72,23 @@ describe("SyncHost's fence wiring", () => {
     expect(ledgerKey(SyncLayers(out.props), page)).toBe(String(revision));
     expect(calls.attachView).toEqual([revision]);
     expect(calls.rendered).toEqual([revision]);
+  });
+
+  // #13: what the person has typed is kept across that remount by a
+  // DraftKeeper around the keyed part. It must sit outside the key (one
+  // keeper for the life of the ledger, which sees each remount), and it is
+  // told the same revision, so it knows when the tree under it is replaced.
+  it("keeps drafts from outside the keyed part: a DraftKeeper on the same revision wraps it", () => {
+    const page = createElement("main", null, "The ledger");
+    const { engine } = fakeEngine(7);
+    const out = SyncHost({ engine, children: page }) as ReactElement<Parameters<typeof SyncLayers>[0]>;
+    const layers = SyncLayers(out.props) as ReactElement<{ children?: ReactNode }>;
+    const keeper = ([] as ReactNode[]).concat(layers.props.children).find((child) => isValidElement(child) && child.type === DraftKeeper) as
+      | ReactElement<{ revision: number; children?: ReactNode }>
+      | undefined;
+
+    expect(keeper?.props.revision).toBe(7);
+    expect(ledgerKey(keeper, page)).toBe("7");
+    expect(keeper?.key).toBeNull();
   });
 });
