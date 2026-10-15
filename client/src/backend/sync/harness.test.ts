@@ -76,6 +76,11 @@ const FIRST = Number(testEnv("LEDGER_HARNESS_FIRST") ?? 1);
 const ONLY = testEnv("LEDGER_HARNESS_SEED");
 /** Run every seed and list every failure, for a deep run. */
 const KEEP_GOING = testEnv("LEDGER_HARNESS_KEEP_GOING") === "1";
+/** How often a restore that doesn't race is followed, a few steps later,
+ * by a racing pair (default 0, the schedule seeds were tuned with): what a
+ * genesis held back is owed again only when a later race leaves that
+ * genesis out (#14). */
+const RACE_AFTER = Number(testEnv("LEDGER_HARNESS_RACE_AFTER") ?? 0);
 /** Every engine a seed started, stopped once it ends, passed or not. */
 const started: SyncEngine[] = [];
 
@@ -119,6 +124,11 @@ const counts = {
   obligations: 0,
   offered: 0,
   reappliedOb: 0,
+  /** Switches that held back parts a new genesis held, and parts offered
+   * again because that genesis lost (#14). */
+  heldBack: 0,
+  offeredAgain: 0,
+  superseded: 0,
 };
 
 /** One physical device: its engines over time (reloads), the stores it has
@@ -636,16 +646,17 @@ async function join(h: Harness, rng: Rng): Promise<void> {
 
 // --- One run ------------------------------------------------------------------------
 
-async function step(h: Harness, rng: Rng, events: { restoreAt: number[]; forkAt: number; joinAt: number }, index: number): Promise<void> {
+async function step(h: Harness, rng: Rng, events: { restoreAt: number[]; raceAt: number[]; forkAt: number; joinAt: number }, index: number): Promise<void> {
   counts.steps++;
   const slot = rng.pick(h.slots);
-  if (events.restoreAt.includes(index)) {
-    const racing = rng.chance(0.4) && h.slots.length > 1;
+  if (events.restoreAt.includes(index) || events.raceAt.includes(index)) {
+    const racing = (events.raceAt.includes(index) || rng.chance(0.4)) && h.slots.length > 1;
     const restorers = racing ? rng.shuffle(h.slots).slice(0, 2) : [slot];
     await restoreBy(h, restorers, rng);
     // A racing restore is often followed by another soon after, while
     // devices are still switching between the two.
     if (racing && rng.chance(0.5)) events.restoreAt.push(index + 1 + rng.int(3));
+    if (!racing && RACE_AFTER > 0 && rng.chance(RACE_AFTER)) events.raceAt.push(index + 2 + rng.int(5));
   }
   // A backup taken while this device has changes not yet synced, more
   // often than at rest: restoring one is what leaves those changes, and
@@ -1010,11 +1021,19 @@ async function run(seed: number): Promise<void> {
   const restoreAt: number[] = [];
   if (rng.chance(0.5)) restoreAt.push(5 + rng.int(Math.max(1, STEPS - 10)));
   if (restoreAt.length > 0 && rng.chance(0.3)) restoreAt.push(5 + rng.int(Math.max(1, STEPS - 10)));
-  const events = { restoreAt, forkAt: rng.chance(0.25) ? rng.int(STEPS) : -1, joinAt: rng.chance(0.2) ? rng.int(STEPS) : -1 };
+  const events = { restoreAt, raceAt: [] as number[], forkAt: rng.chance(0.25) ? rng.int(STEPS) : -1, joinAt: rng.chance(0.2) ? rng.int(STEPS) : -1 };
 
   for (let i = 0; i < STEPS; i++) await step(h, rng, events, i);
   await quiesce(h);
   for (const slot of h.slots) if (slot.epochs.length > 1) counts.switches += slot.epochs.length - 1;
+  for (const line of h.log) {
+    const held = /\((\d+) parts a losing genesis held offered again, (\d+) held back, (\d+) superseded\)/.exec(line);
+    if (held) {
+      counts.offeredAgain += Number(held[1]);
+      if (Number(held[2]) > 0) counts.heldBack++;
+      counts.superseded += Number(held[3]);
+    }
+  }
   await check(h, where);
   await idleRound(h, where);
 

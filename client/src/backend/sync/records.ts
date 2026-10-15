@@ -1,6 +1,7 @@
 import { decryptDocument, encryptDocument, isKeyParams } from "../crypto";
 import { decodeState, encodeState, opProblem, vectorOf, type CompactState } from "./codec";
 import { isEpochKey } from "./epoch";
+import { checkGroup, type LeftBehindGroup } from "./leftBehind";
 import { emptyState, type Op, type SyncState } from "./state";
 import { GENESIS_TAG, compareTags, isDeviceId, isLamport, isTag, isVersionVector, type VersionVector } from "./tags";
 
@@ -232,13 +233,30 @@ export interface OldEpoch {
   state: SyncState;
 }
 
+/** A part of a left-behind group (or of a projection) that a genesis
+ * held, so a switch didn't offer it: owed again should every epoch in `by`
+ * (the epochs whose genesis held it, in the line of the epoch the device is
+ * in) turn out not to be in a winner's line, unless something the device
+ * left since wrote over it (ADR-0008, #14). */
+export interface HeldPart {
+  by: string[];
+  group: LeftBehindGroup;
+}
+
+/** The `old` record: the previous epochs' states, and the parts geneses
+ * held (absent in records an earlier build wrote, which read as none). */
+export interface OldRecord {
+  entries: OldEpoch[];
+  held: HeldPart[];
+}
+
 /** The `old` record's value. */
-export function storedOld(entries: readonly OldEpoch[]): unknown {
-  return { entries: entries.map(({ epoch, device, state }) => ({ epoch, device, state: storedState(state) })) };
+export function storedOld(entries: readonly OldEpoch[], held: readonly HeldPart[] = []): unknown {
+  return { entries: entries.map(({ epoch, device, state }) => ({ epoch, device, state: storedState(state) })), ...(held.length > 0 ? { held } : {}) };
 }
 
 /** An `old` record's value back, or why it is malformed. */
-export function decodeOld(value: unknown): OldEpoch[] | string {
+export function decodeOld(value: unknown): OldRecord | string {
   if (!isPlainObject(value) || !Array.isArray(value.entries)) return "old is malformed";
   const entries: OldEpoch[] = [];
   for (const entry of value.entries as unknown[]) {
@@ -247,7 +265,17 @@ export function decodeOld(value: unknown): OldEpoch[] | string {
     if (typeof state === "string") return state;
     entries.push({ epoch: entry.epoch, device: entry.device, state });
   }
-  return entries;
+  const held: HeldPart[] = [];
+  if (value.held !== undefined) {
+    if (!Array.isArray(value.held)) return "old's held parts are malformed";
+    for (const part of value.held as unknown[]) {
+      if (!isPlainObject(part) || !Array.isArray(part.by) || part.by.length === 0 || !part.by.every(isEpochKey)) return "old's held part is malformed";
+      const group = checkGroup(part.group);
+      if (group === null) return "old's held part is malformed";
+      held.push({ by: part.by as string[], group });
+    }
+  }
+  return { entries, held };
 }
 
 // --- tail and ownLog: deltas ----------------------------------------------
