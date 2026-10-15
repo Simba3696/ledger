@@ -1101,3 +1101,44 @@ describe("the default log", () => {
     expect(error.mock.calls).toEqual([["ledger:sync: this device's own log would be refused (too large); it is not sent"], ["ledger:sync: sync failed; it will be tried again", err]]);
   });
 });
+
+describe("a save after a join that re-carries an old winner (#14 review, round 2)", () => {
+  /** Sam's edit (60) beat Alex's 45 and was told in an ordinary join.
+   * Alex then edits the amount again (50, after seeing 60), while a join of
+   * Sam's snapshot, which carries the same register still tagged with
+   * Sam's edit, runs before the save (`window`) or before the diff. */
+  async function scenario(window: boolean) {
+    const { store, held } = holdingStore("before");
+    const d = await device({ store });
+    const sam = new Replica(X, emptyDocument(), { actor: "sam" });
+    await sam.backend.addEntry(ENTRY);
+    await d.engine.join({ ops: [[X, sam.ops[0]]] });
+    const [groceries] = await d.backend.getMonth(2026, 5);
+    await d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 45 });
+    for (const remarks of ["Bus", "Rent", "Tea"]) await sam.backend.addEntry({ ...ENTRY, remarks });
+    await sam.backend.updateEntry(2026, 5, (await sam.backend.getMonth(2026, 5)).find((e) => e.remarks === "Groceries")!.row, { ...ENTRY, amount: 60 });
+    // An ordinary join, no write in flight: told W/M1.
+    await d.engine.join({ ops: sam.ops.slice(1).map((op) => [X, op] as [string, typeof op]) });
+    const toldFirst = d.engine.notices().map((v) => v.key);
+    // Later the person edits the amount again (after seeing 60). Meanwhile Sam's snapshot (unchanged amount, tagged W) joins.
+    if (window) held.on = true;
+    const theirs = d.engine.join({ states: [{ device: X, state: sam.state }] });
+    if (window) {
+      await held.reached.promise;
+      held.on = false;
+    } else await theirs;
+    const mine = d.backend.updateEntry(2026, 5, groceries.row, { ...ENTRY, amount: 50 });
+    for (let i = 0; i < 20; i++) await new Promise<void>((resolve) => (globalThis as unknown as { setImmediate(fn: () => void): void }).setImmediate(resolve));
+    held.release.resolve();
+    await Promise.all([mine, theirs]);
+    return { toldFirst, now: d.engine.notices().map((v) => v.key) };
+  }
+  it("keeps a notice whose winner the join only carried again, unchanged, as it keeps it when that join runs before the diff", async () => {
+    const without = await scenario(false);
+    await clearSyncState();
+    factory = new IDBFactory();
+    vi.stubGlobal("indexedDB", factory);
+    const withWindow = await scenario(true);
+    expect({ without: without.now.length, withWindow: withWindow.now.length, toldFirst: without.toldFirst.length }).toEqual({ without: 1, withWindow: 1, toldFirst: 1 });
+  });
+});
