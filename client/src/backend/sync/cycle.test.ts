@@ -313,9 +313,25 @@ describe("triggers and spacing (section 7)", () => {
     const win = new EventTarget();
     const store = new MemoryStore();
     const a = await open({ store, events: { window: win } });
-    await a.backend.addEntry(ENTRY);
-    expect(a.engine.getState().pendingCount).toBe(1);
-    // The text is built after the commit, in the background.
+    // The text is built after the commit, in the background, its blob sha
+    // last: wait for that hash, not a fixed number of turns, which a loaded
+    // CI runner can outlast (pagehide then finds no text and rightly sends
+    // nothing, as the next test covers).
+    let hashed!: () => void;
+    const built = new Promise<void>((resolve) => (hashed = resolve));
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+      const done = await digest(algorithm, data);
+      if (algorithm === "SHA-1") hashed();
+      return done;
+    });
+    try {
+      await a.backend.addEntry(ENTRY);
+      expect(a.engine.getState().pendingCount).toBe(1);
+      await built;
+    } finally {
+      spy.mockRestore();
+    }
     await settle();
     win.dispatchEvent(new Event("pagehide"));
     await settle();
