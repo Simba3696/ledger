@@ -282,12 +282,12 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     await quiesce(w, a, y);
     for (const d of [a, y]) {
       expect(remarks(d).sort()).toEqual(["Lunch"]);
-      expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe("52000.00");
+      expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe(52000);
       expect(d.engine.current().monthLocks["2026-05"]).toBeUndefined();
     }
     // Re-applied on purpose, this device's figures replace Sam's.
     await a.engine.reapply(figures.id);
     await quiesce(w, a, y);
-    for (const d of [a, y]) expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe("50000.00");
+    for (const d of [a, y]) expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe(50000);
   }, 60_000);
 });

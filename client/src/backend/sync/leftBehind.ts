@@ -61,6 +61,11 @@ export interface LeftBehindGroup {
    * (`_c` and `_s` included): what a re-created record is made from, and
    * what a list shows. */
   records: Record<string, Record<string, unknown>>;
+  /** This device's month figures and settings (month finances, card bills,
+   * locks, settings) from an epoch it joined a racing create's winner from
+   * (D32), kept apart from its entries: the winner has its own for them,
+   * and re-applying these replaces those (splitFigures). */
+  figures?: true;
 }
 
 /** The restore a projection is for: the new epoch's genesis state and who
@@ -177,6 +182,21 @@ export function leftBehind(old: SyncState, cut: VersionVector, into: RestoreInto
     });
   }
   return groups.sort((a, b) => Number(b.own) - Number(a.own) || compareText(a.device, b.device));
+}
+
+/** A join of a racing create's winner (D32): `group`, this device's own,
+ * split into its entries (record fields and deletes) and its month figures
+ * and settings, under the marker of `device`, an id of its own, so
+ * re-applying the entries never writes over the figures the winner has
+ * for those months. Either part is null when it holds nothing. */
+export function splitFigures(group: LeftBehindGroup, device: string): [entries: LeftBehindGroup | null, figures: LeftBehindGroup | null] {
+  const isField = (key: string) => parseRegisterKey(key)?.kind === "field";
+  const figureSet = group.set.filter(([key]) => !isField(key));
+  if (figureSet.length === 0) return [group, null];
+  const entrySet = group.set.filter(([key]) => isField(key));
+  const entries = entrySet.length === 0 && group.del.length === 0 ? null : { ...group, set: entrySet };
+  const figures: LeftBehindGroup = { ...group, marker: `${group.epoch}/${device}`, device, set: figureSet, del: [], records: {}, figures: true };
+  return [entries, figures];
 }
 
 /** `group` less what `restored` (a new epoch's genesis state) already

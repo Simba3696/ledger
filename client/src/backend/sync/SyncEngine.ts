@@ -24,7 +24,7 @@ import { diffDocuments } from "./diff";
 import { draftOf, settleDraft } from "./draft";
 import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, splitFigures, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
@@ -307,6 +307,9 @@ export interface LeftBehindView {
    * it), but this device's own changes are not all in effect: shown until
    * this device resolves it too. */
   resolvedElsewhere: boolean;
+  /** This device's month figures and settings from before it joined a
+   * racing create's winner (D32): re-applying them replaces the winner's. */
+  figures: boolean;
   items: LeftBehindItem[];
 }
 
@@ -2999,6 +3002,7 @@ export class SyncEngine {
         who: group.who,
         into: group.into,
         resolvedElsewhere: state.ra.has(group.marker),
+        figures: group.figures === true,
         items: leftBehindItems(group),
       }));
   }
@@ -3475,6 +3479,15 @@ export class SyncEngine {
     }
     for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
       if (!group.own && groups.get(group.marker)?.own === true) continue;
+      // Joining a racing create's winner (D32): this device's month figures
+      // and settings are a group of their own, so getting its entries back
+      // never writes over the figures the winner has for those months.
+      if (genesis.rekey && group.own) {
+        const [entries, figures] = splitFigures(group, newDeviceId());
+        if (entries) groups.set(entries.marker, entries);
+        if (figures) groups.set(figures.marker, figures);
+        continue;
+      }
       groups.set(group.marker, group);
     }
     // The epoch switched from is kept even with no group: a restore that
