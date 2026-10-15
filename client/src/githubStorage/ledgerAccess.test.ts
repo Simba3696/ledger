@@ -156,6 +156,17 @@ describe("onboarding against the fake GitHub (#8)", () => {
     reopened.opened.engine.stop();
   }, 120_000);
 
+  it("a key asked for with a salt or iteration count out of bounds is refused before any derivation: openSealed says the device can't be read, keyFor throws (review of D32, round 2)", async () => {
+    const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
+    const store = new MemoryStore();
+    for (const needed of [{ salt: "c2FsdA==", iter: 600_000 }, { salt: "AAAAAAAAAAAAAAAAAAAAAA==", iter: 1e12 }]) {
+      const started = Date.now();
+      expect(await openSealed(alex.connection, PASSPHRASE, needed, { fetch: fake.fetch, store })).toEqual({ kind: "unreadable" });
+      await expect(keyFor(PASSPHRASE, needed)).rejects.toThrow();
+      expect(Date.now() - started).toBeLessThan(5000);
+    }
+  }, 60_000);
+
   it("a repo with no ledger reports it found nothing, so the gate offers Create", async () => {
     const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
     const key = await keyFor(PASSPHRASE);

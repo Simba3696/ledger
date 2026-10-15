@@ -349,4 +349,21 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
       }
     }, 60_000);
   });
+
+  it("a sealedWith in the meta out of the key bounds (a 16-byte salt, 600,000 to 10,000,000 iterations) reads as malformed, never as a key to ask for (review of D32, round 2)", async () => {
+    const { a } = await lostRace();
+    const result = await a.engine.rekeyAndJoin(HOUSEHOLD);
+    if (result.kind !== "joined") throw new Error(result.kind);
+    a.engine.stop();
+    for (const sealedWith of [{ salt: "c2FsdA==", iter: result.key.iter }, { salt: result.key.salt, iter: 1 }, { salt: result.key.salt, iter: 1e12 }]) {
+      const store = a.store.clone();
+      store.tamperMeta((meta) => {
+        meta.sealedWith = sealedWith;
+      });
+      const d = await device({ ...w, key: ownKey }, { login: "alex", store, noSettle: true });
+      running.push(d.engine);
+      expect(d.engine.getState()).toMatchObject({ unreadable: "malformed", keyNeeded: null });
+      d.engine.stop();
+    }
+  }, 60_000);
 });
