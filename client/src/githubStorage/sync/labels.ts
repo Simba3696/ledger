@@ -192,6 +192,9 @@ export function leftBehindHeading(group: LeftBehindView): string {
   const count = group.items.length;
   const changes = `${count} ${count === 1 ? "change" : "changes"}`;
   const were = count === 1 ? "wasn't" : "weren't";
+  // This device's month figures and settings, kept apart when it joined a
+  // racing create's winner (D32): re-applying them replaces the winner's.
+  if (group.figures) return `Your month figures and settings from before you joined ${group.into.by}'s ledger. Re-applying them replaces what that ledger has for them.`;
   // Epoch 1's genesis is no restore of an earlier ledger: it started the
   // ledger (a create, or a restore into an empty repo), and a group it left
   // behind comes from the join of a racing create's winner (D32).
