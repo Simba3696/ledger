@@ -1,6 +1,6 @@
 import { installBackend } from "../api";
 import { bytesToBase64 } from "../backend/base64";
-import { DEFAULT_ITERATIONS, deriveKey, newSalt } from "../backend/crypto";
+import { DEFAULT_ITERATIONS, deriveKey, isKeyParams, newSalt } from "../backend/crypto";
 import { createEmptyDocument } from "../backend/document/createDocument";
 import { DocumentBackend } from "../backend/document/DocumentBackend";
 import { AppNotInstalledError, AppSession, appReaches, signInConfig, type AppTokens, type SignInConfig } from "../backend/github/appAuth";
@@ -177,6 +177,7 @@ export async function connect(
 /** The passphrase's key for a salt (a header's) and iteration count, or a
  * fresh salt for a new ledger. */
 export async function keyFor(passphrase: string, header?: { salt: string; iter: number }): Promise<DeviceKey> {
+  if (header && !isKeyParams(header.salt, header.iter)) throw new Error("The salt or iteration count is out of range");
   const salt = header?.salt ?? bytesToBase64(newSalt());
   const iter = header?.iter ?? DEFAULT_ITERATIONS;
   return { key: await deriveKey(passphrase, salt, iter), salt, iter };
@@ -349,7 +350,10 @@ export async function openSealed(
   passphrase: string,
   needed: { salt: string; iter: number },
   deps: Deps = {},
-): Promise<{ kind: "open"; key: DeviceKey; opened: Extract<Opened, { kind: "open" }> } | { kind: "wrongPassphrase" }> {
+): Promise<{ kind: "open"; key: DeviceKey; opened: Extract<Opened, { kind: "open" }> } | { kind: "wrongPassphrase" } | { kind: "unreadable" }> {
+  // The engine names only a key within a header's bounds (checkMeta); one
+  // outside them is never derived.
+  if (!isKeyParams(needed.salt, needed.iter)) return { kind: "unreadable" };
   const key = await keyFor(passphrase, needed);
   const opened = await openLedger(connection, key, null, deps);
   if (opened.kind !== "open") return { kind: "wrongPassphrase" };

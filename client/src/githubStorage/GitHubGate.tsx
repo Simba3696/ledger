@@ -501,6 +501,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
       try {
         const sealed = await openSealed(connection, passphrase, keyNeeded, deps);
         if (sealed.kind === "wrongPassphrase") return dispatch({ type: "wrongPassphrase" });
+        if (sealed.kind === "unreadable") return dispatch({ type: "unlockFailed", message: "The changes saved on this device can't be read." });
         sealed.opened.engine.stop();
         work.current.key = sealed.key;
         work.current.keyNeeded = null;

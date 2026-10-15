@@ -1,4 +1,4 @@
-import { decryptDocument, encryptDocument } from "../crypto";
+import { decryptDocument, encryptDocument, isKeyParams } from "../crypto";
 import { decodeState, encodeState, opProblem, vectorOf, type CompactState } from "./codec";
 import { isEpochKey } from "./epoch";
 import { emptyState, type Op, type SyncState } from "./state";
@@ -150,7 +150,7 @@ export function checkMeta(value: unknown): MetaCheck {
   if (prev !== undefined && !(isPlainObject(prev) && Object.keys(prev).length === 2 && isEpochKey(prev.epoch) && isDeviceId(prev.device))) return bad("meta prev is malformed");
   if (value.basedOn !== undefined && !isEpochKey(value.basedOn)) return bad("meta basedOn is malformed");
   const sealed = value.sealedWith;
-  if (sealed !== undefined && !(isPlainObject(sealed) && Object.keys(sealed).length === 2 && typeof sealed.salt === "string" && sealed.salt !== "" && Number.isSafeInteger(sealed.iter) && (sealed.iter as number) > 0)) return bad("meta sealedWith is malformed");
+  if (sealed !== undefined && !(isPlainObject(sealed) && Object.keys(sealed).length === 2 && isKeyParams(sealed.salt, sealed.iter))) return bad("meta sealedWith is malformed");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
   if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough, value.ownLogK, value.lastSentLogK, value.lastSentSnapThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
