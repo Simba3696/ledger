@@ -1039,19 +1039,25 @@ async function main() {
         2000,
       );
       const reopened = await rowOnA();
+      // The Add Expense saved before this join stays empty: a saved value
+      // is never a draft.
+      const addForm = await formOnA();
       await editing.locator('button:has-text("Save")').click();
       await row(A.page, "E2E Edit kept").waitFor();
       const editSaved = await waitUntil(() => remoteHas(HOUSEHOLD_REPO, PASS.household, "E2E Edit kept"), 45_000, 1000);
       check(
-        "8. An open edit row on A is reopened with what was typed and the focus when B's change remounts A's ledger, and its save goes through (#13)",
+        "8. An open edit row on A is reopened with what was typed and the focus when B's change remounts A's ledger, its save goes through, and the Add Expense saved before stays empty (#13)",
         rejoined &&
+          addForm.amount === "" &&
+          addForm.remarks === "" &&
+          addForm.category === null &&
           reopened.amount === "34" &&
           reopened.remarks === "E2E Edit kept" &&
           reopened.focused &&
           editSaved &&
           (await amountOf(A.page, "E2E Edit kept")) === "₹34.00" &&
           (await A.page.locator(".sync-status-review").count()) === 0,
-        reopened,
+        { reopened, addForm },
       );
     }
 
