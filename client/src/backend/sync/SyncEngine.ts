@@ -1199,13 +1199,22 @@ export class SyncEngine {
     // clash this save tells again naming this op, is no longer so, as a
     // join after the save would show (#14). Such an older notice goes, or
     // keeps only its other registers, in its place in the list.
-    const tagged = (winner: { L: number; device: string }) => (t: Tag) => t[0] === winner.L && t[1] === winner.device;
-    const arrived = (winner: { L: number; device: string }) =>
-      between !== null &&
-      (between.ops.some(([device, o]) => device === winner.device && o.L === winner.L) ||
-        [...between.source.rec.values()].some((regs) => [...regs.values()].some((reg) => tagged(winner)(reg.t))) ||
-        [...between.source.unit.values()].some((reg) => tagged(winner)(reg.t)) ||
-        [...between.source.del.values()].some((deletion) => deletion.L === winner.L && deletion.by === winner.device));
+    // A winner arrived in that join only where the join changed something:
+    // a register or deletion the state before it didn't already hold with
+    // that tag. A snapshot carries every register its device holds, so it
+    // carries again winners told long before; a notice of one of those is
+    // no business of this save (a review of #14).
+    const arrivedTags = new Set<string>();
+    if (between !== null && op !== null) {
+      const changed = (was: Tag | undefined, now: Tag) => (was === undefined || was[0] !== now[0] || was[1] !== now[1] ? arrivedTags.add(`${now[0]}.${now[1]}`) : undefined);
+      for (const [rk, regs] of between.source.rec) for (const [field, reg] of regs) changed(between.pre.rec.get(rk)?.get(field)?.t, reg.t);
+      for (const [key, reg] of between.source.unit) changed(between.pre.unit.get(key)?.t, reg.t);
+      for (const [rk, deletion] of between.source.del) {
+        const was = between.pre.del.get(rk);
+        changed(was === undefined ? undefined : [was.L, was.by], [deletion.L, deletion.by]);
+      }
+    }
+    const arrived = (winner: { L: number; device: string }) => arrivedTags.has(`${winner.L}.${winner.device}`);
     const superseded = between !== null && op !== null ? supersededNotices(this.#notices, { L: op.L, wrote: new Set(op.set.map(([key]) => key)) }, late, me, arrived) : { drop: [], keep: [] };
     const told = [...fenceNotices, ...late.map(({ key, ...body }): [string, NoticeBody] => [key, body])];
     const dropped = [...settled, ...superseded.drop];
