@@ -102,7 +102,7 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     again.engine.stop();
     const old = await device({ ...w, key: ownKey }, { login: "alex", store: a.store, noSettle: true });
     running.push(old.engine);
-    expect(old.engine.getState().unreadable).toBe("undecryptable");
+    expect(old.engine.getState()).toMatchObject({ unreadable: "keyChanged", keyNeeded: { salt: theirKey.salt, iter: theirKey.iter } });
   }, 60_000);
 
   it("a wrong passphrase writes nothing, here or on GitHub", async () => {
@@ -145,7 +145,7 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     expect(await again.engine.rekeyAndJoin(HOUSEHOLD)).toMatchObject({ kind: "joined", epoch: THEIRS });
   }, 60_000);
 
-  it("a second tab waiting for the lock never writes under the old key: once it has the lock it can't read the device with it, and opens with the new key", async () => {
+  it("a second tab waiting for the lock never writes under the old key: once it has the lock it knows the device needs the new key, and opens with it", async () => {
     const locks = new FakeLocks() as unknown as LockManager;
     const store = new MemoryStore();
     const { a } = await lostRace({ store, locks });
@@ -157,7 +157,7 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     if (result.kind !== "joined") throw new Error(result.kind);
     a.engine.stop();
     for (let i = 0; i < 50 && b.engine.getState().status === "locked"; i++) await nextTask();
-    expect(b.engine.getState().unreadable).toBe("undecryptable");
+    expect(b.engine.getState()).toMatchObject({ unreadable: "keyChanged", keyNeeded: { salt: theirKey.salt, iter: theirKey.iter } });
     await expect(b.backend.addEntry(entry("Tea"))).rejects.toBeDefined();
     b.engine.stop();
     const c = await device({ ...w, key: result.key }, { login: "alex", store, locks });
@@ -228,5 +228,33 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     expect(await a.engine.rekeyAndJoin(HOUSEHOLD)).toEqual({ kind: "fromBackup", epoch: THEIRS });
     expect({ puts: puts(w).length, mutations: a.store.mutations.length }).toEqual(before);
     expect(remarks(a).sort()).toEqual(["From the backup", "Lunch"]);
+  }, 60_000);
+
+  it("a reload after the join, before the new key was saved, knows offline which key the device needs: the passphrase opens it, a wrong one doesn't (review of D32)", async () => {
+    const { a } = await lostRace();
+    const result = await a.engine.rekeyAndJoin(HOUSEHOLD);
+    if (result.kind !== "joined") throw new Error(result.kind);
+    a.engine.stop();
+    // The tab went away before the gate saved the key: the next start has
+    // the old key, and no network.
+    const offline = () => async () => {
+      throw new TypeError("Failed to fetch");
+    };
+    const stale = await device({ ...w, key: ownKey }, { login: "alex", store: a.store, noSettle: true, wrapFetch: offline });
+    running.push(stale.engine);
+    // EngineState.keyNeeded, as the fix adds it.
+    const needed = (stale.engine.getState() as unknown as { keyNeeded: { salt: string; iter: number } | null }).keyNeeded;
+    expect(stale.engine.getState()).toMatchObject({ unreadable: "keyChanged", keyNeeded: { salt: theirKey.salt, iter: theirKey.iter } });
+    stale.engine.stop();
+    const derive = async (passphrase: string): Promise<DeviceKey> => ({ key: await deriveKey(passphrase, needed!.salt, needed!.iter), salt: needed!.salt, iter: needed!.iter });
+    const wrong = await device({ ...w, key: await derive("correct horse battery stapel") }, { login: "alex", store: a.store, noSettle: true, wrapFetch: offline });
+    running.push(wrong.engine);
+    expect(wrong.engine.getState().unreadable).toBe("undecryptable");
+    wrong.engine.stop();
+    const right = await device({ ...w, key: await derive(HOUSEHOLD) }, { login: "alex", store: a.store, noSettle: true, wrapFetch: offline });
+    running.push(right.engine);
+    expect(right.engine.getState()).toMatchObject({ unreadable: null, keyNeeded: null });
+    expect(right.engine.epochKey).toBe(THEIRS);
+    expect(right.engine.leftBehind().filter((g) => g.own)).toHaveLength(1);
   }, 60_000);
 });
