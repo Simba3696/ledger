@@ -192,6 +192,14 @@ export function leftBehindHeading(group: LeftBehindView): string {
   const count = group.items.length;
   const changes = `${count} ${count === 1 ? "change" : "changes"}`;
   const were = count === 1 ? "wasn't" : "weren't";
+  // Epoch 1's genesis is no restore of an earlier ledger: it started the
+  // ledger (a create, or a restore into an empty repo), and a group it left
+  // behind comes from the join of a racing create's winner (D32).
+  if (group.into.epoch.startsWith("e000001-")) {
+    return group.own
+      ? `${group.into.by} started the ledger in the repo on ${when}. ${changes} made on this device ${were} in it.`
+      : `${changes} from ${group.who ?? "another device"} ${were} in the ledger ${group.into.by} started on ${when}.`;
+  }
   return group.own
     ? `${group.into.by} restored a backup on ${when}. ${changes} made on this device ${were} in it.`
     : `${changes} from ${group.who ?? "another device"} ${were} in ${group.into.by}'s restore on ${when}.`;
