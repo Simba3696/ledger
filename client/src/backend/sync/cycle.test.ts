@@ -39,6 +39,28 @@ async function settle(): Promise<void> {
 
 const ownLogName = (d: Device) => repoFileName({ kind: "log", epoch: EPOCH, device: d.engine.deviceId! });
 
+/** Runs `write` and waits until the own log text it leads to is built in
+ * the background, its blob sha last: a keepalive push sends only a text
+ * already built. Waits for that hash, not a fixed number of turns, which a
+ * loaded CI runner can outlast. */
+async function writeAndBuild(write: () => Promise<unknown>): Promise<void> {
+  let hashed!: () => void;
+  const built = new Promise<void>((resolve) => (hashed = resolve));
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+    const done = await digest(algorithm, data);
+    if (algorithm === "SHA-1") hashed();
+    return done;
+  });
+  try {
+    await write();
+    await built;
+  } finally {
+    spy.mockRestore();
+  }
+  await settle();
+}
+
 describe("the sync cycle (section 7)", () => {
   it("two devices each push their own log and join the other's: both show both expenses, in the same order, with no notice (AC6)", async () => {
     const a = await open({ login: "alex" });
@@ -313,26 +335,8 @@ describe("triggers and spacing (section 7)", () => {
     const win = new EventTarget();
     const store = new MemoryStore();
     const a = await open({ store, events: { window: win } });
-    // The text is built after the commit, in the background, its blob sha
-    // last: wait for that hash, not a fixed number of turns, which a loaded
-    // CI runner can outlast (pagehide then finds no text and rightly sends
-    // nothing, as the next test covers).
-    let hashed!: () => void;
-    const built = new Promise<void>((resolve) => (hashed = resolve));
-    const digest = crypto.subtle.digest.bind(crypto.subtle);
-    const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (algorithm: AlgorithmIdentifier, data: BufferSource) => {
-      const done = await digest(algorithm, data);
-      if (algorithm === "SHA-1") hashed();
-      return done;
-    });
-    try {
-      await a.backend.addEntry(ENTRY);
-      expect(a.engine.getState().pendingCount).toBe(1);
-      await built;
-    } finally {
-      spy.mockRestore();
-    }
-    await settle();
+    await writeAndBuild(() => a.backend.addEntry(ENTRY));
+    expect(a.engine.getState().pendingCount).toBe(1);
     win.dispatchEvent(new Event("pagehide"));
     await settle();
     expect(puts(w)).toHaveLength(1);
@@ -341,6 +345,46 @@ describe("triggers and spacing (section 7)", () => {
     const again = await open({ store });
     expect(again.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
     expect(puts(w)).toHaveLength(1);
+  });
+
+  it("a keepalive push also goes when the page is hidden, which on a phone fires no pagehide; back in front, the cycle settles it with no second PUT", async () => {
+    // iOS (Safari, and Chrome on iOS) fires only visibilitychange when the
+    // person switches apps or locks the phone, then freezes the page: the
+    // debounced push never runs, and a pagehide may never come.
+    const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    const win = new EventTarget();
+    const a = await open({ events: { document: page, window: win } });
+    await writeAndBuild(() => a.backend.addEntry(ENTRY));
+    page.visibilityState = "hidden";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(puts(w)).toHaveLength(1);
+    expect(puts(w)[0].keepalive).toBe(true);
+    // The page wasn't closed after all: in front again, it syncs, finds its
+    // log already in the repo, and sends nothing twice.
+    page.visibilityState = "visible";
+    page.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    await a.engine.sync();
+    expect(a.engine.getState()).toMatchObject({ status: "idle", pendingCount: 0 });
+    expect(puts(w)).toHaveLength(1);
+    expect(await repoOps(w, a)).toHaveLength(1);
+  });
+
+  it("each built log text goes by keepalive at most once: hidden, then pagehide with no cycle between, sends one PUT", async () => {
+    const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    const win = new EventTarget();
+    const a = await open({ events: { document: page, window: win } });
+    await writeAndBuild(() => a.backend.addEntry(ENTRY));
+    for (const event of ["hide", "pagehide"]) {
+      if (event === "pagehide") win.dispatchEvent(new Event("pagehide"));
+      else {
+        page.visibilityState = event === "hide" ? "hidden" : "visible";
+        page.dispatchEvent(new Event("visibilitychange"));
+      }
+      await settle();
+    }
+    expect(puts(w).filter((r) => r.keepalive)).toHaveLength(1);
   });
 
   it("pagehide sends no keepalive PUT whose request body would pass the 64 KiB keepalive limit; the next cycle pushes it", async () => {

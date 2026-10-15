@@ -865,8 +865,12 @@ export class SyncEngine {
   #lastLanded: number | null = null;
   /** The own log text for the latest own op, built once per content. */
   #logText: { key: string; value: Promise<LogText> } | null = null;
-  /** The last own log text built, for a keepalive push on pagehide. */
+  /** The last own log text built, for a keepalive push on hidden or pagehide. */
   #logReady: LogText | null = null;
+  /** The text a keepalive push last sent: each goes at most once, since a
+   * page hidden and then closed fires both, and a second send of the same
+   * text could only fail on its now stale sha. */
+  #keepaliveSent: LogText | null = null;
   /** The own snap text for the current own L, built once and reused by
    * every send of that snapshot. */
   #snapText: { key: string; value: Promise<SnapText | null> } | null = null;
@@ -1350,7 +1354,11 @@ export class SyncEngine {
   }
 
   /** Triggers (section 7): visible again, back online, a 60 s poll while
-   * visible, and a keepalive push on pagehide. */
+   * visible, and a keepalive push on becoming hidden or on pagehide. A phone
+   * that switches apps or locks (iOS: Safari, and Chrome on iOS) fires only
+   * visibilitychange, then freezes the page: the debounced push never runs,
+   * and pagehide may never come. A push sent on hidden whose page lives on
+   * is settled by the next cycle, as a lost response is. */
   #listen(): void {
     if (this.#listening) return;
     this.#listening = true;
@@ -1359,6 +1367,7 @@ export class SyncEngine {
     if (doc) {
       const onVisibility = () => {
         if (visible()) void this.sync();
+        else this.#keepalivePush();
       };
       doc.addEventListener("visibilitychange", onVisibility);
       this.#cleanups.push(() => doc.removeEventListener("visibilitychange", onVisibility));
@@ -1403,7 +1412,7 @@ export class SyncEngine {
     }, SYNC_TIMING.debounceMs);
   }
 
-  /** On pagehide: the own log, sent with keepalive so the request can
+  /** On becoming hidden or pagehide: the own log, sent with keepalive so the request can
    * outlive the page, its response never read. A lost response is what
    * step 5 settles on the next start. Only a text already built can go: the
    * page may not live long enough to encrypt one. */
@@ -1412,11 +1421,12 @@ export class SyncEngine {
     const meta = this.#meta!;
     const through = this.#ownLog.at(-1)?.L ?? meta.K;
     const ready = this.#logReady;
-    if (!this.#logDue() || !ready || ready.through !== through || ready.K !== meta.K || ready.device !== meta.deviceId) return;
+    if (!this.#logDue() || !ready || ready === this.#keepaliveSent || ready.through !== through || ready.K !== meta.K || ready.device !== meta.deviceId) return;
     const write = { path: repoPath(ready.file), text: ready.text, sha: meta.ownLogSha, message: deviceCommitMessage("Sync", ready.device) };
     // Measured as sent: a body the browser would refuse never goes, nor
     // counts against the hourly cap. The next start pushes it instead.
     if (new TextEncoder().encode(putFileBody(write)).length > SYNC_TIMING.keepaliveMaxBytes) return;
+    this.#keepaliveSent = ready;
     this.#putTimes.push(this.#monotonic());
     this.#remote!.client.putFile({ ...write, keepalive: true }).catch(() => undefined);
   }
