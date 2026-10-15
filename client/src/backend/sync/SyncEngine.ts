@@ -3571,7 +3571,7 @@ export class SyncEngine {
     // nothing, and an own change only the losing genesis held was offered
     // nowhere).
     const anchor = basedOn === null ? undefined : skipped && !genesis.rejoin ? (fallback ?? from) : basedOn.epoch;
-    const { held, offeredAgain } = this.#heldAcross(from, genesis, record.held, { pre, groups, kept, projectedAgain, anchor });
+    const { held, offeredAgain, superseded } = this.#heldAcross(from, genesis, record.held, { pre, groups, kept, projectedAgain, anchor });
     held.push(...heldNow);
     const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
     const keep = (epoch: string) => epoch !== from && (epoch === anchor || hasGroups(epoch));
@@ -3652,7 +3652,7 @@ export class SyncEngine {
     this.#leftBehind = groups;
     this.#oldText = oldText;
     this.#refreshLeftBehind();
-    this.#log("info", `a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind (${offeredAgain} parts a losing genesis held offered again, ${held.length} held back)`);
+    this.#log("info", `a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind (${offeredAgain} parts a losing genesis held offered again, ${held.length} held back, ${superseded} superseded)`);
     this.#emit();
     return true;
   }
@@ -3696,10 +3696,11 @@ export class SyncEngine {
     genesis: NewEpoch,
     parts: readonly HeldPart[],
     { pre, groups, kept, projectedAgain, anchor }: { pre: SyncState; groups: Map<string, LeftBehindGroup>; kept: readonly OldEpoch[]; projectedAgain: ReadonlySet<string>; anchor: string | undefined },
-  ): { held: HeldPart[]; offeredAgain: number } {
+  ): { held: HeldPart[]; offeredAgain: number; superseded: number } {
     const held: HeldPart[] = [];
     let offeredAgain = 0;
-    if (parts.length === 0) return { held, offeredAgain };
+    let superseded = 0;
+    if (parts.length === 0) return { held, offeredAgain, superseded };
     const basedOn = genesis.basedOn;
     const line = genesis.line ?? new Map<string, VersionVector>();
     const end = genesis.lineEnd;
@@ -3739,6 +3740,7 @@ export class SyncEngine {
     for (const { by, group } of parts) {
       if (group.epoch === from || group.epoch === genesis.epoch || projectedAgain.has(group.epoch)) continue;
       let live = unsupersededIn(group, pre);
+      if (live === null || live.set.length < group.set.length || live.del.length < group.del.length) superseded++;
       // The epoch the part came from is in the winner's line, under a cut
       // known here: what that cut covers, the winner's line saw.
       const lineCut = basedOn !== null && basedOn.epoch === group.epoch ? basedOn.seen : line.get(group.epoch);
@@ -3771,7 +3773,7 @@ export class SyncEngine {
       groups.set(owed.marker, shown === undefined ? { ...owed, into } : mergeGroups(shown, owed));
       offeredAgain++;
     }
-    return { held, offeredAgain };
+    return { held, offeredAgain, superseded };
   }
 
   /** The previous epochs' states kept in `old`. A load reads them first, so

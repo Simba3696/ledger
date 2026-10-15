@@ -128,6 +128,7 @@ const counts = {
    * again because that genesis lost (#14). */
   heldBack: 0,
   offeredAgain: 0,
+  superseded: 0,
 };
 
 /** One physical device: its engines over time (reloads), the stores it has
@@ -1026,10 +1027,11 @@ async function run(seed: number): Promise<void> {
   await quiesce(h);
   for (const slot of h.slots) if (slot.epochs.length > 1) counts.switches += slot.epochs.length - 1;
   for (const line of h.log) {
-    const held = /\((\d+) parts a losing genesis held offered again, (\d+) held back\)/.exec(line);
+    const held = /\((\d+) parts a losing genesis held offered again, (\d+) held back, (\d+) superseded\)/.exec(line);
     if (held) {
       counts.offeredAgain += Number(held[1]);
       if (Number(held[2]) > 0) counts.heldBack++;
+      counts.superseded += Number(held[3]);
     }
   }
   await check(h, where);
