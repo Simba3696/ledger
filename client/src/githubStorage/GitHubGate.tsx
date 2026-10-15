@@ -21,11 +21,13 @@ import { EpochGonePanel } from "./EpochGonePanel";
 import { RaceLostPanel } from "./RaceLostPanel";
 import {
   ConnectFailed,
-  afterUndecryptable,
   connect,
   createFromDevice,
   createNew,
+  joinRace,
+  keyChangeStep,
   openLedger,
+  openSealed,
   remoteFor,
   signInConfigOf,
   startFromRepo,
@@ -37,7 +39,7 @@ import {
 import { readInvite } from "./links";
 import { ConnectStep, type ConnectSignIn } from "./onboarding/ConnectStep";
 import { CreateLedger } from "./onboarding/CreateLedger";
-import { CREATE_UNKNOWN, LISTING_CUT, NEEDS_UPDATE, flow, initialScreen, type FlowEvent, type Path, type Screen, type Target } from "./onboarding/flow";
+import { CREATE_UNKNOWN, flow, initialScreen, type FlowEvent, type Path, type Screen, type Target } from "./onboarding/flow";
 import { Blocked, Misconfigured, Unsupported } from "./onboarding/Messages";
 import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
@@ -137,7 +139,9 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
   const signInSettings = signInConfigOf(deps);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
-  const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
+  /** `keyNeeded`: the key a device sealed under another key names (D32),
+   * which Unlock derives with the passphrase. */
+  const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null; keyNeeded?: { salt: string; iter: number } | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
   /** openWith, for the engine watcher (an effect that outlives renders):
    * `deps` is a new object on each render, so a dependency on openWith
@@ -268,22 +272,26 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     let rekeyed = false;
     const check = () => {
       const state = engine.getState();
-      // The device doesn't decrypt with this tab's key: another tab may have
-      // joined a racing create's winner under that ledger's key (D32).
-      const tabKey = work.current.key;
-      if (state.unreadable === "undecryptable" && !rekeyed && tabKey) {
+      // The device is sealed under another key than this tab's (it joined a
+      // racing create's winner, D32): the key another tab kept reopens it,
+      // else Unlock asks for the passphrase, which derives the key the
+      // device names without the network.
+      const needed = state.keyNeeded;
+      if (state.unreadable === "keyChanged" && needed && !rekeyed) {
         rekeyed = true;
         void (async () => {
           try {
             const saved = await loadSaved();
-            const next = await afterUndecryptable(remote, tabKey, saved.key);
-            if (next.kind === "stay") return;
+            const step = keyChangeStep(needed, saved.key);
             engine.stop();
             setOpen(null);
             const connection = work.current.connection;
-            if (next.kind === "keyChanged" || !connection) return dispatch({ type: "keyChanged" });
-            work.current.key = next.key;
-            if (await openWithRef.current(connection, next.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
+            if (step.kind === "unlock" || !connection) {
+              work.current.keyNeeded = needed;
+              return dispatch({ type: "keyChanged" });
+            }
+            work.current.key = step.key;
+            if (await openWithRef.current(connection, step.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
           } catch (err) {
             if (work.current.connection) failed(err, work.current.connection);
           }
@@ -464,39 +472,45 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
    * returns is the one this device keeps. */
   async function onJoinRace(passphrase: string) {
     if (!open) return;
-    try {
-      const result = await open.engine.rekeyAndJoin(passphrase);
-      switch (result.kind) {
-        case "joined":
-          work.current.key = result.key;
-          setRemembered(await remember(open.connection, result.key));
-          return dispatch({ type: "unlocked" });
-        // Nothing to join here (any more), or a ledger started from a
-        // backup, whose panel says the backup way: back to the ledger.
-        case "notRaceLost":
-        case "fromBackup":
-          return dispatch({ type: "unlocked" });
-        case "wrongPassphrase":
-          return dispatch({ type: "wrongPassphrase" });
-        case "otherKey":
-          return dispatch({ type: "raceOtherKey" });
-        case "unknown":
-          return dispatch({ type: "unlockFailed", message: LISTING_CUT });
-        case "needsUpdate":
-          return dispatch({ type: "unlockFailed", message: NEEDS_UPDATE });
-        case "damaged":
-          return dispatch({ type: "unlockFailed", message: "The ledger in the repo can't be read on this device. Everything here is kept." });
-      }
-    } catch (err) {
-      if (tokenRefused(err)) return dispatch({ type: "tokenRejected" });
-      dispatch({ type: "unlockFailed", message: connectError(err, targetOf(open.connection), { write: true }).message });
+    const { connection } = open;
+    const outcome = await joinRace(open.engine, passphrase, async (key) => setRemembered(await remember(connection, key)));
+    switch (outcome.kind) {
+      case "joined":
+        work.current.key = outcome.key;
+        return dispatch({ type: "unlocked" });
+      case "back":
+        return dispatch({ type: "unlocked" });
+      case "wrongPassphrase":
+        return dispatch({ type: "wrongPassphrase" });
+      case "otherKey":
+        return dispatch({ type: "raceOtherKey" });
+      case "tokenRejected":
+        return dispatch({ type: "tokenRejected" });
+      case "failed":
+        return dispatch({ type: "unlockFailed", message: outcome.message });
     }
   }
 
   async function onUnlock(passphrase: string) {
     if (screen.kind === "unlock" && screen.joining) return onJoinRace(passphrase);
-    const { connection } = work.current;
+    const { connection, keyNeeded } = work.current;
     if (!connection) return;
+    if (keyNeeded) {
+      // The device names the key it is sealed under (D32): derived with the
+      // passphrase, offline, and checked by opening the device.
+      try {
+        const sealed = await openSealed(connection, passphrase, keyNeeded, deps);
+        if (sealed.kind === "wrongPassphrase") return dispatch({ type: "wrongPassphrase" });
+        sealed.opened.engine.stop();
+        work.current.key = sealed.key;
+        work.current.keyNeeded = null;
+        setRemembered(await remember(connection, sealed.key));
+        if (await openWith(connection, sealed.key, null)) dispatch({ type: "unlocked" });
+      } catch (err) {
+        failed(err, connection);
+      }
+      return;
+    }
     try {
       const found = work.current.found?.kind === "ledger" ? work.current.found : await findLedger(await currentRemote(connection));
       if (found.kind !== "ledger") return dispatch({ type: "found", target: targetOf(connection), found: foundOf(found) });
