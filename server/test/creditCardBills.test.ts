@@ -65,7 +65,7 @@ describe("getMonthBills / setMonthBills", () => {
     await expect(ccBills.setMonthBills({ year: 2000, month: 1, cards: [] })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("rejects a year past the column's int4 limit with the store's own 400, not a database error", async () => {
+  it("rejects a year past four digits with the store's own 400 (#12)", async () => {
     const tooBig = ccBills.LATEST_YEAR + 1;
     const invalid = { status: 400, message: `Invalid year: ${tooBig}` };
     await expect(ccBills.getMonthBills(tooBig, 1)).rejects.toMatchObject(invalid);

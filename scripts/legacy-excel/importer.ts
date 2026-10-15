@@ -117,9 +117,10 @@ function canonicalName(name: string): string | null {
   return FLAT_FILES.find((f) => f.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
-/** The columns' own bounds (supabase/migrations): year >= 2018, int4. */
+/** The stores' year bounds: year >= 2018 (supabase/migrations), four digits
+ * (server/src/store, #12). */
 const EARLIEST_YEAR = 2018;
-const LATEST_YEAR = 2147483647;
+const LATEST_YEAR = 9999;
 const HEX_COLOUR = /^#[0-9A-Fa-f]{6}$/;
 
 function isStorableYear(year: number): boolean {

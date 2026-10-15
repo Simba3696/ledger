@@ -581,8 +581,8 @@ describe("document parity: expenses", () => {
       await b.moveEntry(YEAR, 7, ids.expense(YEAR, 7, 0), row);
     }
     await b.getMonth(YEAR, 7.5);
-    await b.getMonth(2147483647, 12);
-    await b.getMonth(2147483648, 1);
+    await b.getMonth(9999, 12);
+    await b.getMonth(10000, 1);
     await b.getMonthLock(YEAR, 0);
     await b.getMonth(YEAR, 7);
   });

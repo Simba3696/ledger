@@ -18,9 +18,10 @@ export const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/** The `year` columns' own bounds: `check (year >= 2018)` and int4. */
+/** The server's year bounds (server/src/store): `check (year >= 2018)`, and
+ * four-digit years (#12: a read walks every month up to the year asked for). */
 const EARLIEST_YEAR = 2018;
-const LATEST_YEAR = 2147483647;
+const LATEST_YEAR = 9999;
 
 // --- validate.ts -----------------------------------------------------------
 

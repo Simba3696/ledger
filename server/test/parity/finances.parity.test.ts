@@ -203,9 +203,9 @@ describe("Postgres storage", () => {
     await b.getMonthIncome(YEAR, 5);
   });
 
-  parity("rejects a year past the column's range with the store's own 400", {}, async (b) => {
-    await b.getMonthIncome(2147483648, 1);
-    await b.setMonthIncome(2147483648, 1, income(1, null));
+  parity("rejects a year past four digits with the store's own 400 (#12)", {}, async (b) => {
+    await b.getMonthIncome(10000, 1);
+    await b.setMonthIncome(10000, 1, income(1, null));
   });
 
   parity("lets overlapping saves to the same month both succeed, the last one winning", {}, async (b, { note, quietly }) => {
@@ -271,5 +271,14 @@ describe("document parity: finances", () => {
     await b.getFinanceSummary(Number.NaN);
     await b.getFinanceSummary(2018.5);
     await b.getFinanceSummary(2018);
+  });
+
+  // #12: the summary walks every month from EARLIEST_YEAR up to the year
+  // asked for, so an unbounded year ran out of memory. Four digits keep the
+  // walk to under 100,000 months.
+  parity("a finance summary past four digits is a 400 at once, and 9999 still answers (#12)", {}, async (b) => {
+    await b.getFinanceSummary(2_000_000_000);
+    await b.getFinanceSummary(10000);
+    await b.getFinanceSummary(9999);
   });
 });

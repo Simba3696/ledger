@@ -7,7 +7,7 @@ import type { ModuleName, SubscriptionDuration } from "../../api";
 //
 // Conventions:
 // - Month keys are `${year}-${MM}`: the year unpadded (the store accepts
-//   years up to 2147483647), the month zero-padded. See monthKey().
+//   years up to 9999), the month zero-padded. See monthKey().
 // - Money is a decimal string with exactly 2 places ("1234.50"), and the two
 //   rates have exactly 3, rounded as numeric(14,2) and numeric(6,3) round
 //   (@ledger/shared/money). A record never holds a JS number for money.

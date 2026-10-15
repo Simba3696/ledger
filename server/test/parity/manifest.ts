@@ -98,7 +98,7 @@ export const MANIFEST: Record<StoreFile, Record<string, Classification>> = {
     "Postgres storage > still accepts negative income and savings amounts, as the Excel edition did": PORTED,
     "Postgres storage > names the field in a too-large rejection": PORTED,
     "Postgres storage > rejects values the database columns can't hold with a 400, not a database error": PORTED,
-    "Postgres storage > rejects a year past the column's range with the store's own 400": PORTED,
+    "Postgres storage > rejects a year past four digits with the store's own 400 (#12)": PORTED,
     "Postgres storage > lets overlapping saves to the same month both succeed, the last one winning": PORTED,
   },
   debts: {
@@ -119,7 +119,7 @@ export const MANIFEST: Record<StoreFile, Record<string, Classification>> = {
     "getMonthBills / setMonthBills > rejects a non-boolean settled flag": PORTED,
     "getMonthBills / setMonthBills > overwrites an existing entry (including clearing to empty) rather than duplicating a row": PORTED,
     "getMonthBills / setMonthBills > rejects a year before EARLIEST_YEAR": PORTED,
-    "getMonthBills / setMonthBills > rejects a year past the column's int4 limit with the store's own 400, not a database error": PORTED,
+    "getMonthBills / setMonthBills > rejects a year past four digits with the store's own 400 (#12)": PORTED,
     "getMonthBills / setMonthBills > rejects an out-of-range month": PORTED,
     "getMonthBills / setMonthBills > rejects a card with no name": PORTED,
     "getMonthBills / setMonthBills > rejects a non-finite due/paid amount": PORTED,

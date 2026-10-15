@@ -344,14 +344,14 @@ describe("Postgres storage", () => {
     expect((await finances.getMonthIncome(YEAR, 5)).savings).toEqual([{ name: "PPF", amount: 10.01 }]);
   });
 
-  it("rejects a year past the column's range with the store's own 400", async () => {
-    await expect(finances.getMonthIncome(2147483648, 1)).rejects.toMatchObject({
+  it("rejects a year past four digits with the store's own 400 (#12)", async () => {
+    await expect(finances.getMonthIncome(10000, 1)).rejects.toMatchObject({
       status: 400,
-      message: "Invalid year: 2147483648",
+      message: "Invalid year: 10000",
     });
     await expect(
-      finances.setMonthIncome({ year: 2147483648, month: 1, salary: 1, otherIncome: null, savings: [] }),
-    ).rejects.toMatchObject({ status: 400, message: "Invalid year: 2147483648" });
+      finances.setMonthIncome({ year: 10000, month: 1, salary: 1, otherIncome: null, savings: [] }),
+    ).rejects.toMatchObject({ status: 400, message: "Invalid year: 10000" });
   });
 
   it("lets overlapping saves to the same month both succeed, the last one winning", async () => {

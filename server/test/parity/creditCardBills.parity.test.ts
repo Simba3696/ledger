@@ -60,12 +60,12 @@ describe("getMonthBills / setMonthBills", () => {
     await b.getCreditCardBillsSummary(2000);
   });
 
-  parity("rejects a year past the column's int4 limit with the store's own 400, not a database error", {}, async (b) => {
-    const tooBig = 2147483647 + 1;
+  parity("rejects a year past four digits with the store's own 400 (#12)", {}, async (b) => {
+    const tooBig = 9999 + 1;
     await b.getMonthBills(tooBig, 1);
     await b.setMonthBills(tooBig, 1, []);
     await b.getCreditCardBillsSummary(tooBig);
-    await b.getMonthBills(2147483647, 12);
+    await b.getMonthBills(9999, 12);
   });
 
   parity("rejects an out-of-range month", {}, async (b) => {
