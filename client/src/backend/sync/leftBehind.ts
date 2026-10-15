@@ -290,8 +290,11 @@ function written(reg: Register | undefined): boolean {
  * an epoch this device leaves, superseded: a register an op of that epoch
  * wrote (this device's or one it joined: its tag isn't the genesis's,
  * whatever the value), a field or create of a record that epoch deleted, a
- * field group whole when any of it is, and a delete of a record any op of
- * that epoch wrote. A register still under the genesis tag, at any value,
+ * field group whole when any of it is, and a delete of a record that
+ * epoch deleted too (its registers keep the genesis tag after a delete, so
+ * only the deletion shows it: a re-applied delete, offered under that
+ * epoch's marker once it loses, #17 review) or any op of that epoch
+ * wrote. A register still under the genesis tag, at any value,
  * was written by no one there: a restore's backup is not a later write.
  * Each record the epoch wrote that is still shown there is snapshotted
  * again from it, so what an add re-creates is never older than what this
@@ -306,7 +309,7 @@ export function unsupersededIn(part: LeftBehindGroup, state: SyncState): LeftBeh
       const rk = `${parsed.coll}/${parsed.id}`;
       return !state.del.has(rk) && !written(state.rec.get(rk)?.get(parsed.field));
     },
-    (rk) => ![...(state.rec.get(rk)?.values() ?? [])].some(written),
+    (rk) => !state.del.has(rk) && ![...(state.rec.get(rk)?.values() ?? [])].some(written),
   );
   if (left === null) return null;
   let records: Record<string, Record<string, unknown>> | null = null;

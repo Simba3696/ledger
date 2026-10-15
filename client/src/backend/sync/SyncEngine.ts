@@ -1305,7 +1305,15 @@ export class SyncEngine {
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
-      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => marker !== resolves));
+      // An own group resolved here is settled only while this epoch is in
+      // the winner's line: should it lose, the group is offered again (D18,
+      // #17). Kept as a part this epoch holds, which every later switch
+      // decides as it decides a part a genesis held (#heldAcross): what an
+      // op here wrote over (a re-apply's own writes included, offered under
+      // this epoch's marker once it loses) or deleted goes for good.
+      const group = this.#leftBehind.get(resolves);
+      const settled = group?.own === true ? { by: [meta.epochKey], group } : undefined;
+      const old = await this.#oldKeeping([...this.#leftBehind.keys()].filter((marker) => marker !== resolves), settled);
       if (old !== undefined) writes.old = old;
     }
     // A reload (stop) or a takeover while this was being sealed writes nothing.
@@ -3668,7 +3676,10 @@ export class SyncEngine {
    * decision D18: held by a genesis in the line, the change is in the
    * ledger). But if that genesis later loses, the part is in no ledger, so
    * the switch keeps it (`held` in `old`, each part with the epochs whose
-   * genesis held it, `by`), and every later switch decides it afresh:
+   * genesis held it, `by`), and every later switch decides it afresh. An
+   * own group re-applied or discarded is kept the same way, `by` the epoch
+   * it was resolved in: settled while that epoch is in the winner's line,
+   * owed again once it isn't (D18, #17):
    *
    *  1. Superseded: an op of the epoch now left (this device's or one it
    *     joined) wrote over it, or deleted its record (unsupersededIn, by
@@ -3808,16 +3819,19 @@ export class SyncEngine {
    * and the parts geneses held (#heldAcross) are kept as they are,
    * since a restore that raced the one switched to may be based on either
    * with another cut, until the device switches again; an earlier epoch
-   * only while a group from it is left. Undefined when that changes
-   * nothing, or when `old` can't be read (it is then left as it is). */
-  async #oldKeeping(markers: readonly string[]): Promise<string | null | undefined> {
-    if (this.#oldText === null) return undefined;
+   * only while a group from it is left. `settled`, an own group just
+   * resolved in this epoch, joins the held parts (#17). Undefined when that
+   * changes nothing, or when `old` can't be read (it is then left as it
+   * is). */
+  async #oldKeeping(markers: readonly string[], settled?: HeldPart): Promise<string | null | undefined> {
+    if (this.#oldText === null && settled === undefined) return undefined;
     const record = await this.#decodeOld();
     if (record === null) return undefined;
-    const { entries, held } = record;
+    const { entries } = record;
+    const held = settled === undefined ? record.held : [...record.held, settled];
     const { prev, basedOn } = this.#meta!;
     const keep = entries.filter((entry) => entry.epoch === prev?.epoch || entry.epoch === basedOn || markers.some((marker) => marker.startsWith(`${entry.epoch}/`)));
-    if (keep.length === entries.length) return undefined;
+    if (keep.length === entries.length && settled === undefined) return undefined;
     // The parts geneses held (#14) stay as they are.
     return keep.length === 0 && held.length === 0 ? null : seal(storedOld(keep, held), this.#key);
   }

@@ -156,8 +156,10 @@ interface Slot {
    * lists as applied, checked in effect or told at once), skipped (an item
    * it lists as skipped, its reason checked true then: the person was
    * told why, section 9.4) or discarded (an item the group showed when
-   * discarded), and the epoch it did it in. */
-  settled: Map<string, { how: "applied" | "skipped" | "discarded"; epoch: string }>;
+   * discarded), and the epoch it did it in: every time it did, as a group
+   * resolved in an epoch that then lost is offered again (D18), and may be
+   * resolved again elsewhere (#17). */
+  settled: Map<string, { how: "applied" | "skipped" | "discarded"; epoch: string }[]>;
   /** Restores this device made: the new epoch, and the epoch and id it
    * restored from. */
   restored: { epoch: string; from: string; device: string }[];
@@ -478,18 +480,24 @@ async function leftBehindStep(h: Harness, slot: Slot, rng: Rng): Promise<void> {
       expectInEffect(slot, group.id, result, before);
       expectSkippedRightly(slot, group.id, result, was);
       const epoch = slot.engine.epochKey!;
-      for (const item of result.applied) for (const text of itemTexts(item)) slot.settled.set(`${group.id}|${text}`, { how: "applied", epoch });
-      for (const { item } of result.skipped) for (const text of itemTexts(item)) slot.settled.set(`${group.id}|${text}`, { how: "skipped", epoch });
+      for (const item of result.applied) for (const text of itemTexts(item)) settle(slot, `${group.id}|${text}`, "applied", epoch);
+      for (const { item } of result.skipped) for (const text of itemTexts(item)) settle(slot, `${group.id}|${text}`, "skipped", epoch);
     } else {
       const shown = group.items.flatMap(itemTexts);
       await slot.engine.discard(group.id);
       counts.discarded++;
-      for (const text of shown) slot.settled.set(`${group.id}|${text}`, { how: "discarded", epoch: slot.engine.epochKey! });
+      for (const text of shown) settle(slot, `${group.id}|${text}`, "discarded", slot.engine.epochKey!);
     }
     slot.resolved.add(group.id);
   } catch (err) {
     expectedRefusal(h, err);
   }
+}
+
+/** Notes what `slot` did with one change a group showed, beside anything
+ * it did with it before. */
+function settle(slot: Slot, key: string, how: "applied" | "skipped" | "discarded", epoch: string): void {
+  slot.settled.set(key, [...(slot.settled.get(key) ?? []), { how, epoch }]);
 }
 
 /** A record in `doc`, by collection and id. */
@@ -902,7 +910,7 @@ async function check(h: Harness, where: string): Promise<void> {
     // (not any equal write: another device may have made it on its own).
     const reapplied = (ob: Obligation, text: string): boolean => {
       const markers = markersOf(ob);
-      if (h.slots.some((s) => [...markers].some((m) => { const done = s.settled.get(`${m}|${text}`); return done?.how === "applied" && line.has(done.epoch); }))) return true;
+      if (h.slots.some((s) => [...markers].some((m) => (s.settled.get(`${m}|${text}`) ?? []).some((done) => done.how === "applied" && line.has(done.epoch))))) return true;
       return wOps.some(({ op }) => (op.ra ?? []).some((m) => markers.has(m)) && (ob.kind === "del" ? op.del.includes(ob.key) : op.set.some(([key, value]) => key === ob.key && (key.endsWith("/_c") || plainText(value) === plainText(ob.value)))));
     };
     for (const ob of obligations(epoch, genesis.doc, ops, cut)) {
@@ -929,7 +937,7 @@ async function check(h: Harness, where: string): Promise<void> {
         // Skipped (it said why) or discarded on its own device, item by
         // item, in the winner's line (in a losing epoch neither is an
         // answer: the group is offered again, D18).
-        if ([...markersOf(ob)].some((m) => { const done = slot.settled.get(`${m}|${text}`); return done !== undefined && done.how !== "applied" && line.has(done.epoch); })) return true;
+        if ([...markersOf(ob)].some((m) => (slot.settled.get(`${m}|${text}`) ?? []).some((done) => done.how !== "applied" && line.has(done.epoch)))) return true;
         if (slot.discardedAt.some((at) => slot.epochs.indexOf(epoch) <= slot.epochs.indexOf(at))) return true;
         const own = slot.restored.find((r) => r.from === epoch && r.device === ob.device);
         if (own && ob.L <= (history.geneses.get(own.epoch)?.basedOn?.seen[ob.device] ?? 0)) return true;

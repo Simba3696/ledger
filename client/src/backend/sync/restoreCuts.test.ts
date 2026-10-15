@@ -621,3 +621,112 @@ describe("a part a genesis held, superseded in the epoch left at that switch (#1
     expect(offeredOf(a)).toEqual([{ epoch: "e000002-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
   });
 });
+
+// Harness seeds 165, 983 and 1058 at 120 steps with a racing restore after
+// a sequential one (#17). Alex's E1 edit to 45 is offered on the switch to
+// E2 and carried, unresolved, into E3a (based on E2). Alex resolves it in
+// E3a. E3b, based on E2 too, wins: E2 is projected again, but the group is
+// E1's, and E1 is projected again by nothing. A settlement in an epoch that
+// lost is no answer (D18): a discard there is offered again under E1's
+// marker; a re-apply there wrote the change into E3a, whose own writes are
+// offered under E3a's marker, so it is offered there, once.
+describe("an own group carried into an epoch that lost, and resolved there (#17)", () => {
+  /** Alex's E1 45, carried into E3a, and Alex's device on E3a. */
+  async function carriedIntoE3a(): Promise<{ a: Device; before: LedgerDocument }> {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a);
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await plantRestore("e000003-0000000a", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    expect(offeredOf(a)).toEqual([{ epoch: EPOCH, own: true, items: [`edit ${JSON.stringify({ amount: "45.00" })}`] }]);
+    return { a, before };
+  }
+
+  it("a discard there is offered again under the old epoch's marker when that epoch loses", async () => {
+    const { a, before } = await carriedIntoE3a();
+    await a.engine.discard(a.engine.leftBehind()[0].id);
+    await quiesce(w, a);
+    expect(offeredOf(a)).toEqual([]);
+    // What the device keeps for that survives a reload.
+    a.engine.stop();
+    const again = await open({ login: "alex", store: a.store });
+
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, again);
+    expect(again.engine.epochKey).toBe("e000003-0000000b");
+    expect({ offered: offeredOf(again), amounts: amounts(again) }).toEqual({
+      offered: [{ epoch: EPOCH, own: true, items: [`edit ${JSON.stringify({ amount: "45.00" })}`] }],
+      amounts: ["Groceries=10.00"],
+    });
+  });
+
+  it("a discard there stays settled when the winner's line passes through that epoch", async () => {
+    const { a, before } = await carriedIntoE3a();
+    await a.engine.discard(a.engine.leftBehind()[0].id);
+    await quiesce(w, a);
+    await plantRestore("e000004-0000000a", before, {}, "e000003-0000000a");
+    await cycle(w, a);
+    await plantRestore("e000004-0000000b", before, {}, "e000003-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000004-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+  });
+
+  it("a discard there, then an own edit there, offers only the edit when that epoch loses", async () => {
+    const { a, before } = await carriedIntoE3a();
+    await a.engine.discard(a.engine.leftBehind()[0].id);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, a);
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
+  });
+
+  it("a re-apply there is offered once, under that epoch's marker, when that epoch loses", async () => {
+    const { a, before } = await carriedIntoE3a();
+    await a.engine.reapply(a.engine.leftBehind()[0].id);
+    await quiesce(w, a);
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=45.00"] });
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "45.00" })}`] }]);
+  });
+
+  // Review of #17: a delete leaves the record's registers under the
+  // genesis tag, so only the deletion itself shows the epoch wrote over it.
+  it("a re-applied delete there is offered once, under that epoch's marker, when that epoch loses", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await a.backend.addEntry(entry("Tea", 5));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.deleteEntry(2026, 5, await row(a, "Tea"));
+    await quiesce(w, a);
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await plantRestore("e000003-0000000a", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    expect(offeredOf(a)).toEqual([{ epoch: EPOCH, own: true, items: ["delete"] }]);
+    await a.engine.reapply(a.engine.leftBehind()[0].id);
+    await quiesce(w, a);
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=10.00"] });
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: ["delete"] }]);
+  });
+});

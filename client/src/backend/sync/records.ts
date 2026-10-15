@@ -237,7 +237,8 @@ export interface OldEpoch {
  * held, so a switch didn't offer it: owed again should every epoch in `by`
  * (the epochs whose genesis held it, in the line of the epoch the device is
  * in) turn out not to be in a winner's line, unless something the device
- * left since wrote over it (ADR-0008, #14). */
+ * left since wrote over it (ADR-0008, #14). An own group resolved in an
+ * epoch is kept the same way, `by` that epoch (#17). */
 export interface HeldPart {
   by: string[];
   group: LeftBehindGroup;
