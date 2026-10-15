@@ -65,7 +65,9 @@ export type Screen =
   /** `path`: the walkthrough path that led here (Back returns to its
    * connect card), or null on a later start. */
   | { kind: "create"; target: Target; path: Path | null; error: string | null }
-  | { kind: "unlock"; target: Target; path: Path | null; reason: UnlockReason; error: string | null }
+  /** `joining`: the race-lost Unlock over an open ledger (D32): Back and a
+   * join go back to it. */
+  | { kind: "unlock"; target: Target; path: Path | null; reason: UnlockReason; error: string | null; joining?: true }
   /** Nothing to do here but read, and perhaps try again. */
   | { kind: "blocked"; target: Target | null; path: Path | null; message: string; retry: boolean }
   | { kind: "replaceToken"; target: Target; error: string | null }
@@ -114,6 +116,12 @@ export type FlowEvent =
   | { type: "unlocked" }
   | { type: "wrongPassphrase" }
   | { type: "keyChanged" }
+  /** The open ledger lost a racing create (D32): join the winner. */
+  | { type: "joinRace" }
+  /** That join met two different passphrases (D35's way on). */
+  | { type: "raceOtherKey" }
+  /** Unlock couldn't go on, for a reason it says. */
+  | { type: "unlockFailed"; message: string }
   | { type: "tokenRejected" }
   | { type: "tokenReplaced"; target: Target }
   /** The gate opened the ledger itself (a retry with what was saved). */
@@ -128,6 +136,7 @@ export type FlowEvent =
 export const WRONG_PASSPHRASE = "Wrong passphrase";
 export const NEEDS_UPDATE = "This ledger was saved by a newer version of Ledger. Update the app to open it.";
 export const LISTING_CUT = "Couldn't read the whole repository from GitHub. Try again.";
+export const RACE_OTHER_KEY = "";
 export const CREATE_UNKNOWN = "Couldn't confirm with GitHub that the ledger was saved. Try again.";
 
 function stepScreen(path: Path, step: Step, from: Partial<Extract<Screen, { kind: "step" }>> = {}): Extract<Screen, { kind: "step" }> {
@@ -263,6 +272,11 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
 
     case "forgotten":
       return { kind: "welcome" };
+
+    case "joinRace":
+    case "raceOtherKey":
+    case "unlockFailed":
+      return screen;
 
     case "signInReturned":
       if (screen.kind !== "welcome" && screen.kind !== "step") return screen;

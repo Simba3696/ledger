@@ -278,6 +278,11 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
   return { kind: "open", engine, backend, token, remote };
 }
 
+/** What the gate does when this tab can't decrypt the device (D32). */
+export async function afterUndecryptable(_remote: SyncRemote, _key: DeviceKey, _saved: DeviceKey | null): Promise<{ kind: "reopen"; key: DeviceKey } | { kind: "keyChanged" } | { kind: "stay" }> {
+  return { kind: "stay" };
+}
+
 /** "Create a new ledger from this device" (#8, the join from a gone epoch
  * with no ledger left in the repo): a genesis of what this device shows
  * now, as a restore of it, which rejoin then switches the device into,
