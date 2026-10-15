@@ -156,6 +156,13 @@ function decodedLength(base64: unknown): number | null {
   }
 }
 
+/** Whether a salt and iteration count are within a header's bounds (a
+ * 16-byte base64 salt, 600,000..10,000,000 iterations): checked before
+ * any key is derived with them. */
+export function isKeyParams(salt: unknown, iter: unknown): boolean {
+  return isAllowedIterations(iter) && decodedLength(salt) === SALT_BYTES;
+}
+
 /** Reads and validates the header line. Throws InvalidFileError for any
  * other format version, KDF, cipher or compression, a salt that isn't 16
  * bytes, an IV that isn't 12 bytes, or an iteration count outside

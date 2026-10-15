@@ -31,6 +31,7 @@ import { CLIENT_PORT, ROOT } from "./devServer.js";
 import { createFakeGitHubAdapter, type RoutedRequest } from "./fakeGithub.js";
 import { DEFAULT_ITERATIONS, deriveKey, encryptDocument, newSalt, parseHeader } from "../client/src/backend/crypto.js";
 import { base64ToBytes, bytesToBase64 } from "../client/src/backend/base64.js";
+import type { ModuleName } from "../client/src/api.js";
 import { createEmptyDocument } from "../client/src/backend/document/createDocument.js";
 import type { LedgerDocument } from "../client/src/backend/document/types.js";
 import { FORMAT_VERSION } from "../client/src/backend/sync/codec.js";
@@ -199,6 +200,7 @@ const PERSONAL_REPO = `${ALEX}/${REPO}`;
 const HOUSEHOLD_REPO = `${ORG}/${REPO}`;
 const RESTORE_REPO = `${ORG}/ledger-restore`;
 const TEN_YEAR_REPO = `${ALEX}/ledger-ten`;
+const RACE_REPO = `${ALEX}/ledger-race`;
 
 /** Fine-grained tokens, fictional; the fake knows all but the first. */
 const TOKEN = {
@@ -235,9 +237,10 @@ async function main() {
       { owner: ORG, name: REPO, private: true },
       { owner: ORG, name: "ledger-restore", private: true },
       { owner: ALEX, name: "ledger-ten", private: true },
+      { owner: ALEX, name: "ledger-race", private: true },
     ],
     tokens: {
-      [TOKEN.alexPersonal]: { login: ALEX, repos: [PERSONAL_REPO, TEN_YEAR_REPO], permission: "write" },
+      [TOKEN.alexPersonal]: { login: ALEX, repos: [PERSONAL_REPO, TEN_YEAR_REPO, RACE_REPO], permission: "write" },
       [TOKEN.alexHousehold]: { login: ALEX, repos: [HOUSEHOLD_REPO, RESTORE_REPO], permission: "write" },
       // A token whose resource owner is alex, not the household: GitHub
       // answers the household's repo with 404.
@@ -1323,6 +1326,75 @@ async function main() {
       const viaBlobs = reads.some((r) => r.method === "GET" && r.path.includes("/git/blobs/") && r.status === 200);
       console.log(`      ten-year genesis: ${tenText.length} bytes encrypted (${tenExpenses} expenses, ${Object.keys(tenYears.expenses).length} months); load time ${loadMs} ms`);
       check("11. The ten-year genesis is read through git/trees and git/blobs, and its size and load time are printed (AC7)", viaTrees && viaBlobs && tenText.length > 0 && loadMs > 0);
+    }
+
+    // ================= 13. Racing creates (D32) =================
+    {
+      // L creates a ledger in an empty repo under its own passphrase; Sam's
+      // create lands within the same listing's time under the household
+      // passphrase, with the greater key, so L's create lost the race.
+      const L = await device("L");
+      await L.page.goto(base);
+      await walkToConnect(L.page, "personal");
+      // An empty repo answers its listing with 409, as in parts 3 and 9.
+      await provoking("L", [status(409, 404)], async () => {
+        await connectWith(L.page, TOKEN.alexPersonal, "ledger-race");
+        await waitHeading(L.page, "Create your ledger");
+        await createLedger(L.page, PASS.other);
+        await L.page.waitForSelector(".tabs", { timeout: 60_000 });
+      });
+      const raceSalt = newSalt();
+      const raceKey = await deriveKey(PASS.household, raceSalt, DEFAULT_ITERATIONS);
+      const raceEpoch = "e000001-ffffffff";
+      const raceDoc = createEmptyDocument({ modules: SECTION_IDS as ModuleName[], timeZone: TIME_ZONE });
+      const raceText = await encryptDocument(
+        { fv: FORMAT_VERSION, kind: "genesis", epoch: raceEpoch, reason: "create", by: SAM, at: Date.now(), basedOn: null, doc: raceDoc },
+        raceKey,
+        { salt: bytesToBase64(raceSalt), iter: DEFAULT_ITERATIONS },
+      );
+      await fake.seedFile(RACE_REPO, `${LEDGER_DIR}/${raceEpoch}.genesis.enc`, raceText);
+      const lMark = adapter.log.length;
+      // L's next sync finds it lost: its sync stops, and the bar offers the join.
+      const offered = await provoking("L", [/ledger:sync: .*\(foreignKey\)/], async () => {
+        await addExpense(L.page, "12", "E2E Race Lunch");
+        await nudge(L.page);
+        return L.page
+          .waitForSelector('[data-testid="gh-join-race"]', { timeout: 45_000 })
+          .then(() => true)
+          .catch(() => false);
+      });
+      const stoppedSafely = putsOf("L", lMark).every((r) => !r.put || !r.put.path.endsWith(".log.enc"));
+      await L.page.click('[data-testid="gh-join-race"]');
+      await waitHeading(L.page, "Enter your passphrase");
+      await unlockWith(L.page, PASS.household);
+      await L.page.waitForSelector(".tabs", { timeout: 60_000 });
+      const reapply = L.page.getByRole("button", { name: "Re-apply" }).first();
+      await reapply.waitFor({ timeout: 30_000 });
+      await reapply.click();
+      await L.page.getByText("Re-applied", { exact: false }).first().waitFor({ timeout: 30_000 });
+      await waitSaved(L.page);
+      // A reload reads the ledger afresh from the device.
+      await L.page.reload();
+      await L.page.waitForSelector(".tabs", { timeout: 60_000 });
+      const loserLists = (await listed(L.page)).includes("E2E Race Lunch");
+      const reachedGitHub = await waitUntil(() => remoteHas(RACE_REPO, PASS.household, "E2E Race Lunch"), 60_000, 1000);
+      // The winner's side: a fresh device joins the ledger in the repo with the
+      // household passphrase and lists what L carried over.
+      const W = await device("W");
+      await W.page.goto(base);
+      await walkToConnect(W.page, "personal");
+      await connectWith(W.page, TOKEN.alexPersonal, "ledger-race");
+      await waitHeading(W.page, "Enter your passphrase");
+      await unlockWith(W.page, PASS.household);
+      await W.page.waitForSelector(".tabs", { timeout: 60_000 });
+      const winnerLists = await waitUntil(async () => (await listed(W.page)).includes("E2E Race Lunch"), 45_000, 1000);
+      check(
+        "13. Racing creates (D32): the loser stops sync and offers the join, joins with the household passphrase, re-applies its entry, and a device on the winner lists it",
+        offered && stoppedSafely && loserLists && reachedGitHub && winnerLists,
+        { offered, stoppedSafely, loserLists, reachedGitHub, winnerLists },
+      );
+      await L.context.close();
+      await W.context.close();
     }
 
     for (const context of [personal.context, A.context, B.context, T.context]) await context.close();

@@ -65,7 +65,9 @@ export type Screen =
   /** `path`: the walkthrough path that led here (Back returns to its
    * connect card), or null on a later start. */
   | { kind: "create"; target: Target; path: Path | null; error: string | null }
-  | { kind: "unlock"; target: Target; path: Path | null; reason: UnlockReason; error: string | null }
+  /** `joining`: the race-lost Unlock over an open ledger (D32): Back and a
+   * join go back to it. */
+  | { kind: "unlock"; target: Target; path: Path | null; reason: UnlockReason; error: string | null; joining?: true }
   /** Nothing to do here but read, and perhaps try again. */
   | { kind: "blocked"; target: Target | null; path: Path | null; message: string; retry: boolean }
   | { kind: "replaceToken"; target: Target; error: string | null }
@@ -114,6 +116,12 @@ export type FlowEvent =
   | { type: "unlocked" }
   | { type: "wrongPassphrase" }
   | { type: "keyChanged" }
+  /** The open ledger lost a racing create (D32): join the winner. */
+  | { type: "joinRace" }
+  /** That join met two different passphrases (D35's way on). */
+  | { type: "raceOtherKey" }
+  /** Unlock couldn't go on, for a reason it says. */
+  | { type: "unlockFailed"; message: string }
   | { type: "tokenRejected" }
   | { type: "tokenReplaced"; target: Target }
   /** The gate opened the ledger itself (a retry with what was saved). */
@@ -128,6 +136,8 @@ export type FlowEvent =
 export const WRONG_PASSPHRASE = "Wrong passphrase";
 export const NEEDS_UPDATE = "This ledger was saved by a newer version of Ledger. Update the app to open it.";
 export const LISTING_CUT = "Couldn't read the whole repository from GitHub. Try again.";
+export const RACE_OTHER_KEY =
+  "That is this device's own passphrase, and the ledger in the repo uses a different one, so this device can't join it this way. Go back, download a backup of this device, then forget this device and join with the other passphrase.";
 export const CREATE_UNKNOWN = "Couldn't confirm with GitHub that the ledger was saved. Try again.";
 
 function stepScreen(path: Path, step: Step, from: Partial<Extract<Screen, { kind: "step" }>> = {}): Extract<Screen, { kind: "step" }> {
@@ -186,6 +196,8 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
         const at = steps.indexOf(screen.step);
         return at > 0 ? { ...screen, step: steps[at - 1], error: null, awaitingApproval: false } : { kind: "welcome" };
       }
+      // The race-lost Unlock over an open ledger goes back to it (D32).
+      if (screen.kind === "unlock" && screen.joining) return { kind: "app", target: screen.target };
       if (screen.kind === "create" || screen.kind === "unlock" || screen.kind === "blocked") return backToConnect(screen.target, screen.path);
       return screen;
     }
@@ -263,6 +275,15 @@ export function flow(screen: Screen, event: FlowEvent): Screen {
 
     case "forgotten":
       return { kind: "welcome" };
+
+    case "joinRace":
+      return screen.kind === "app" ? { kind: "unlock", target: screen.target, path: null, reason: "raceLost", error: null, joining: true } : screen;
+
+    case "raceOtherKey":
+      return screen.kind === "unlock" ? { ...screen, error: RACE_OTHER_KEY } : screen;
+
+    case "unlockFailed":
+      return screen.kind === "unlock" ? { ...screen, error: event.message } : screen;
 
     case "signInReturned":
       if (screen.kind !== "welcome" && screen.kind !== "step") return screen;

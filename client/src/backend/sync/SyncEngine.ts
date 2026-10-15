@@ -1,5 +1,5 @@
 import { ApiError } from "../ApiError";
-import { InvalidFileError, WrongPassphraseError } from "../crypto";
+import { InvalidFileError, WrongPassphraseError, deriveKey, parseHeader } from "../crypto";
 import type { HostWrite } from "../document/DocumentBackend";
 import type { LedgerDocument } from "../document/types";
 import { isWritableDocument } from "../document/validate";
@@ -24,7 +24,7 @@ import { diffDocuments } from "./diff";
 import { draftOf, settleDraft } from "./draft";
 import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, splitFigures, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
@@ -158,7 +158,10 @@ export type SyncStatus =
 /** Why the saved state can't be used: the store couldn't be read (worth
  * trying again), a newer build wrote it, it doesn't decrypt with this key,
  * or it is malformed. */
-export type UnreadableReason = "loadFailed" | "newer" | "undecryptable" | "malformed";
+/** "keyChanged": the device is sealed under another key than this tab's
+ * (it joined a racing create's winner, D32): EngineState.keyNeeded says
+ * which. */
+export type UnreadableReason = "loadFailed" | "newer" | "undecryptable" | "malformed" | "keyChanged";
 
 export interface EngineState {
   status: SyncStatus;
@@ -209,6 +212,15 @@ export interface EngineState {
    * afresh meanwhile, and the first listing that counts the epoch again
    * clears it. Null otherwise. */
   epochGone: EpochGone | null;
+  /** This device created its ledger at the same moment as another device,
+   * whose create, under another passphrase's salt, won (ADR-0008, D32):
+   * the winner's epoch. rekeyAndJoin() joins it with the household
+   * passphrase. Null otherwise. */
+  raceLost: RaceLost | null;
+  /** With unreadable "keyChanged": the salt and iterations of the key the
+   * device is sealed under (the household passphrase derives it with them,
+   * offline). Null otherwise. */
+  keyNeeded: { salt: string; iter: number } | null;
   /** A restore this tab started (restore()), once its genesis was sent:
    * "pending" while a PUT got no answer and no listing has settled it
    * ("unknown"), "landed" once its genesis is known to be in the repo
@@ -224,6 +236,39 @@ export interface EpochGone {
   epoch: string;
   winner: string | null;
 }
+
+/** EngineState.raceLost: the epoch-1 create that won the race, and whether
+ * this device can join it (rekeyAndJoin): only when its own genesis is a
+ * create. One started from a backup (a restore into an empty repo) holds
+ * the backup's content, which the join never offers back, so its way on
+ * is D35's: a backup of this device, then Forget and join. */
+export interface RaceLost {
+  winner: string;
+  joinable: boolean;
+}
+
+/** What rekeyAndJoin() did (ADR-0008, D32). */
+export type RekeyResult =
+  /** Joined the winner: this device's state is sealed under `key`, the
+   * household's key for the winner, which the caller keeps from now on
+   * (the device store's key). This device's writes are its own group left
+   * behind, to Re-apply. */
+  | { kind: "joined"; epoch: string; key: DeviceKey }
+  /** Not the loser of a racing create (any more): nothing done. */
+  | { kind: "notRaceLost" }
+  /** This device's ledger started from a backup: the join would lose what
+   * the backup held, so nothing is done (D35's way on, RaceLost). */
+  | { kind: "fromBackup"; epoch: string }
+  /** The passphrase doesn't open the winner: nothing written. */
+  | { kind: "wrongPassphrase"; epoch: string }
+  /** The passphrase is this device's own, and the winner uses another:
+   * nothing written. The way on is a backup of this device, then Forget
+   * and join with the winner's passphrase (D35). */
+  | { kind: "otherKey"; epoch: string }
+  /** The repo couldn't be read whole, or another switch got there first. */
+  | { kind: "unknown" }
+  | { kind: "needsUpdate"; epoch: string }
+  | { kind: "damaged"; epoch: string };
 
 /** What to tell the person when this device's epoch is gone (EpochGone)
  * and another ledger is in the repo now. */
@@ -262,6 +307,12 @@ export interface LeftBehindView {
    * it), but this device's own changes are not all in effect: shown until
    * this device resolves it too. */
   resolvedElsewhere: boolean;
+  /** This device's month figures and settings from before it joined a
+   * racing create's winner (D32): re-applying them replaces the winner's. */
+  figures: boolean;
+  /** A figures group whose entries group is still shown: it can't be
+   * re-applied until that one is re-applied or discarded (ENTRIES_FIRST). */
+  waitsForEntries: boolean;
   items: LeftBehindItem[];
 }
 
@@ -481,6 +532,8 @@ export const RESTORE_UNKNOWN = "A backup restore may still be on its way to GitH
 export const NOTICE_GONE = "That notice was already dealt with.";
 /** Why reapply() or discard() is refused: the group is gone. */
 export const ALREADY_RESOLVED = "Those changes were already re-applied or discarded.";
+/** Why a figures group (D32) waits: its entries group is still shown. */
+export const ENTRIES_FIRST = "Re-apply or discard your entries first.";
 /** Why a write diffed in one epoch (or under one device id) is refused
  * when the epoch switched (or the device rehomed) before it was saved. */
 const CHANGED_WHILE_SAVING = "Ledger changed while this was saving. Try again.";
@@ -661,6 +714,10 @@ interface NewEpoch {
    * carried as they are, and no kept epoch is projected again: the winner
    * is a long-lived ledger, not a restore based on this device's line. */
   rejoin?: true;
+  /** The racing-create join (D32): the household's key for the winner,
+   * which everything this device keeps is sealed under in the switch's
+   * own transaction, and which the engine uses from then on. */
+  rekey?: DeviceKey;
 }
 
 /** What a write's commit does besides its op. `resolves`: a left-behind
@@ -709,7 +766,8 @@ function unlistedOf(listing: Listing, epoch: string): (devices: string[]) => str
 }
 
 export class SyncEngine {
-  readonly #key: DeviceKey;
+  /** Replaced only by rekeyAndJoin (D32), once its switch is saved. */
+  #key: DeviceKey;
   readonly #actor: string;
   readonly #store: SyncStore;
   readonly #locks: LockManager | null;
@@ -855,6 +913,13 @@ export class SyncEngine {
   /** This device's epoch no longer counts in a full listing (EpochGone),
    * as last decided by a listing that could tell. */
   #epochGone: EpochGone | null = null;
+  /** EngineState.raceLost, the same object while it doesn't change. */
+  #raceLost: RaceLost | null = null;
+  /** #ownGenesisReason's answer for the own genesis's blob sha. */
+  #ownReason: { sha: string; reason: GenesisContent["reason"] | null } | null = null;
+  /** The key the saved state is sealed under, when it isn't this tab's
+   * (unreadable "keyChanged"). */
+  #keyNeeded: { salt: string; iter: number } | null = null;
   /** The epoch the last full listing didn't count, if it didn't: one such
    * listing may be stale, so epochGone waits for a second (#noteGone), and
    * every cycle lists again while this is set. */
@@ -2807,6 +2872,113 @@ export class SyncEngine {
     return { kind: "joined", epoch: winner };
   }
 
+  /** Whether this device lost a racing create to `winner` (ADR-0008, D32):
+   * its own epoch and the winner are both epoch 1, the winner's key the
+   * greater; this device never switched (its genesis is based on nothing:
+   * a create, or a restore into an empty repo); and no device file of its
+   * epoch is listed, so nobody, this device included, has written there. */
+  #lostRaceTo(listing: Listing, winner: string): boolean {
+    const meta = this.#meta!;
+    const from = meta.epochKey;
+    const first = (epoch: string) => epoch.startsWith("e000001-");
+    return first(winner) && first(from) && compareEpochKeys(winner, from) > 0 && meta.basedOn === undefined && meta.prev === undefined && !epochJoined(listing.files.keys(), from);
+  }
+
+  /** Why this device's own genesis was written ("create", or "restore" for
+   * a ledger started from a backup), as the listing has it, read once per
+   * blob sha; null when it isn't listed or can't be read. */
+  async #ownGenesisReason(listing: Listing): Promise<GenesisContent["reason"] | null> {
+    const name = repoFileName({ kind: "genesis", epoch: this.#meta!.epochKey });
+    const listed = listing.files.get(name);
+    if (!listed) return null;
+    if (this.#ownReason?.sha === listed.sha) return this.#ownReason.reason;
+    const read = await this.#read(name, listed);
+    const reason = read.ok && read.read.file.kind === "genesis" ? read.read.file.reason : null;
+    this.#ownReason = { sha: listed.sha, reason };
+    return reason;
+  }
+
+  /** The join of a racing create's winner (ADR-0008, owner decision D32,
+   * option A). Two devices created a ledger at the same moment, each under
+   * its own passphrase's salt, and this one's lost (EngineState.raceLost):
+   * its writes are on this device only. With the household passphrase, the
+   * winner's key is derived from the winner's own header (its salt and
+   * iterations) and must open the winner's genesis before anything is
+   * written. Then, in one transaction, the switch seals everything this
+   * device keeps under that key (the new epoch's state, the previous one's
+   * in `old`, the groups left behind, the notices) and joins the winner as
+   * a rejoin does (D34, D36): every write of this device is offered back as
+   * its own group left behind, with the cut {}. A failed transaction
+   * changes nothing: the old key still reads the device. Only the tab
+   * holding the lock does this; another tab, once it has the lock, can't
+   * read the device with the old key (unreadable "undecryptable"), and
+   * opens with the key the caller keeps from "joined".
+   *
+   * A passphrase that doesn't open the winner writes nothing: "otherKey"
+   * when it is this device's own passphrase (the two creates used
+   * different ones: the way on is a backup of this device, then Forget and
+   * join, D35), else "wrongPassphrase". */
+  async rekeyAndJoin(passphrase: string): Promise<RekeyResult> {
+    if (this.#stopped || this.#superseded || !this.#lockHeld || this.#meta === null || this.#remote === null) return Promise.reject(new Error("This device can't join a ledger now"));
+    const ref = await this.#head(false);
+    if (ref.kind === "empty") return { kind: "notRaceLost" };
+    if (ref.kind !== "head") return { kind: "unknown" };
+    const listing = await this.#list(ref.commitSha, ref.etag);
+    if (listing.truncated) return { kind: "unknown" };
+    const from = this.#meta.epochKey;
+    const winner = winningEpoch([...listing.files.keys()]);
+    if (winner === null || !this.#lostRaceTo(listing, winner)) return { kind: "notRaceLost" };
+    if ((await this.#ownGenesisReason(listing)) !== "create") return { kind: "fromBackup", epoch: winner };
+    const name = repoFileName({ kind: "genesis", epoch: winner });
+    const listed = listing.files.get(name)!;
+    if (listed.size > this.#bounds.read.bytes) return { kind: "damaged", epoch: winner };
+    const text = await this.#remote.client.readBlob(listed.sha);
+    // Read with this device's key first: only a winner under another salt
+    // is a racing create's to join this way.
+    const mine = await openRepoFile(listed.file, text, this.#key, undefined, this.#bounds.read);
+    if (mine.ok) return { kind: "notRaceLost" };
+    if (mine.problem === "needsUpdate") return { kind: "needsUpdate", epoch: winner };
+    if (mine.problem !== "foreignKey") return { kind: "damaged", epoch: winner };
+    const header = parseHeader(text);
+    const key: DeviceKey = { key: await deriveKey(passphrase, header.salt, header.iter), salt: header.salt, iter: header.iter };
+    const read = await openRepoFile(listed.file, text, key, undefined, this.#bounds.read);
+    if (!read.ok) {
+      if (read.problem !== "undecryptable") return { kind: "damaged", epoch: winner };
+      return (await this.#isOwnPassphrase(passphrase)) ? { kind: "otherKey", epoch: winner } : { kind: "wrongPassphrase", epoch: winner };
+    }
+    if (read.read.file.kind !== "genesis") return { kind: "damaged", epoch: winner };
+    const file = read.read.file;
+    const turn = this.#turn();
+    try {
+      await turn.ready;
+      this.#assertWritable();
+      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, rejoin: true, rekey: key });
+      if (!switched) return { kind: "unknown" };
+    } finally {
+      turn.end();
+    }
+    this.#damaged = null;
+    this.#raceLost = null;
+    this.#notGone();
+    this.#emit();
+    void this.sync();
+    return { kind: "joined", epoch: winner, key };
+  }
+
+  /** Whether `passphrase` is the one this device's key was derived from:
+   * a probe sealed under the key it derives with this device's salt opens
+   * with this device's key. */
+  async #isOwnPassphrase(passphrase: string): Promise<boolean> {
+    const own = this.#key;
+    const candidate: DeviceKey = { key: await deriveKey(passphrase, own.salt, own.iter), salt: own.salt, iter: own.iter };
+    try {
+      await unseal(await seal({ probe: true }, candidate), own);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Export (#9, section 9.5): the current document, sealed with the
    * household key in the repo files' format, the same as a genesis's
    * `doc`, so an export restores as it is (readBackup, restore). */
@@ -2835,6 +3007,8 @@ export class SyncEngine {
         who: group.who,
         into: group.into,
         resolvedElsewhere: state.ra.has(group.marker),
+        figures: group.figures === true,
+        waitsForEntries: this.#waitsForEntries(group, state),
         items: leftBehindItems(group),
       }));
   }
@@ -2855,9 +3029,20 @@ export class SyncEngine {
     await this.#amend((doc) => {
       const group = this.#leftBehind.get(id);
       if (!group) throw new ApiError(404, ALREADY_RESOLVED);
+      // A lock or a module turned off among the figures would make the
+      // entries skipped, and lost (D32, D28): the entries go first.
+      if (this.#waitsForEntries(group, this.#state!)) throw new ApiError(409, ENTRIES_FIRST);
       result = reapplyTo(doc, this.#state!, group, { at: this.#now(), by: this.#actor });
     }, { resolves: id });
     return result!;
+  }
+
+  /** Whether `group` is a figures group (D32) whose entries group is still
+   * shown. */
+  #waitsForEntries(group: LeftBehindGroup, state: SyncState): boolean {
+    if (group.waitsFor === undefined) return false;
+    const entries = this.#leftBehind.get(group.waitsFor);
+    return entries !== undefined && !this.#isHidden(entries, state);
   }
 
   /** Discard (section 9.4): an op with only the group's marker. */
@@ -3147,6 +3332,12 @@ export class SyncEngine {
       }
       this.#notGone();
       this.#blocker = problem === "needsUpdate" ? "needsUpdate" : problem === "malformed" ? "needsAttention" : "needsPassphrase";
+      // The other creator of a racing create won (D32): rekeyAndJoin can
+      // join it with the household passphrase.
+      const raced = problem === "foreignKey" && this.#lostRaceTo(listing, winner);
+      const joinable = raced && (await this.#ownGenesisReason(listing)) === "create";
+      if (!raced) this.#raceLost = null;
+      else if (this.#raceLost?.winner !== winner || this.#raceLost.joinable !== joinable) this.#raceLost = { winner, joinable };
       // Another device already joined it: never named as one to delete.
       const damaged = problem === "needsUpdate" ? null : damagedGenesis(winner, problem, epochJoined(listing.files.keys(), winner));
       // The same object while nothing changes, so no listener is told again.
@@ -3305,6 +3496,15 @@ export class SyncEngine {
     }
     for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
       if (!group.own && groups.get(group.marker)?.own === true) continue;
+      // Joining a racing create's winner (D32): this device's month figures
+      // and settings are a group of their own, so getting its entries back
+      // never writes over the figures the winner has for those months.
+      if (genesis.rekey && group.own) {
+        const [entries, figures] = splitFigures(group, newDeviceId());
+        if (entries) groups.set(entries.marker, entries);
+        if (figures) groups.set(figures.marker, figures);
+        continue;
+      }
       groups.set(group.marker, group);
     }
     // The epoch switched from is kept even with no group: a restore that
@@ -3356,11 +3556,17 @@ export class SyncEngine {
       writerToken: meta.writerToken,
       prev: { epoch: from, device: meta.deviceId },
       ...(anchor !== undefined ? { basedOn: anchor } : {}),
+      ...(genesis.rekey ? { sealedWith: { salt: genesis.rekey.salt, iter: genesis.rekey.iter } } : meta.sealedWith ? { sealedWith: meta.sealedWith } : {}),
     };
-    const base = await seal(storedState(next), this.#key);
-    const oldText = olds.length > 0 ? await seal(storedOld(olds), this.#key) : null;
-    const put = await Promise.all([...groups.values()].map(async (group): Promise<[string, string]> => [group.marker, await seal(group, this.#key)]));
+    // Rekeying (D32): everything kept is sealed under the new key in this
+    // one transaction, the notices included; one this build can't read
+    // stays as it is (it reads under no key here).
+    const key = genesis.rekey ?? this.#key;
+    const base = await seal(storedState(next), key);
+    const oldText = olds.length > 0 ? await seal(storedOld(olds), key) : null;
+    const put = await Promise.all([...groups.values()].map(async (group): Promise<[string, string]> => [group.marker, await seal(group, key)]));
     const remove = [...this.#leftBehind.keys()].filter((marker) => !groups.has(marker));
+    const notices = genesis.rekey ? await Promise.all([...this.#notices].map(async ([id, notice]): Promise<[string, string]> => [id, await seal(notice, key)])) : [];
     this.#assertWritable();
     await this.#mutate(nextMeta, {
       base,
@@ -3369,7 +3575,13 @@ export class SyncEngine {
       clearChain: true,
       old: oldText,
       leftBehind: { put, delete: remove },
+      ...(notices.length > 0 ? { notices: { put: notices } } : {}),
     });
+    if (genesis.rekey) {
+      this.#key = genesis.rekey;
+      // Refusals were judged under the old key.
+      this.#refused.clear();
+    }
 
     const before = this.#doc!;
     const doc = materialize(next);
@@ -3714,6 +3926,14 @@ export class SyncEngine {
    * Reads only: whatever is wrong, the records are left as they are. */
   async #decode(records: StoredRecords): Promise<Loaded | UnreadableReason> {
     const check = checkMeta(records.meta);
+    // Sealed under another key (a join of a racing create's winner, D32):
+    // nothing is decrypted, and the state says which key it needs.
+    const sealed = check.ok ? check.meta.sealedWith : undefined;
+    if (sealed !== undefined && (sealed.salt !== this.#key.salt || sealed.iter !== this.#key.iter)) {
+      this.#keyNeeded = { salt: sealed.salt, iter: sealed.iter };
+      this.#log("error", "the saved sync state is sealed under another key than this tab's");
+      return "keyChanged";
+    }
     if (!check.ok) {
       this.#log("error", `the saved sync state can't be used: ${check.detail}`);
       return check.problem;
@@ -3882,6 +4102,8 @@ export class SyncEngine {
       leftBehindOwnCount: this.#leftBehindOwnCount,
       damagedFile: this.#damaged,
       epochGone: this.#epochGone,
+      raceLost: this.#damaged === null ? null : this.#raceLost,
+      keyNeeded: this.#unreadable === "keyChanged" ? this.#keyNeeded : null,
       restore: this.#restoreState,
     };
   }

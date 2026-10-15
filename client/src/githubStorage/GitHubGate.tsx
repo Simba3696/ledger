@@ -18,12 +18,16 @@ import { loadSaved, remember } from "./connection";
 import { defaultSections, SECTIONS } from "./defaults";
 import { confirmAndForget } from "./forgetFlow";
 import { EpochGonePanel } from "./EpochGonePanel";
+import { RaceLostPanel } from "./RaceLostPanel";
 import {
   ConnectFailed,
   connect,
   createFromDevice,
   createNew,
+  joinRace,
+  keyChangeStep,
   openLedger,
+  openSealed,
   remoteFor,
   signInConfigOf,
   startFromRepo,
@@ -41,7 +45,7 @@ import { ReplaceToken } from "./onboarding/ReplaceToken";
 import { StepCard } from "./onboarding/Steps";
 import { Unlock } from "./onboarding/Unlock";
 import { Welcome } from "./onboarding/Welcome";
-import { readBackupFile } from "./backup";
+import { backupFileName, downloadFile, readBackupFile } from "./backup";
 import { HeaderActions } from "./HeaderActions";
 import { LedgerViewMemory } from "./ledgerView";
 import { SectionLoadBoundary } from "./SectionLoadBoundary";
@@ -135,8 +139,15 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
   const signInSettings = signInConfigOf(deps);
   /** What the steps found so far: the connection, its repo, the ledger
    * findLedger found, and the key once derived or loaded. */
-  const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null }>({ connection: null, remote: null, found: null, key: null });
+  /** `keyNeeded`: the key a device sealed under another key names (D32),
+   * which Unlock derives with the passphrase. */
+  const work = useRef<{ connection: Connection | null; remote: SyncRemote | null; found: LedgerFound | null; key: DeviceKey | null; keyNeeded?: { salt: string; iter: number } | null }>({ connection: null, remote: null, found: null, key: null });
   const startedOnce = useRef(false);
+  /** openWith, for the engine watcher (an effect that outlives renders):
+   * `deps` is a new object on each render, so a dependency on openWith
+   * would run the watcher again on each one, and it would tell a refused
+   * token again after Replace token (#8). */
+  const openWithRef = useRef<(connection: Connection, key: DeviceKey, start: Start | null) => Promise<boolean>>(async () => false);
   /** forgotten(), for the engine watcher (an effect that outlives renders). */
   const forgottenRef = useRef<() => void>(() => {});
   /** What the start effect needs for a return from github.com (#10). */
@@ -258,8 +269,34 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     if (!engine || !remote) return;
     let last: string | null = null;
     let joining = false;
+    let rekeyed = false;
     const check = () => {
       const state = engine.getState();
+      // The device is sealed under another key than this tab's (it joined a
+      // racing create's winner, D32): the key another tab kept reopens it,
+      // else Unlock asks for the passphrase, which derives the key the
+      // device names without the network.
+      const needed = state.keyNeeded;
+      if (state.unreadable === "keyChanged" && needed && !rekeyed) {
+        rekeyed = true;
+        void (async () => {
+          try {
+            const saved = await loadSaved();
+            const step = keyChangeStep(needed, saved.key);
+            engine.stop();
+            setOpen(null);
+            const connection = work.current.connection;
+            if (step.kind === "unlock" || !connection) {
+              work.current.keyNeeded = needed;
+              return dispatch({ type: "keyChanged" });
+            }
+            work.current.key = step.key;
+            if (await openWithRef.current(connection, step.key, null)) dispatch({ type: "opened", target: targetOf(connection) });
+          } catch (err) {
+            if (work.current.connection) failed(err, work.current.connection);
+          }
+        })();
+      }
       if (state.status === "needsToken" && last !== "needsToken") dispatch({ type: "tokenRejected" });
       last = state.status;
       const key = work.current.key;
@@ -430,9 +467,51 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
     }
   }
 
+  /** The race-lost Unlock over an open ledger (D32): the engine joins the
+   * winner with the household passphrase, and once it has, the key it
+   * returns is the one this device keeps. */
+  async function onJoinRace(passphrase: string) {
+    if (!open) return;
+    const { connection } = open;
+    const outcome = await joinRace(open.engine, passphrase, async (key) => setRemembered(await remember(connection, key)));
+    switch (outcome.kind) {
+      case "joined":
+        work.current.key = outcome.key;
+        return dispatch({ type: "unlocked" });
+      case "back":
+        return dispatch({ type: "unlocked" });
+      case "wrongPassphrase":
+        return dispatch({ type: "wrongPassphrase" });
+      case "otherKey":
+        return dispatch({ type: "raceOtherKey" });
+      case "tokenRejected":
+        return dispatch({ type: "tokenRejected" });
+      case "failed":
+        return dispatch({ type: "unlockFailed", message: outcome.message });
+    }
+  }
+
   async function onUnlock(passphrase: string) {
-    const { connection } = work.current;
+    if (screen.kind === "unlock" && screen.joining) return onJoinRace(passphrase);
+    const { connection, keyNeeded } = work.current;
     if (!connection) return;
+    if (keyNeeded) {
+      // The device names the key it is sealed under (D32): derived with the
+      // passphrase, offline, and checked by opening the device.
+      try {
+        const sealed = await openSealed(connection, passphrase, keyNeeded, deps);
+        if (sealed.kind === "wrongPassphrase") return dispatch({ type: "wrongPassphrase" });
+        if (sealed.kind === "unreadable") return dispatch({ type: "unlockFailed", message: "The changes saved on this device can't be read." });
+        sealed.opened.engine.stop();
+        work.current.key = sealed.key;
+        work.current.keyNeeded = null;
+        setRemembered(await remember(connection, sealed.key));
+        if (await openWith(connection, sealed.key, null)) dispatch({ type: "unlocked" });
+      } catch (err) {
+        failed(err, connection);
+      }
+      return;
+    }
     try {
       const found = work.current.found?.kind === "ledger" ? work.current.found : await findLedger(await currentRemote(connection));
       if (found.kind !== "ledger") return dispatch({ type: "found", target: targetOf(connection), found: foundOf(found) });
@@ -515,6 +594,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
   }
 
   forgottenRef.current = forgotten;
+  openWithRef.current = openWith;
   // The sign-in result is this page load's, read once by the start effect.
   signInRef.current = { result: signIn, replaceToken, onConnectApp };
 
@@ -619,6 +699,7 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
               </p>
             )}
             <EpochGonePanel engine={open.engine} onCreate={onCreateFromDevice} onForget={onForget} />
+            <RaceLostPanel onJoin={() => dispatch({ type: "joinRace" })} onBackup={async () => downloadFile(await open.engine.exportBackup(), backupFileName())} onForget={onForget} />
             {view === "settings" && (
               <Shell>
                 <Settings

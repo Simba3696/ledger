@@ -1,4 +1,4 @@
-import type { LeftBehindView } from "../../backend/sync/SyncEngine";
+import { ENTRIES_FIRST, type LeftBehindView } from "../../backend/sync/SyncEngine";
 import { leftBehindHeading, leftBehindItemText } from "./labels";
 import type { PendingWork } from "./NoticeList";
 
@@ -18,13 +18,16 @@ function Group({ group, work, textId, onReapply, onDiscard }: { group: LeftBehin
         ))}
       </ul>
       <div className="sync-review-actions">
-        <button type="button" className="sync-review-primary" disabled={busy} aria-describedby={textId} onClick={() => onReapply(group.id)}>
+        {/* A joined device's figures wait for its entries (D32): re-applied
+            first, a lock among them would make the entries skipped. */}
+        <button type="button" className="sync-review-primary" disabled={busy || group.waitsForEntries} aria-describedby={textId} onClick={() => onReapply(group.id)}>
           Re-apply
         </button>
         <button type="button" disabled={busy} aria-describedby={textId} onClick={() => onDiscard(group.id)}>
           Discard
         </button>
       </div>
+      {group.waitsForEntries && <p className="sync-review-note">{ENTRIES_FIRST}</p>}
       {error && (
         <p className="sync-review-error" role="alert">
           {error}

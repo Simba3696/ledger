@@ -1,20 +1,21 @@
 import { installBackend } from "../api";
 import { bytesToBase64 } from "../backend/base64";
-import { DEFAULT_ITERATIONS, deriveKey, newSalt } from "../backend/crypto";
+import { DEFAULT_ITERATIONS, deriveKey, isKeyParams, newSalt } from "../backend/crypto";
 import { createEmptyDocument } from "../backend/document/createDocument";
 import { DocumentBackend } from "../backend/document/DocumentBackend";
 import { AppNotInstalledError, AppSession, appReaches, signInConfig, type AppTokens, type SignInConfig } from "../backend/github/appAuth";
-import { createGitHubClient, getLogin, type GitHubClient } from "../backend/github/contents";
+import { GitHubAuthError, createGitHubClient, getLogin, type GitHubClient } from "../backend/github/contents";
 import type { Connection } from "../backend/github/deviceStore";
 import { createLedger, findLedger, openGenesis, type CreateResult, type GenesisOpen, type LedgerFound } from "../backend/sync/ledgerRepo";
 import type { DeviceKey } from "../backend/sync/records";
 import { LEDGER_DIR } from "../backend/sync/repoFiles";
 import type { SyncState } from "../backend/sync/state";
 import type { SyncStore } from "../backend/sync/persist";
-import { SyncEngine, type SyncRemote } from "../backend/sync/SyncEngine";
+import { SyncEngine, type RekeyResult, type SyncRemote } from "../backend/sync/SyncEngine";
 import { SyncedHost } from "../backend/sync/SyncedHost";
 import type { ModuleName } from "../api";
 import { appTokenStore } from "./connection";
+import { LISTING_CUT, NEEDS_UPDATE } from "./onboarding/flow";
 
 // What #8's gate does with GitHub, one step per function, so each is
 // tested against the fake GitHub without a browser: connect (who the token
@@ -176,6 +177,7 @@ export async function connect(
 /** The passphrase's key for a salt (a header's) and iteration count, or a
  * fresh salt for a new ledger. */
 export async function keyFor(passphrase: string, header?: { salt: string; iter: number }): Promise<DeviceKey> {
+  if (header && !isKeyParams(header.salt, header.iter)) throw new Error("The salt or iteration count is out of range");
   const salt = header?.salt ?? bytesToBase64(newSalt());
   const iter = header?.iter ?? DEFAULT_ITERATIONS;
   return { key: await deriveKey(passphrase, salt, iter), salt, iter };
@@ -276,6 +278,91 @@ export async function openLedger(connection: Connection, key: DeviceKey, start: 
   const backend = new DocumentBackend({ host: new SyncedHost(engine), now: Date.now, actor: connection.login, newId: () => crypto.randomUUID() });
   installBackend(backend);
   return { kind: "open", engine, backend, token, remote };
+}
+
+/** What the race-lost Unlock's join came to (ADR-0008, D32). */
+export type JoinRace =
+  /** Joined: `key` is the household's key for the ledger, which `keep`
+   * saved (`kept`), or failed to: the device then names it on its next
+   * start, and Unlock asks for the passphrase (keyChangeStep). */
+  | { kind: "joined"; key: DeviceKey; kept: boolean }
+  /** Nothing to join (any more), or a ledger started from a backup, whose
+   * panel says the backup way: back to the ledger. */
+  | { kind: "back" }
+  | { kind: "wrongPassphrase" }
+  /** Two different passphrases: D35's way on. */
+  | { kind: "otherKey" }
+  | { kind: "failed"; message: string }
+  | { kind: "tokenRejected" };
+
+/** The race-lost Unlock's join (D32): rekeyAndJoin with the passphrase,
+ * then `keep` (the device store) keeps the key it returns. The engine's
+ * transaction comes first, so a tab gone before `keep` leaves the device
+ * naming its key (EngineState.keyNeeded) for the next start. */
+export async function joinRace(engine: SyncEngine, passphrase: string, keep: (key: DeviceKey) => Promise<void>): Promise<JoinRace> {
+  let result: RekeyResult;
+  try {
+    result = await engine.rekeyAndJoin(passphrase);
+  } catch (err) {
+    if (err instanceof GitHubAuthError) return { kind: "tokenRejected" };
+    return { kind: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+  switch (result.kind) {
+    case "joined": {
+      let kept = true;
+      try {
+        await keep(result.key);
+      } catch {
+        kept = false;
+      }
+      return { kind: "joined", key: result.key, kept };
+    }
+    case "notRaceLost":
+    case "fromBackup":
+      return { kind: "back" };
+    case "wrongPassphrase":
+      return { kind: "wrongPassphrase" };
+    case "otherKey":
+      return { kind: "otherKey" };
+    case "unknown":
+      return { kind: "failed", message: LISTING_CUT };
+    case "needsUpdate":
+      return { kind: "failed", message: NEEDS_UPDATE };
+    case "damaged":
+      return { kind: "failed", message: "The ledger in the repo can't be read on this device. Everything here is kept." };
+  }
+}
+
+/** A device sealed under another key than this tab's (unreadable
+ * "keyChanged", D32): reopen with the saved key when it is that key
+ * (another tab joined and kept it), else ask for the passphrase. */
+export function keyChangeStep(needed: { salt: string; iter: number }, saved: DeviceKey | null): { kind: "reopen"; key: DeviceKey } | { kind: "unlock" } {
+  return saved !== null && saved.salt === needed.salt && saved.iter === needed.iter ? { kind: "reopen", key: saved } : { kind: "unlock" };
+}
+
+/** Opens a device sealed under another key (keyChangeStep's "unlock")
+ * with the passphrase: its key derived with the salt and iterations the
+ * device names, so no request is needed. One that still doesn't decrypt
+ * the device is a wrong passphrase: the engine is stopped, and nothing is
+ * kept. */
+export async function openSealed(
+  connection: Connection,
+  passphrase: string,
+  needed: { salt: string; iter: number },
+  deps: Deps = {},
+): Promise<{ kind: "open"; key: DeviceKey; opened: Extract<Opened, { kind: "open" }> } | { kind: "wrongPassphrase" } | { kind: "unreadable" }> {
+  // The engine names only a key within a header's bounds (checkMeta); one
+  // outside them is never derived.
+  if (!isKeyParams(needed.salt, needed.iter)) return { kind: "unreadable" };
+  const key = await keyFor(passphrase, needed);
+  const opened = await openLedger(connection, key, null, deps);
+  if (opened.kind !== "open") return { kind: "wrongPassphrase" };
+  const unreadable = opened.engine.getState().unreadable;
+  if (unreadable === "undecryptable" || unreadable === "keyChanged") {
+    opened.engine.stop();
+    return { kind: "wrongPassphrase" };
+  }
+  return { kind: "open", key, opened };
 }
 
 /** "Create a new ledger from this device" (#8, the join from a gone epoch

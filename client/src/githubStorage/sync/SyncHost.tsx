@@ -9,6 +9,7 @@ const UNREADABLE: Record<NonNullable<EngineState["unreadable"]>, string> = {
   newer: "The changes saved on this device were saved by a newer version of Ledger. Reload to get it.",
   undecryptable: "The changes saved on this device can't be decrypted with this passphrase.",
   malformed: "The changes saved on this device can't be read.",
+  keyChanged: "The changes saved on this device are sealed with the household passphrase this device joined with. Enter it to open them.",
 };
 
 /** The sync layer of the GitHub tree (#7), between the gate (#8) and the
@@ -64,9 +65,14 @@ export function SyncHost({ engine, bar, children }: { engine: SyncEngine; bar?: 
         <button type="button" onClick={() => void engine.retry()}>
           Try again
         </button>
-        <button type="button" onClick={() => void engine.startAsNewDevice()}>
-          Start as a new device
-        </button>
+        {/* A device sealed under the key it joined with (D32) needs only the
+            passphrase, which the gate asks for: a new start would park
+            everything on it. */}
+        {state.unreadable !== "keyChanged" && (
+          <button type="button" onClick={() => void engine.startAsNewDevice()}>
+            Start as a new device
+          </button>
+        )}
       </div>
     );
   }
