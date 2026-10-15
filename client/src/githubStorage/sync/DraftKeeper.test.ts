@@ -67,7 +67,7 @@ function mounted(revision: number) {
 describe("DraftKeeper", () => {
   it("listens for the person's events on its container, and stops on unmount", () => {
     const { keeper, listeners } = mounted(1);
-    expect([...listeners.keys()].sort()).toEqual(["change", "click", "focusin", "input", "keydown", "pointerdown"]);
+    expect([...listeners.keys()].sort()).toEqual(["change", "click", "focusin", "input", "keydown", "pointerdown", "submit"]);
     keeper.componentWillUnmount();
     expect(listeners.size).toBe(0);
   });

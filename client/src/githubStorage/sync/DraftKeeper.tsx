@@ -11,7 +11,7 @@ import { FormDrafts, type DraftActions, type DraftMutation, type DraftNode } fro
 // SyncHost's as before.
 
 /** The events FormDrafts reads, caught on the way down. */
-const EVENTS = ["focusin", "pointerdown", "keydown", "input", "change", "click"] as const;
+const EVENTS = ["focusin", "pointerdown", "keydown", "input", "change", "click", "submit"] as const;
 /** How often a restore under way looks again, besides each DOM change. */
 const RETRY_MS = 100;
 
