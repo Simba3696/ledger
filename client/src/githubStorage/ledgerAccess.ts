@@ -294,6 +294,22 @@ export async function afterUndecryptable(remote: SyncRemote, key: DeviceKey, sav
   return found.kind === "ledger" && other(found) ? { kind: "keyChanged" } : { kind: "stay" };
 }
 
+/** The race-lost Unlock's join (D32). Not built yet. */
+export type JoinRace = { kind: "joined"; key: DeviceKey; kept: boolean } | { kind: "back" } | { kind: "wrongPassphrase" } | { kind: "otherKey" } | { kind: "failed"; message: string } | { kind: "tokenRejected" };
+export async function joinRace(_engine: SyncEngine, _passphrase: string, _keep: (key: DeviceKey) => Promise<void>): Promise<JoinRace> {
+  return { kind: "back" };
+}
+
+/** A device sealed under another key (D32). Not built yet. */
+export function keyChangeStep(_needed: { salt: string; iter: number }, _saved: DeviceKey | null): { kind: "reopen"; key: DeviceKey } | { kind: "unlock" } {
+  return { kind: "unlock" };
+}
+
+/** Opens a device sealed under another key with the passphrase (D32). Not built yet. */
+export async function openSealed(_connection: Connection, _passphrase: string, _needed: { salt: string; iter: number }, _deps: Deps = {}): Promise<{ kind: "open"; key: DeviceKey; opened: Extract<Opened, { kind: "open" }> } | { kind: "wrongPassphrase" }> {
+  return { kind: "wrongPassphrase" };
+}
+
 /** "Create a new ledger from this device" (#8, the join from a gone epoch
  * with no ledger left in the repo): a genesis of what this device shows
  * now, as a restore of it, which rejoin then switches the device into,

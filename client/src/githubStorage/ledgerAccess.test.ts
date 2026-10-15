@@ -7,7 +7,10 @@ import { MemoryStore } from "../backend/sync/cycleTestkit";
 import { FakeLocks } from "../backend/sync/localTestkit";
 import { docText } from "../backend/sync/testkit";
 import { forget, loadSaved, remember, resetMemoryForTests } from "./connection";
-import { ConnectFailed, afterUndecryptable, connect, createNew, keyFor, openLedger, unlock, type Deps } from "./ledgerAccess";
+import { createEmptyDocument } from "../backend/document/createDocument";
+import { FORMAT_VERSION } from "../backend/sync/codec";
+import { seal, type DeviceKey } from "../backend/sync/records";
+import { ConnectFailed, connect, createNew, joinRace, keyChangeStep, keyFor, openLedger, openSealed, unlock, type Deps } from "./ledgerAccess";
 
 // #8's connect, create, unlock and open, against the fake GitHub (which
 // answers an empty repo as GitHub does). Fictional data only.
@@ -101,18 +104,57 @@ describe("onboarding against the fake GitHub (#8)", () => {
     expect(stranger.kind).toBe("keyChanged");
   }, 60_000);
 
-  it("a device that doesn't decrypt with this tab's key: the key another tab saved reopens it, else Unlock when the ledger's key changed, else it stays (D32)", async () => {
+  it("the race-lost join at the gate (D32): a wrong passphrase keeps nothing; a join keeps the key; a reload that missed the key asks, offline, for the passphrase that derives it", async () => {
     const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
-    const created = await createNew(alex, PASSPHRASE, choices);
-    const other = await keyFor(PASSPHRASE);
-    // Another tab joined a racing create's winner and saved its key.
-    expect(await afterUndecryptable(alex.remote, other, created.key)).toEqual({ kind: "reopen", key: created.key });
-    // Nothing newer saved, and the ledger in the repo is under another salt.
-    expect(await afterUndecryptable(alex.remote, other, other)).toEqual({ kind: "keyChanged" });
-    expect(await afterUndecryptable(alex.remote, other, null)).toEqual({ kind: "keyChanged" });
-    // The ledger's own key: the device really can't be read; it stays.
-    expect(await afterUndecryptable(alex.remote, created.key, created.key)).toEqual({ kind: "stay" });
-  }, 60_000);
+    const created = await createNew(alex, "a passphrase only this device used", choices);
+    if (created.result.kind !== "created") throw new Error(created.result.kind);
+    // Sam's create landed within the same listing's time, with the greater key.
+    const theirs = await keyFor(PASSPHRASE);
+    const doc = createEmptyDocument({ modules: ["expenses"], timeZone: "Asia/Kolkata" });
+    await fake.seedFile(FULL, "ledger/e000001-ffffffff.genesis.enc", await seal({ fv: FORMAT_VERSION, kind: "genesis", epoch: "e000001-ffffffff", reason: "create", by: "sam", at: 2, basedOn: null, doc }, theirs));
+    const store = new MemoryStore();
+    const start = { epoch: created.result.epoch, sha: created.result.sha, state: created.result.state };
+    const opened = await openLedger(alex.connection, created.key, start, { fetch: fake.fetch, store });
+    if (opened.kind !== "open") throw new Error(opened.kind);
+    await opened.backend.addEntry({ year: 2026, month: 5, amount: 12, remarks: "Lunch", category: "food", isCard: false });
+    await opened.engine.sync();
+    expect(opened.engine.getState().raceLost).toEqual({ winner: "e000001-ffffffff", joinable: true });
+
+    const kept: DeviceKey[] = [];
+    const keep = async (key: DeviceKey) => {
+      kept.push(key);
+    };
+    expect(await joinRace(opened.engine, "not the household passphrase", keep)).toEqual({ kind: "wrongPassphrase" });
+    expect(kept).toEqual([]);
+    // The tab goes away before it keeps the key.
+    const joined = await joinRace(opened.engine, PASSPHRASE, async () => {
+      throw new Error("the tab went away");
+    });
+    expect(joined).toMatchObject({ kind: "joined", kept: false, key: { salt: theirs.salt, iter: theirs.iter } });
+    opened.engine.stop();
+
+    // The next start has the old key, and no network.
+    const offline = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch;
+    const stale = await openLedger(alex.connection, created.key, null, { fetch: offline, store });
+    if (stale.kind !== "open") throw new Error(stale.kind);
+    const needed = stale.engine.getState().keyNeeded!;
+    expect(stale.engine.getState().unreadable).toBe("keyChanged");
+    stale.engine.stop();
+    // Another tab that saved the new key would reopen with it; this one asks.
+    if (joined.kind !== "joined") throw new Error(joined.kind);
+    expect(keyChangeStep(needed, joined.key)).toEqual({ kind: "reopen", key: joined.key });
+    expect(keyChangeStep(needed, created.key)).toEqual({ kind: "unlock" });
+    expect(keyChangeStep(needed, null)).toEqual({ kind: "unlock" });
+    expect(await openSealed(alex.connection, "not the household passphrase", needed, { fetch: offline, store })).toEqual({ kind: "wrongPassphrase" });
+    const reopened = await openSealed(alex.connection, PASSPHRASE, needed, { fetch: offline, store });
+    if (reopened.kind !== "open") throw new Error(reopened.kind);
+    expect(reopened.key).toMatchObject({ salt: theirs.salt, iter: theirs.iter });
+    expect(reopened.opened.engine.epochKey).toBe("e000001-ffffffff");
+    expect(reopened.opened.engine.leftBehind().filter((g) => g.own).flatMap((g) => g.items.map((i) => (i.kind === "add" ? i.record.remarks : i.kind)))).toEqual(["Lunch"]);
+    reopened.opened.engine.stop();
+  }, 120_000);
 
   it("a repo with no ledger reports it found nothing, so the gate offers Create", async () => {
     const alex = await connect("github_pat_alex", { owner: null, repo: "ledger-data" }, { fetch: fake.fetch });
