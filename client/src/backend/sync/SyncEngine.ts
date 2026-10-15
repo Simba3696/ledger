@@ -209,6 +209,11 @@ export interface EngineState {
    * afresh meanwhile, and the first listing that counts the epoch again
    * clears it. Null otherwise. */
   epochGone: EpochGone | null;
+  /** This device created its ledger at the same moment as another device,
+   * whose create, under another passphrase's salt, won (ADR-0008, D32):
+   * the winner's epoch. rekeyAndJoin() joins it with the household
+   * passphrase. Null otherwise. */
+  raceLost: RaceLost | null;
   /** A restore this tab started (restore()), once its genesis was sent:
    * "pending" while a PUT got no answer and no listing has settled it
    * ("unknown"), "landed" once its genesis is known to be in the repo
@@ -224,6 +229,31 @@ export interface EpochGone {
   epoch: string;
   winner: string | null;
 }
+
+/** EngineState.raceLost: the epoch-1 create that won the race. */
+export interface RaceLost {
+  winner: string;
+}
+
+/** What rekeyAndJoin() did (ADR-0008, D32). */
+export type RekeyResult =
+  /** Joined the winner: this device's state is sealed under `key`, the
+   * household's key for the winner, which the caller keeps from now on
+   * (the device store's key). This device's writes are its own group left
+   * behind, to Re-apply. */
+  | { kind: "joined"; epoch: string; key: DeviceKey }
+  /** Not the loser of a racing create (any more): nothing done. */
+  | { kind: "notRaceLost" }
+  /** The passphrase doesn't open the winner: nothing written. */
+  | { kind: "wrongPassphrase"; epoch: string }
+  /** The passphrase is this device's own, and the winner uses another:
+   * nothing written. The way on is a backup of this device, then Forget
+   * and join with the winner's passphrase (D35). */
+  | { kind: "otherKey"; epoch: string }
+  /** The repo couldn't be read whole, or another switch got there first. */
+  | { kind: "unknown" }
+  | { kind: "needsUpdate"; epoch: string }
+  | { kind: "damaged"; epoch: string };
 
 /** What to tell the person when this device's epoch is gone (EpochGone)
  * and another ledger is in the repo now. */
@@ -855,6 +885,8 @@ export class SyncEngine {
   /** This device's epoch no longer counts in a full listing (EpochGone),
    * as last decided by a listing that could tell. */
   #epochGone: EpochGone | null = null;
+  /** EngineState.raceLost, the same object while it doesn't change. */
+  #raceLost: RaceLost | null = null;
   /** The epoch the last full listing didn't count, if it didn't: one such
    * listing may be stale, so epochGone waits for a second (#noteGone), and
    * every cycle lists again while this is set. */
@@ -2807,6 +2839,11 @@ export class SyncEngine {
     return { kind: "joined", epoch: winner };
   }
 
+  /** The join of a racing create's winner (ADR-0008, D32). Not built yet. */
+  async rekeyAndJoin(_passphrase: string): Promise<RekeyResult> {
+    return { kind: "notRaceLost" };
+  }
+
   /** Export (#9, section 9.5): the current document, sealed with the
    * household key in the repo files' format, the same as a genesis's
    * `doc`, so an export restores as it is (readBackup, restore). */
@@ -3882,6 +3919,7 @@ export class SyncEngine {
       leftBehindOwnCount: this.#leftBehindOwnCount,
       damagedFile: this.#damaged,
       epochGone: this.#epochGone,
+      raceLost: this.#raceLost,
       restore: this.#restoreState,
     };
   }

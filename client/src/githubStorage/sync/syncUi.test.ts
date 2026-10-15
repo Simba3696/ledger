@@ -98,6 +98,7 @@ const STATE: EngineState = {
   leftBehindOwnCount: 0,
   damagedFile: null,
   epochGone: null,
+  raceLost: null,
   restore: null,
 };
 
