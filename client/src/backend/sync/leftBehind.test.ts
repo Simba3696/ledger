@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
+import { checkGroup, heldIn, inEffect, leftBehind, leftBehindItems, mergeGroups, reapplyTo, unsupersededIn, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
 import { genesisState } from "./state";
 import { ALL_MODULES, Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -170,6 +170,88 @@ describe("left behind (section 9.3)", () => {
       { kind: "unit", key: "fm/2026-06" },
       { kind: "unit", key: "lk/2026-05", value: true },
     ]);
+  });
+});
+
+// What a genesis held of a group, kept so it can be offered again should
+// that genesis lose (#14), and what makes such a part stale: a write over
+// it in an epoch the device left after (its value superseded).
+describe("parts a genesis held (#14)", () => {
+  /** Alex's edit of Groceries, Taxi added, a debt deleted and an EMI's
+   * balance: one group, projected against the backup. */
+  async function group(): Promise<{ doc: LedgerDocument; a: Replica; group: LeftBehindGroup }> {
+    const doc = await backup();
+    const { a } = pair(doc);
+    await a.backend.updateEntry(2026, 5, await rowOf(a, "Groceries"), { amount: 50, remarks: "Groceries", category: "food", isCard: false });
+    await a.backend.addEntry({ year: 2026, month: 5, amount: 9, remarks: "Taxi", category: "transportation", isCard: false });
+    await a.backend.deleteDebt((await a.backend.getDebts())[0].row);
+    const emi = (await a.backend.getEmis())[0];
+    await a.backend.updateEmi(emi.row, { cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 8000, interestRate: 9.5, foreclosureCharge: null });
+    const [g] = leftBehind(a.state, {}, into(doc), { epoch: OLD, me: A });
+    return { doc, a, group: g };
+  }
+  const kinds = (g: LeftBehindGroup | null) => (g === null ? null : leftBehindItems(g).map((i) => (i.kind === "unit" ? i.key : `${i.kind}:${i.coll}`)));
+
+  it("is what withoutHeld leaves out: the two never share a change, and together they are the group", async () => {
+    const { doc, a, group: g } = await group();
+    expect(heldIn(g, genesisState(doc))).toBeNull();
+    expect(heldIn(g, genesisState(a.doc))).toEqual(g);
+    // A genesis that holds Taxi and the delete, and only the amount of the
+    // EMI's balance pair: the pair is held only whole.
+    const later = structuredClone(a.doc);
+    later.expenses["2026-05"] = later.expenses["2026-05"].map((e) => (e.remarks === "Groceries" ? { ...e, amount: "40.00" } : e));
+    later.emis = later.emis.map((e) => ({ ...e, asOfDate: "2026-01-05" }));
+    const held = heldIn(g, genesisState(later))!;
+    const left = withoutHeld(g, genesisState(later))!;
+    expect(kinds(held)).toEqual(["add:e", "delete:debt"]);
+    expect(kinds(left)).toEqual(["edit:e", "edit:emi"]);
+    expect([...held.set, ...left.set].map(([key]) => key).sort()).toEqual(g.set.map(([key]) => key).sort());
+    expect([...held.del, ...left.del].sort()).toEqual([...g.del].sort());
+    expect(Object.keys(held.records).sort()).toEqual([...new Set([...held.set.map(([key]) => key.split("/").slice(0, 2).join("/")), ...held.del])].sort());
+  });
+
+  it("stays while the epoch left holds it only under its genesis tag, whatever the value", async () => {
+    const { doc, a, group: g } = await group();
+    // The epoch it was held in: its genesis holds every change, untouched.
+    expect(unsupersededIn(g, genesisState(a.doc))).toEqual(g);
+    // A later epoch whose genesis has other values (an older backup) is no
+    // write over it.
+    expect(unsupersededIn(g, genesisState(doc))).toEqual(g);
+  });
+
+  it("goes where an op of the epoch left wrote over it or deleted its record, a field group whole, and a delete once its record was written", async () => {
+    const { doc, a, group: g } = await group();
+    const n = new Replica(N, a.doc, { epoch: NEW });
+    await n.backend.updateEntry(2026, 5, await rowOf(n, "Groceries"), { amount: 70, remarks: "Groceries", category: "food", isCard: false });
+    await n.backend.deleteEntry(2026, 5, await rowOf(n, "Taxi"));
+    const emi = (await n.backend.getEmis())[0];
+    await n.backend.updateEmi(emi.row, { cardOrBank: "Car Loan", emiAmount: 1000, dueDay: 5, totalAmount: 12000, remarks: "", remainingAsOf: 7000, interestRate: 9.5, foreclosureCharge: null });
+    expect(kinds(unsupersededIn(g, n.state))).toEqual(["delete:debt"]);
+    // Only a field another op wrote goes; the others stay.
+    const m = new Replica(N, a.doc, { epoch: NEW });
+    await m.backend.updateEntry(2026, 5, await rowOf(m, "Groceries"), { amount: 50, remarks: "Groceries and milk", category: "food", isCard: false });
+    const left = unsupersededIn(g, m.state)!;
+    expect(kinds(left)!.sort()).toEqual(["add:e", "delete:debt", "edit:e", "edit:emi"]);
+    expect(leftBehindItems(left).find((i) => i.kind === "edit" && i.coll === "e")).toMatchObject({ fields: { amount: "50.00" }, record: { remarks: "Groceries and milk" } });
+    // A delete goes once its record was written in the epoch left.
+    const rk = g.del[0];
+    const written = new Replica(N, doc, { epoch: NEW });
+    await written.backend.updateDebt((await written.backend.getDebts())[0].row, { name: "Sam", amount: 600 });
+    expect(rk.startsWith("debt/")).toBe(true);
+    expect(unsupersededIn({ ...g, set: [], records: { [rk]: g.records[rk] } }, written.state)).toBeNull();
+  });
+
+  it("merges into the group of the same marker, the group's own entries first", async () => {
+    const { a, group: g } = await group();
+    const later = structuredClone(a.doc);
+    later.expenses["2026-05"] = later.expenses["2026-05"].map((e) => (e.remarks === "Groceries" ? { ...e, amount: "40.00" } : e));
+    const held = heldIn(g, genesisState(later))!;
+    const left = withoutHeld(g, genesisState(later))!;
+    const merged = mergeGroups(left, held);
+    expect(merged.set).toEqual(g.set);
+    expect(merged.del).toEqual(g.del);
+    expect(Object.keys(merged.records).sort()).toEqual(Object.keys(g.records).sort());
+    expect(mergeGroups(g, { ...g, set: g.set.map(([key, value]) => [key, key.endsWith("/amount") ? "1.00" : value]) }).set).toEqual(g.set);
   });
 });
 
