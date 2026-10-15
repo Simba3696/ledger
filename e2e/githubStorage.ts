@@ -1370,13 +1370,17 @@ async function main() {
       await L.page.waitForSelector(".tabs", { timeout: 60_000 });
       const reapply = L.page.getByRole("button", { name: "Re-apply" }).first();
       await reapply.waitFor({ timeout: 30_000 });
+      // The entry is re-applied with Expenses open: the open list shows it at
+      // once, with no month switch or reload (#16).
+      const notYetListed = !(await listed(L.page)).includes("E2E Race Lunch");
       await reapply.click();
       await L.page.getByText("Re-applied", { exact: false }).first().waitFor({ timeout: 30_000 });
+      const shownAtOnce = await waitUntil(
+        async () => (await L.page.locator(".add-expense-form").count()) > 0 && (await L.page.locator(".entry-row:not(.row-editing) .entry-remarks").allInnerTexts()).some((t) => t.trim() === "E2E Race Lunch"),
+        10_000,
+        250,
+      );
       await waitSaved(L.page);
-      // A reload reads the ledger afresh from the device.
-      await L.page.reload();
-      await L.page.waitForSelector(".tabs", { timeout: 60_000 });
-      const loserLists = (await listed(L.page)).includes("E2E Race Lunch");
       const reachedGitHub = await waitUntil(() => remoteHas(RACE_REPO, PASS.household, "E2E Race Lunch"), 60_000, 1000);
       // The winner's side: a fresh device joins the ledger in the repo with the
       // household passphrase and lists what L carried over.
@@ -1389,9 +1393,9 @@ async function main() {
       await W.page.waitForSelector(".tabs", { timeout: 60_000 });
       const winnerLists = await waitUntil(async () => (await listed(W.page)).includes("E2E Race Lunch"), 45_000, 1000);
       check(
-        "13. Racing creates (D32): the loser stops sync and offers the join, joins with the household passphrase, re-applies its entry, and a device on the winner lists it",
-        offered && stoppedSafely && loserLists && reachedGitHub && winnerLists,
-        { offered, stoppedSafely, loserLists, reachedGitHub, winnerLists },
+        "13. Racing creates (D32): the loser stops sync and offers the join, joins with the household passphrase, re-applies its entry, which its open Expenses list shows at once (#16), and a device on the winner lists it",
+        offered && stoppedSafely && notYetListed && shownAtOnce && reachedGitHub && winnerLists,
+        { offered, stoppedSafely, notYetListed, shownAtOnce, reachedGitHub, winnerLists },
       );
       await L.context.close();
       await W.context.close();

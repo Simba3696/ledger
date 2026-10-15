@@ -518,6 +518,21 @@ describe("re-apply and discard (section 9.4)", () => {
     expectConverged(a2, b, c);
   });
 
+  // SyncHost re-reads the open section after a sync-bar write only when the
+  // engine's document is a new object (#16): a write that changed it
+  // replaces it, and one of only a marker keeps it.
+  it("a re-apply that applied something replaces the document object; a discard keeps it (#16)", async () => {
+    const { b, c } = await leftOnTwo();
+    const [theirs] = c.engine.leftBehind();
+    const onC = c.engine.current();
+    await c.engine.discard(theirs.id);
+    expect(c.engine.current()).toBe(onC);
+    const onB = b.engine.current();
+    expect((await b.engine.reapply(theirs.id)).applied).toHaveLength(1);
+    expect(b.engine.current()).not.toBe(onB);
+    expect(remarks(b).sort()).toEqual(["Groceries", "Taxi"]);
+  });
+
   it("a re-apply on another device puts the changes in effect, which hides them on their own device too", async () => {
     const { a2, b, c } = await leftOnTwo();
     const [theirs] = c.engine.leftBehind();

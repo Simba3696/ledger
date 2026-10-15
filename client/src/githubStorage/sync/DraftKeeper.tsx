@@ -3,9 +3,10 @@ import { FormDrafts, type DraftActions, type DraftMutation, type DraftNode } fro
 
 // The DOM side of drafts.ts (#13): a container around the part of the
 // GitHub tree SyncHost re-keys, mounted once for the life of the ledger, so
-// it sees each remount a remote join causes. It passes the person's events
-// and the DOM's changes to FormDrafts, captures just before the tree under
-// it is replaced (getSnapshotBeforeUpdate, when `revision` moves), and
+// it sees each remount: a remote join's, and a sync-bar write's at the same
+// revision (#16). It passes the person's events and the DOM's changes to
+// FormDrafts, captures just before the tree under it is replaced
+// (getSnapshotBeforeUpdate, when SyncLayers' key for it moves), and
 // restores once the new tree has committed, retrying while sections load.
 // It never holds or delays the remount: the fence's revision on screen is
 // SyncHost's as before.
@@ -46,7 +47,7 @@ const domActions: DraftActions = {
   },
 };
 
-export class DraftKeeper extends Component<{ revision: number; children?: ReactNode }> {
+export class DraftKeeper extends Component<{ /** SyncLayers' key for the tree under it. */ tree: string; children?: ReactNode }> {
   readonly root = createRef<HTMLDivElement>();
   readonly drafts = new FormDrafts(domActions);
   #observer: MutationObserver | null = null;
@@ -76,16 +77,16 @@ export class DraftKeeper extends Component<{ revision: number; children?: ReactN
     this.#stopTimer();
   }
 
-  getSnapshotBeforeUpdate(prev: Readonly<{ revision: number }>): null {
+  getSnapshotBeforeUpdate(prev: Readonly<{ tree: string }>): null {
     const root = this.root.current;
-    if (root && prev.revision !== this.props.revision) {
+    if (root && prev.tree !== this.props.tree) {
       this.drafts.beforeRemount(root as unknown as DraftNode, document.activeElement as unknown as DraftNode | null);
     }
     return null;
   }
 
-  componentDidUpdate(prev: Readonly<{ revision: number }>) {
-    if (prev.revision === this.props.revision) return;
+  componentDidUpdate(prev: Readonly<{ tree: string }>) {
+    if (prev.tree === this.props.tree) return;
     this.drafts.afterRemount(Date.now());
     // Not from here: this runs inside React's commit, where an input event
     // is handled but its state isn't applied, so React puts the field's old
