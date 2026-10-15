@@ -28,7 +28,7 @@ import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, withoutHe
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
-import { checkNotice, detectNotices, overCap, type Arrivals, type Detected, type StoredNotice } from "./notices";
+import { checkNotice, detectNotices, overCap, supersededNotices, type Arrivals, type Detected, type StoredNotice } from "./notices";
 import { LocalStateNewer, WriterTokenMismatch, openSyncStore, registerRunning, type Mutation, type StoredRecords, type SyncStore } from "./persist";
 import {
   LOCAL_FORMAT_VERSION,
@@ -1187,17 +1187,21 @@ export class SyncEngine {
     // harness seed 140353: an edit of a record another device's delete,
     // joined in between, removed was otherwise lost with no word).
     const between = op !== null && this.#joinedWhileSaving?.epoch === writer.epoch && this.#joinedWhileSaving.device === writer.device ? this.#joinedWhileSaving : null;
-    let late: [string, NoticeBody][] = [];
+    let late: Detected[] = [];
     let afterOwn: SyncState | null = null;
     if (between !== null && op !== null) {
       afterOwn = cloneState(between.pre);
       applyOp(afterOwn, me, op);
-      late = detectNotices(afterOwn, between.source, between, me)
-        .filter((notice) => notice.loser.L === op.L)
-        .map(({ key, ...body }): [string, NoticeBody] => [key, body]);
+      late = detectNotices(afterOwn, between.source, between, me).filter((notice) => notice.loser.L === op.L);
     }
-    const told = [...fenceNotices, ...late];
-    const noticeWrites = told.length > 0 || settled.length > 0 ? await this.#noticeWrites(told, settled) : null;
+    // That join told the same clash against an older own write, the newer
+    // one not applied yet: a join after the save tells it once, naming this
+    // op, and so must this save (#14). The older notice goes, or keeps only
+    // the registers this op didn't write again.
+    const superseded = late.length > 0 ? supersededNotices(this.#notices, late, me) : { drop: [], keep: [] };
+    const told = [...fenceNotices, ...superseded.keep, ...late.map(({ key, ...body }): [string, NoticeBody] => [key, body])];
+    const dropped = [...settled, ...superseded.drop];
+    const noticeWrites = told.length > 0 || dropped.length > 0 ? await this.#noticeWrites(told, dropped) : null;
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };

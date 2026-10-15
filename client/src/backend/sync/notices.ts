@@ -224,6 +224,46 @@ export function detectNotices(live: SyncState, source: SyncState, arrivals: Arri
   return [...found.values()];
 }
 
+function sameTarget(a: NoticeTarget, b: NoticeTarget): boolean {
+  if (a.kind === "unit") return b.kind === "unit" && a.key === b.key;
+  return b.kind === "record" && a.coll === b.coll && a.id === b.id;
+}
+
+/** What a save's late notices (an own write saved after a join that ran
+ * between its diff and its save, ADR-0008 #14) stand in for among the
+ * `stored` ones. That join told the same winner's clash against an older
+ * own write on the same record or unit, since the newer one wasn't applied
+ * yet; joined after the save, it would have been told once, against the
+ * newer write. So a stored "deleted" notice of the same winner and record
+ * from an older own op goes, and a stored overwrite of the same winner and
+ * target from an older own op loses the registers a late notice names: it
+ * goes when none is left (`drop`), else it is stored again with the rest
+ * (`keep`, under its key). Any other stored notice is untouched. */
+export function supersededNotices(stored: ReadonlyMap<string, StoredNotice>, late: readonly Detected[], me: string): { drop: string[]; keep: [key: string, notice: OverwriteNotice][] } {
+  const drop: string[] = [];
+  const keep: [string, OverwriteNotice][] = [];
+  for (const [key, old] of stored) {
+    if ((old.kind !== "overwrite" && old.kind !== "deleted") || old.loser.device !== me) continue;
+    const newer = late.filter(
+      (n) => n.kind === old.kind && n.winner.L === old.winner.L && n.winner.device === old.winner.device && n.loser.device === me && n.loser.L > old.loser.L && sameTarget(n.target, old.target),
+    );
+    if (newer.length === 0) continue;
+    if (old.kind === "deleted") {
+      drop.push(key);
+      continue;
+    }
+    const named = new Set(newer.flatMap((n) => (n.kind === "overwrite" ? n.registers.map((r) => r.key) : [])));
+    const left = old.registers.filter((r) => !named.has(r.key));
+    if (left.length === old.registers.length) continue;
+    drop.push(key);
+    if (left.length > 0) {
+      const { seq: _seq, at: _at, ...body } = old;
+      keep.push([key, { ...body, registers: left }]);
+    }
+  }
+  return { drop, keep };
+}
+
 // --- Stored notices -----------------------------------------------------------
 
 /** A remote write the user hadn't seen when they saved (the stale-UI fence,
