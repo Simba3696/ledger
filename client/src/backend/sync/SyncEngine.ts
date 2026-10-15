@@ -158,7 +158,10 @@ export type SyncStatus =
 /** Why the saved state can't be used: the store couldn't be read (worth
  * trying again), a newer build wrote it, it doesn't decrypt with this key,
  * or it is malformed. */
-export type UnreadableReason = "loadFailed" | "newer" | "undecryptable" | "malformed";
+/** "keyChanged": the device is sealed under another key than this tab's
+ * (it joined a racing create's winner, D32): EngineState.keyNeeded says
+ * which. */
+export type UnreadableReason = "loadFailed" | "newer" | "undecryptable" | "malformed" | "keyChanged";
 
 export interface EngineState {
   status: SyncStatus;
@@ -214,6 +217,10 @@ export interface EngineState {
    * the winner's epoch. rekeyAndJoin() joins it with the household
    * passphrase. Null otherwise. */
   raceLost: RaceLost | null;
+  /** With unreadable "keyChanged": the salt and iterations of the key the
+   * device is sealed under (the household passphrase derives it with them,
+   * offline). Null otherwise. */
+  keyNeeded: { salt: string; iter: number } | null;
   /** A restore this tab started (restore()), once its genesis was sent:
    * "pending" while a PUT got no answer and no listing has settled it
    * ("unknown"), "landed" once its genesis is known to be in the repo
@@ -902,6 +909,9 @@ export class SyncEngine {
   #raceLost: RaceLost | null = null;
   /** #ownGenesisReason's answer for the own genesis's blob sha. */
   #ownReason: { sha: string; reason: GenesisContent["reason"] | null } | null = null;
+  /** The key the saved state is sealed under, when it isn't this tab's
+   * (unreadable "keyChanged"). */
+  #keyNeeded: { salt: string; iter: number } | null = null;
   /** The epoch the last full listing didn't count, if it didn't: one such
    * listing may be stale, so epochGone waits for a second (#noteGone), and
    * every cycle lists again while this is set. */
@@ -3516,6 +3526,7 @@ export class SyncEngine {
       writerToken: meta.writerToken,
       prev: { epoch: from, device: meta.deviceId },
       ...(anchor !== undefined ? { basedOn: anchor } : {}),
+      ...(genesis.rekey ? { sealedWith: { salt: genesis.rekey.salt, iter: genesis.rekey.iter } } : meta.sealedWith ? { sealedWith: meta.sealedWith } : {}),
     };
     // Rekeying (D32): everything kept is sealed under the new key in this
     // one transaction, the notices included; one this build can't read
@@ -3885,6 +3896,14 @@ export class SyncEngine {
    * Reads only: whatever is wrong, the records are left as they are. */
   async #decode(records: StoredRecords): Promise<Loaded | UnreadableReason> {
     const check = checkMeta(records.meta);
+    // Sealed under another key (a join of a racing create's winner, D32):
+    // nothing is decrypted, and the state says which key it needs.
+    const sealed = check.ok ? check.meta.sealedWith : undefined;
+    if (sealed !== undefined && (sealed.salt !== this.#key.salt || sealed.iter !== this.#key.iter)) {
+      this.#keyNeeded = { salt: sealed.salt, iter: sealed.iter };
+      this.#log("error", "the saved sync state is sealed under another key than this tab's");
+      return "keyChanged";
+    }
     if (!check.ok) {
       this.#log("error", `the saved sync state can't be used: ${check.detail}`);
       return check.problem;
@@ -4054,6 +4073,7 @@ export class SyncEngine {
       damagedFile: this.#damaged,
       epochGone: this.#epochGone,
       raceLost: this.#damaged === null ? null : this.#raceLost,
+      keyNeeded: this.#unreadable === "keyChanged" ? this.#keyNeeded : null,
       restore: this.#restoreState,
     };
   }

@@ -9,6 +9,7 @@ const UNREADABLE: Record<NonNullable<EngineState["unreadable"]>, string> = {
   newer: "The changes saved on this device were saved by a newer version of Ledger. Reload to get it.",
   undecryptable: "The changes saved on this device can't be decrypted with this passphrase.",
   malformed: "The changes saved on this device can't be read.",
+  keyChanged: "The changes saved on this device are sealed with the household passphrase this device joined with. Enter it to open them.",
 };
 
 /** The sync layer of the GitHub tree (#7), between the gate (#8) and the

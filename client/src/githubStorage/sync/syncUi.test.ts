@@ -99,6 +99,7 @@ const STATE: EngineState = {
   damagedFile: null,
   epochGone: null,
   raceLost: null,
+  keyNeeded: null,
   restore: null,
 };
 

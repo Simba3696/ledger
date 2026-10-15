@@ -26,6 +26,7 @@ function value(raceLost: EngineState["raceLost"]): SyncStateValue {
     damagedFile: raceLost ? { path: `ledger/${raceLost.winner}.genesis.enc`, epoch: raceLost.winner, reason: "foreignKey" } : null,
     epochGone: null,
     raceLost,
+    keyNeeded: null,
     restore: null,
     notices: [],
     leftBehind: [],

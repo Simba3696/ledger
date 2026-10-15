@@ -88,6 +88,11 @@ export interface SyncMeta {
    * (#adoptEpoch's anchor). Absent on a device that started in this
    * epoch. */
   basedOn?: string;
+  /** The salt and iterations of the key the device is sealed under, once
+   * it joined a racing create's winner (D32) and so is sealed under
+   * another key than the one it started with: a start with another key
+   * knows, without the network, which one to ask for. Absent otherwise. */
+  sealedWith?: { salt: string; iter: number };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -139,11 +144,13 @@ export function checkMeta(value: unknown): MetaCheck {
   }
   const bad = (detail: string): MetaCheck => ({ ok: false, problem: "malformed", detail });
   if (fv !== LOCAL_FORMAT_VERSION) return bad("meta format version is malformed");
-  const keys = Object.keys(value).filter((key) => key !== "prev" && key !== "basedOn");
+  const keys = Object.keys(value).filter((key) => key !== "prev" && key !== "basedOn" && key !== "sealedWith");
   if (keys.length !== META_KEYS.length || !META_KEYS.every((key) => Object.hasOwn(value, key))) return bad("meta has the wrong keys");
   const prev = value.prev;
   if (prev !== undefined && !(isPlainObject(prev) && Object.keys(prev).length === 2 && isEpochKey(prev.epoch) && isDeviceId(prev.device))) return bad("meta prev is malformed");
   if (value.basedOn !== undefined && !isEpochKey(value.basedOn)) return bad("meta basedOn is malformed");
+  const sealed = value.sealedWith;
+  if (sealed !== undefined && !(isPlainObject(sealed) && Object.keys(sealed).length === 2 && typeof sealed.salt === "string" && sealed.salt !== "" && Number.isSafeInteger(sealed.iter) && (sealed.iter as number) > 0)) return bad("meta sealedWith is malformed");
   if (!isDeviceId(value.deviceId) || !isEpochKey(value.epochKey)) return bad("meta ids are malformed");
   if (![value.maxL, value.ownMaxL, value.K, value.ownLogThrough, value.lastSentLogThrough, value.ownLogK, value.lastSentLogK, value.lastSentSnapThrough].every(isLamportOrZero)) return bad("meta counters are malformed");
   if (![value.ownLogSha, value.lastSentLogSha, value.ownSnapSha, value.lastSentSnapSha, value.lastSeenCommit].every(isShaOrNull)) return bad("meta shas are malformed");
