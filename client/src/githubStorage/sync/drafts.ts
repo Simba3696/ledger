@@ -45,6 +45,8 @@ export interface DraftMutation {
   readonly target: unknown;
   readonly addedNodes: ArrayLike<unknown>;
   readonly removedNodes: ArrayLike<unknown>;
+  readonly previousSibling?: unknown;
+  readonly nextSibling?: unknown;
 }
 
 /** What restoring does to the page (DraftKeeper.tsx: the real DOM). */

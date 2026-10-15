@@ -407,6 +407,20 @@ describe("FormDrafts: Add Expense", () => {
 
 // ---------------------------------------------------------------- edit rows
 
+/** React swapping `old` for `next` in `list` (a row for its edit row):
+ * the removal, then the insertion between the same neighbours, as two
+ * MutationRecords. */
+function swap(list: El, old: El, next: El): DraftMutation[] {
+  const at = list.children.indexOf(old);
+  const previousSibling = list.children[at - 1] ?? null;
+  const nextSibling = list.children[at + 1] ?? null;
+  list.replace(old, next);
+  return [
+    { target: list, addedNodes: [], removedNodes: [old], previousSibling, nextSibling },
+    { target: list, addedNodes: [next], removedNodes: [], previousSibling, nextSibling },
+  ];
+}
+
 /** RecentEntries' list: rows with data-row, each with an overflow menu whose
  * Edit swaps the row for an edit row (reported to `drafts` as the
  * MutationObserver would). */
@@ -439,12 +453,7 @@ function entriesList(drafts: FormDrafts, entries: { row: number; remarks: string
           item("Edit", () => {
             const edit = editRow(entry);
             edits.set(entry.row, edit);
-            ul.replace(li, edit.li);
-            const records: DraftMutation[] = [
-              { target: ul, addedNodes: [], removedNodes: [li] },
-              { target: ul, addedNodes: [edit.li], removedNodes: [] },
-            ];
-            drafts.mutations(records);
+            drafts.mutations(swap(ul, li, edit.li));
           }),
           item("Delete", () => {
             throw new Error("Delete must never be clicked");
@@ -606,5 +615,392 @@ describe("FormDrafts: an open edit row", () => {
     for (let t = 10; t < 20 && drafts.step(root, t); t++);
 
     expect(newList.edits.get(4)?.remarks.value).toBe("Train back");
+  });
+});
+
+// ------------------------------------------------- review of #13: no guessing
+//
+// When which row or record a typed value belongs to is in any doubt, the
+// draft is dropped: a value restored into the wrong card or debt is worse
+// than one that has to be typed again.
+
+/** CardsEditor's shape: a row per card (name, due, paid, settled, remove). */
+function cardRow(name: string, paid = "0", settled = false) {
+  const row = h(
+    "div",
+    { class: "card-row-fields" },
+    h("input", { type: "text", placeholder: "Card / loan name", value: name }),
+    h("input", { type: "number", placeholder: "Due", value: "0" }),
+    h("input", { type: "number", placeholder: "Paid", value: paid }),
+    h("label", { class: "cards-settled" }, h("input", { type: "checkbox", checked: settled }), "Settled"),
+    h("button", { type: "button", class: "cards-remove", "aria-label": `Remove ${name}` }, "×"),
+  );
+  return { row, name: row.children[0], paid: row.children[2], label: row.children[3], settled: row.children[3].children[0] };
+}
+function cardsForm(rows: ReturnType<typeof cardRow>[]) {
+  const editor = h("div", { class: "cards-editor" }, ...rows.map((r) => r.row), h("button", { type: "button", class: "cards-add" }, "+ Add card"));
+  return { form: h("form", { class: "cards-form" }, editor, h("button", { type: "submit", class: "submit-btn" }, "Save")), editor };
+}
+const paidOf = (rows: ReturnType<typeof cardRow>[]) => rows.map((r) => `${r.name.value}=${r.paid.value}${r.settled.checked ? " settled" : ""}`).join(", ");
+
+describe("FormDrafts: repeated rows (Credit Cards, Finances savings)", () => {
+  it("restores into the same cards when the rows are the same, in the same order", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const before = [cardRow("Card A"), cardRow("Card B"), cardRow("Card C")];
+    const root = ledger(cardsForm(before).form);
+    typeInto(drafts, before[1].paid, "4500");
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A"), cardRow("Card B"), cardRow("Card C")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10 && drafts.step(root, t); t++);
+
+    expect(paidOf(after)).toBe("Card A=0, Card B=4500, Card C=0");
+  });
+
+  it("drops the form's drafts when a card was removed here before the join (the reviewer's probe)", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = [cardRow("Card B"), cardRow("Card C")];
+    const root = ledger(cardsForm(before).form);
+    typeInto(drafts, before[0].paid, "4500");
+    typeInto(drafts, before[1].paid, "1200");
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A"), cardRow("Card B"), cardRow("Card C")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(paidOf(after)).toBe("Card A=0, Card B=0, Card C=0");
+    expect(actions.done).toEqual([]);
+  });
+
+  it("drops the form's drafts after a reorder here, even when the reloaded rows look the same", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const a = cardRow("Card A");
+    const b = cardRow("Card B");
+    const { form, editor } = cardsForm([a, b]);
+    const root = ledger(form);
+    typeInto(drafts, b.paid, "300");
+    // The person drags B above A (React moves the row's element)...
+    drafts.event("pointerdown", b.row, true);
+    editor.children.splice(1, 1);
+    editor.children.unshift(b.row);
+    drafts.mutations([
+      { target: editor, addedNodes: [], removedNodes: [b.row] },
+      { target: editor, addedNodes: [b.row], removedNodes: [] },
+    ]);
+    // ...and back, so the rows on screen are A, B again.
+    editor.children.splice(0, 1);
+    editor.children.splice(1, 0, b.row);
+    drafts.mutations([
+      { target: editor, addedNodes: [], removedNodes: [b.row] },
+      { target: editor, addedNodes: [b.row], removedNodes: [] },
+    ]);
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A"), cardRow("Card B")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(paidOf(after)).toBe("Card A=0, Card B=0");
+    expect(actions.done).toEqual([]);
+  });
+
+  it("drops the drafts when another device inserted a card, a lone card included", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = [cardRow("Card B")];
+    const root = ledger(cardsForm(before).form);
+    typeInto(drafts, before[0].paid, "700");
+    tap(drafts, before[0].settled);
+    before[0].settled.checked = true;
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A"), cardRow("Card B")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(paidOf(after)).toBe("Card A=0, Card B=0");
+    expect(actions.done).toEqual([]);
+  });
+
+  it("drops the drafts when two rows have the same name: which is which can't be told", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = [cardRow("Card A"), cardRow("Card A")];
+    const root = ledger(cardsForm(before).form);
+    typeInto(drafts, before[1].paid, "900");
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A"), cardRow("Card A")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(actions.done).toEqual([]);
+  });
+
+  it("takes a checkbox's base when its label is tapped (iOS taps the label, not the box)", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const before = [cardRow("Card A")];
+    const root = ledger(cardsForm(before).form);
+    drafts.event("pointerdown", before[0].label, true);
+    before[0].settled.checked = true;
+    drafts.event("click", before[0].settled, true);
+    drafts.event("change", before[0].settled, true);
+
+    drafts.beforeRemount(root, null);
+    const after = [cardRow("Card A")];
+    remount(root, cardsForm(after).form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10 && drafts.step(root, t); t++);
+
+    expect(after[0].settled.checked).toBe(true);
+  });
+});
+
+/** Debts' list: rows without data-row, matched by their text. */
+function debtsList(drafts: FormDrafts, debts: { id: string; name: string; amount: string }[]) {
+  const ul = h("ul", { class: "debts-list" });
+  const opened: { id: string; li: El; amount: El }[] = [];
+  const row = (debt: (typeof debts)[number]) => {
+    const trigger = h("button", { type: "button", class: "overflow-menu-trigger", "aria-haspopup": "menu", "aria-expanded": "false" }, "⋮");
+    const menu = h("div", { class: "overflow-menu" }, trigger);
+    const li = h("li", { class: "debt-row" }, h("span", { class: "debt-name" }, debt.name), h("span", { class: "debt-amount" }, debt.amount), menu);
+    trigger.onClick = () => {
+      trigger.attrs.set("aria-expanded", "true");
+      const item = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", {}, "✏️"), h("span", {}, "Edit"));
+      item.onClick = () => {
+        const amount = h("input", { type: "number", placeholder: "Amount", value: debt.amount });
+        const edit = h("li", { class: "debt-row row-editing" }, h("div", { class: "edit-fields" }, h("input", { type: "text", placeholder: "Name", value: debt.name }), amount));
+        opened.push({ id: debt.id, li: edit, amount });
+        drafts.mutations(swap(ul, li, edit));
+      };
+      menu.append(h("ul", { class: "overflow-menu-list", role: "menu" }, h("li", { role: "none" }, item)));
+    };
+    return li;
+  };
+  ul.append(...debts.map(row));
+  return { section: h("div", { class: "debts-body" }, ul), ul, opened };
+}
+
+function editDebt(drafts: FormDrafts, list: ReturnType<typeof debtsList>, at: number) {
+  const li = list.ul.children[at];
+  tap(drafts, li.children[2].children[0]);
+  tap(drafts, li.children[2].children[1].children[0].children[0]);
+  return list.opened[list.opened.length - 1];
+}
+
+const ALEX_1 = { id: "debt-1", name: "Alex", amount: "500" };
+const ALEX_2 = { id: "debt-2", name: "Alex", amount: "500" };
+
+describe("FormDrafts: edit rows matched by text", () => {
+  it("does not reopen a twin when the edited record is gone (the reviewer's probe)", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = debtsList(drafts, [ALEX_1, ALEX_2]);
+    const root = ledger(before.section);
+    const editing = editDebt(drafts, before, 1);
+    typeInto(drafts, editing.amount, "800");
+
+    drafts.beforeRemount(root, null);
+    const after = debtsList(drafts, [ALEX_1]);
+    remount(root, after.section);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(after.opened).toEqual([]);
+    expect(actions.done).toEqual([]);
+  });
+
+  it("does not reopen either of two rows that read the same, even when both are still there", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const before = debtsList(drafts, [ALEX_1, ALEX_2]);
+    const root = ledger(before.section);
+    const editing = editDebt(drafts, before, 0);
+    typeInto(drafts, editing.amount, "800");
+
+    drafts.beforeRemount(root, null);
+    const after = debtsList(drafts, [ALEX_1, ALEX_2]);
+    remount(root, after.section);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(after.opened).toEqual([]);
+  });
+
+  it("reopens a row whose text is unique before and after", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const sam = { id: "debt-3", name: "Sam", amount: "200" };
+    const before = debtsList(drafts, [ALEX_1, sam]);
+    const root = ledger(before.section);
+    const editing = editDebt(drafts, before, 1);
+    typeInto(drafts, editing.amount, "250");
+
+    drafts.beforeRemount(root, null);
+    const after = debtsList(drafts, [sam, ALEX_1]);
+    remount(root, after.section);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10 && drafts.step(root, t); t++);
+
+    expect(after.opened.map((o) => `${o.id}=${o.amount.value}`)).toEqual(["debt-3=250"]);
+  });
+
+  it("ties an edit row to a record only when it took the removed row's place", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const sam = { id: "debt-3", name: "Sam", amount: "200" };
+    const before = debtsList(drafts, [ALEX_1, sam]);
+    const root = ledger(before.section);
+    // Edit pressed on Alex's row, but the edit row lands after Sam's.
+    const li = before.ul.children[0];
+    tap(drafts, li.children[2].children[0]);
+    drafts.event("click", li.children[2].children[1].children[0].children[0], true);
+    const misplaced = h("li", { class: "debt-row row-editing" }, h("input", { type: "text", placeholder: "Name", value: "Alex" }));
+    const samRow = before.ul.children[1];
+    before.ul.children.splice(0, 1);
+    before.ul.append(misplaced);
+    drafts.mutations([
+      { target: before.ul, addedNodes: [], removedNodes: [li], previousSibling: null, nextSibling: samRow },
+      { target: before.ul, addedNodes: [misplaced], removedNodes: [], previousSibling: samRow, nextSibling: null },
+    ]);
+    typeInto(drafts, misplaced.children[0], "Alex B");
+
+    drafts.beforeRemount(root, null);
+    const after = debtsList(drafts, [ALEX_1, sam]);
+    remount(root, after.section);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(after.opened).toEqual([]);
+  });
+});
+
+describe("FormDrafts: a save, and moving on", () => {
+  it("does not refill a form whose save is in flight when the join lands (the reviewer's probe)", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = addExpenseForm();
+    const root = ledger(before.form);
+    typeInto(drafts, before.amount, "250");
+    typeInto(drafts, before.remarks, "Taxi");
+    tap(drafts, before.chip("Food"));
+    // Add Expense pressed: onSubmit awaits addEntry; the form isn't reset yet.
+    drafts.event("submit", before.form, true);
+
+    drafts.beforeRemount(root, null);
+    const after = addExpenseForm();
+    remount(root, after.form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(actions.done).toEqual([]);
+    expect(after.amount.value).toBe("");
+  });
+
+  it("treats a save button pressed with no form to tell as every form's save", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const before = addExpenseForm();
+    const root = ledger(before.form);
+    typeInto(drafts, before.amount, "250");
+    drafts.event("click", h("button", { type: "submit" }), true);
+
+    drafts.beforeRemount(root, null);
+    const after = addExpenseForm();
+    remount(root, after.form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(after.amount.value).toBe("");
+  });
+
+  it("never brings back a value that was saved: Finances saved 50000, another device then set 0", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const finances = () => {
+      const salary = h("input", { type: "number", placeholder: "0.00", value: "0" });
+      const other = h("input", { type: "number", placeholder: "Freelance, etc.", value: "" });
+      const save = h("button", { type: "submit", class: "submit-btn" }, "Save");
+      const form = h("form", { class: "income-form" }, h("label", {}, "Salary (₹)", salary), h("label", {}, "Other Income (₹)", other), save);
+      return { form, salary, other, save };
+    };
+    const before = finances();
+    const root = ledger(before.form);
+    typeInto(drafts, before.salary, "50000");
+    drafts.event("click", before.save, true);
+    drafts.event("submit", before.form, true);
+    // Saved; then the person starts on other income.
+    typeInto(drafts, before.other, "1200");
+
+    drafts.beforeRemount(root, null);
+    const after = finances();
+    remount(root, after.form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10 && drafts.step(root, t); t++);
+
+    expect(after.salary.value).toBe("0");
+    expect(after.other.value).toBe("1200");
+  });
+
+  it("does not reopen an edit row whose Save is in flight", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const oldList = entriesList(drafts, [LUNCH, TRAIN]);
+    const root = ledger(oldList.section);
+    const editing = openEdit(drafts, oldList, 4);
+    typeInto(drafts, editing.amount, "65");
+    drafts.event("pointerdown", editing.save, true);
+    drafts.event("click", editing.save, true);
+
+    drafts.beforeRemount(root, null);
+    const newList = entriesList(drafts, [LUNCH, TRAIN]);
+    remount(root, newList.section);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(newList.edits.size).toBe(0);
+  });
+
+  it("drops what waits when the person moves on, such as to another month", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = addExpenseForm();
+    const month = h("select", { class: "select", value: "10" });
+    const root = ledger(h("header", {}, month), before.form);
+    typeInto(drafts, before.amount, "75");
+
+    drafts.beforeRemount(root, null);
+    const after = addExpenseForm();
+    after.form.children[0].attrs.set("disabled", "");
+    const month2 = h("select", { class: "select", value: "10" });
+    remount(root, h("header", {}, month2), after.form);
+    drafts.afterRemount(0);
+    expect(drafts.step(root, 0)).toBe(true);
+
+    // The month's lock is still being read; the person picks November.
+    drafts.event("pointerdown", month2, true);
+    after.form.children[0].attrs.delete("disabled");
+    for (let t = 1; t < 10; t++) drafts.step(root, t);
+
+    expect(after.amount.value).toBe("");
+    expect(actions.done).toEqual([]);
+  });
+
+  it("keeps a draft to the month it was typed in", () => {
+    const drafts = new FormDrafts(fakeActions());
+    const before = addExpenseForm();
+    const root = ledger(h("header", {}, h("select", { class: "select", value: "10" })), before.form);
+    typeInto(drafts, before.amount, "75");
+
+    drafts.beforeRemount(root, null);
+    const after = addExpenseForm();
+    remount(root, h("header", {}, h("select", { class: "select", value: "11" })), after.form);
+    drafts.afterRemount(0);
+    for (let t = 0; t < 10; t++) drafts.step(root, t);
+
+    expect(after.amount.value).toBe("");
   });
 });
