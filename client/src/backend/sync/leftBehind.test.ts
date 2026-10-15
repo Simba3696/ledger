@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LedgerDocument } from "../document/types";
-import { checkGroup, heldIn, inEffect, leftBehind, leftBehindItems, mergeGroups, reapplyTo, unsupersededIn, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
+import { aboveCutIn, checkGroup, heldIn, inEffect, leftBehind, leftBehindItems, mergeGroups, reapplyTo, unsupersededIn, withoutHeld, type LeftBehindGroup, type RestoreInto } from "./leftBehind";
 import { genesisState } from "./state";
 import { ALL_MODULES, Replica, deviceId, docText, emptyDocument } from "./testkit";
 
@@ -239,6 +239,25 @@ describe("parts a genesis held (#14)", () => {
     await written.backend.updateDebt((await written.backend.getDebts())[0].row, { name: "Sam", amount: 600 });
     expect(rk.startsWith("debt/")).toBe(true);
     expect(unsupersededIn({ ...g, set: [], records: { [rk]: g.records[rk] } }, written.state)).toBeNull();
+  });
+
+  it("keeps, against a cut, only what the epoch it came from wrote above that cut", async () => {
+    const { a, group: g } = await group();
+    const L = (key: string) => {
+      const [coll, id, field] = key.split("/");
+      return a.state.rec.get(`${coll}/${id}`)!.get(field)!.t[0];
+    };
+    const amount = g.set.find(([key]) => key.startsWith("e/") && key.endsWith("/amount") && L(key) === Math.min(...g.set.filter(([k]) => k.startsWith("e/")).map(([k]) => L(k))))![0];
+    expect(aboveCutIn(g, a.state, {})).toBe(g);
+    // A cut at the first edit's L: that edit is under it, the rest above.
+    const cut = { [A]: L(amount) };
+    const left = aboveCutIn(g, a.state, cut)!;
+    expect(left.set.map(([key]) => key)).not.toContain(amount);
+    expect(left.set.length).toBe(g.set.length - 1);
+    expect(left.del).toEqual(g.del);
+    // A cut past everything leaves nothing; a register the state lacks is kept.
+    expect(aboveCutIn(g, a.state, { [A]: Number.MAX_SAFE_INTEGER })).toBeNull();
+    expect(aboveCutIn(g, genesisState(emptyDocument()), { [A]: Number.MAX_SAFE_INTEGER })).toBe(g);
   });
 
   it("merges into the group of the same marker, the group's own entries first", async () => {
