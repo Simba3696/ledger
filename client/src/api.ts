@@ -1,4 +1,5 @@
-import { currentAccessToken, expireSession } from "./auth/session";
+import { httpBackend } from "./backend/HttpBackend";
+import type { LedgerBackend } from "./backend/LedgerBackend";
 
 export type Category = string;
 
@@ -188,38 +189,18 @@ export interface SubscriptionEdits {
   cardOrBank: string;
 }
 
-const BASE = "/api";
+export { ApiError } from "./backend/ApiError";
 
-/** A non-2xx API response. `status` lets a caller tell, say, the 403 for a
- * signed-in account that isn't the owner (only ever seen on the first
- * request, GET /api/config, since every route answers it the same way)
- * apart from a validation error. */
-export class ApiError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-  }
-}
+/** Where every function below sends its call (LedgerBackend.ts): the REST
+ * API, unless GitHub storage mode puts its own in (installBackend). */
+let backend: LedgerBackend = httpBackend;
 
-/** The one place the client calls the API (LLD §6). Reads the current
- * session on every call rather than caching a token, since supabase-js
- * refreshes it in the background. A 401 means the session is gone or no
- * longer valid: it is cleared locally, which returns the app to <SignIn/>. */
-async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const token = await currentAccessToken();
-  const headers = new Headers(init.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(url, { ...init, headers });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    const message = body.error ?? `Request failed (${res.status})`;
-    if (res.status === 401) await expireSession(message);
-    throw new ApiError(res.status, message);
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+/** Puts another backend behind every function below. Called only by GitHub
+ * storage mode (#8's gate), once a ledger is open, with the DocumentBackend
+ * over the synced document. Nothing in the Supabase build calls it, so it
+ * is dropped from that bundle. */
+export function installBackend(next: LedgerBackend): void {
+  backend = next;
 }
 
 /** A section a deployment can turn off with the server's ENABLED_MODULES.
@@ -232,23 +213,19 @@ export interface AppConfig {
 }
 
 export function getConfig(): Promise<AppConfig> {
-  return request(`${BASE}/config`);
+  return backend.getConfig();
 }
 
 export function getCategories(): Promise<CategoryOption[]> {
-  return request(`${BASE}/categories`);
+  return backend.getCategories();
 }
 
 export function getMonth(year: number, month: number): Promise<LedgerEntry[]> {
-  return request(`${BASE}/months/${year}/${month}`);
+  return backend.getMonth(year, month);
 }
 
 export function addEntry(entry: NewEntry): Promise<LedgerEntry> {
-  return request(`${BASE}/entries`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(entry),
-  });
+  return backend.addEntry(entry);
 }
 
 export function updateEntry(
@@ -257,23 +234,15 @@ export function updateEntry(
   row: number,
   edits: EntryEdits,
 ): Promise<LedgerEntry> {
-  return request(`${BASE}/entries/${year}/${month}/${row}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.updateEntry(year, month, row, edits);
 }
 
 export function deleteEntry(year: number, month: number, row: number): Promise<void> {
-  return request(`${BASE}/entries/${year}/${month}/${row}`, { method: "DELETE" });
+  return backend.deleteEntry(year, month, row);
 }
 
 export function moveEntry(year: number, month: number, fromRow: number, toRow: number): Promise<void> {
-  return request(`${BASE}/entries/${year}/${month}/${fromRow}/move`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ toRow }),
-  });
+  return backend.moveEntry(year, month, fromRow, toRow);
 }
 
 export interface MonthLock {
@@ -281,107 +250,75 @@ export interface MonthLock {
 }
 
 export function getMonthLock(year: number, month: number): Promise<MonthLock> {
-  return request(`${BASE}/months/${year}/${month}/lock`);
+  return backend.getMonthLock(year, month);
 }
 
 export function setMonthLock(year: number, month: number, locked: boolean): Promise<MonthLock> {
-  return request(`${BASE}/months/${year}/${month}/lock`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locked }),
-  });
+  return backend.setMonthLock(year, month, locked);
 }
 
 export function getYearSummary(year: number): Promise<MonthSummary[]> {
-  return request(`${BASE}/summary/${year}`);
+  return backend.getYearSummary(year);
 }
 
 export function getMonthIncome(year: number, month: number): Promise<MonthIncome> {
-  return request(`${BASE}/finance/${year}/${month}`);
+  return backend.getMonthIncome(year, month);
 }
 
 export function setMonthIncome(year: number, month: number, edits: IncomeEdits): Promise<MonthIncome> {
-  return request(`${BASE}/finance/${year}/${month}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.setMonthIncome(year, month, edits);
 }
 
 export function getFinanceSummary(year: number): Promise<MonthFinanceSummary[]> {
-  return request(`${BASE}/finance-summary/${year}`);
+  return backend.getFinanceSummary(year);
 }
 
 export function getDebts(): Promise<DebtEntry[]> {
-  return request(`${BASE}/debts`);
+  return backend.getDebts();
 }
 
 export function addDebt(edits: DebtEdits): Promise<DebtEntry> {
-  return request(`${BASE}/debts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.addDebt(edits);
 }
 
 export function updateDebt(row: number, edits: DebtEdits): Promise<DebtEntry> {
-  return request(`${BASE}/debts/${row}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.updateDebt(row, edits);
 }
 
 export function deleteDebt(row: number): Promise<void> {
-  return request(`${BASE}/debts/${row}`, { method: "DELETE" });
+  return backend.deleteDebt(row);
 }
 
 export function getMonthBills(year: number, month: number): Promise<MonthBills> {
-  return request(`${BASE}/credit-card-bills/${year}/${month}`);
+  return backend.getMonthBills(year, month);
 }
 
 export function setMonthBills(year: number, month: number, cards: CardBill[]): Promise<MonthBills> {
-  return request(`${BASE}/credit-card-bills/${year}/${month}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cards }),
-  });
+  return backend.setMonthBills(year, month, cards);
 }
 
 export function getCreditCardBillsSummary(year: number): Promise<MonthBillsSummary[]> {
-  return request(`${BASE}/credit-card-bills-summary/${year}`);
+  return backend.getCreditCardBillsSummary(year);
 }
 
 export function getEmis(): Promise<EmiEntryComputed[]> {
-  return request(`${BASE}/emi`);
+  return backend.getEmis();
 }
 
 export function addEmi(edits: EmiEdits): Promise<EmiEntryComputed> {
-  return request(`${BASE}/emi`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.addEmi(edits);
 }
 
 export function updateEmi(row: number, edits: EmiEdits): Promise<EmiEntryComputed> {
-  return request(`${BASE}/emi/${row}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.updateEmi(row, edits);
 }
 
 export function deleteEmi(row: number): Promise<void> {
-  return request(`${BASE}/emi/${row}`, { method: "DELETE" });
+  return backend.deleteEmi(row);
 }
 
 export function payEmi(row: number, amount: number): Promise<EmiEntryComputed> {
-  return request(`${BASE}/emi/${row}/pay`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ amount }),
-  });
+  return backend.payEmi(row, amount);
 }
 
 export interface EmiMonthlyProjection {
@@ -393,31 +330,23 @@ export interface EmiMonthlyProjection {
 export type EmiProjectionScale = 6 | 12 | 24 | 60 | "auto";
 
 export function getEmiMonthlyProjection(months: EmiProjectionScale = 12): Promise<EmiMonthlyProjection[]> {
-  return request(`${BASE}/emi-monthly-projection?months=${months}`);
+  return backend.getEmiMonthlyProjection(months);
 }
 
 export function getSubscriptions(): Promise<SubscriptionEntryComputed[]> {
-  return request(`${BASE}/subscriptions`);
+  return backend.getSubscriptions();
 }
 
 export function addSubscription(edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
-  return request(`${BASE}/subscriptions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.addSubscription(edits);
 }
 
 export function updateSubscription(row: number, edits: SubscriptionEdits): Promise<SubscriptionEntryComputed> {
-  return request(`${BASE}/subscriptions/${row}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(edits),
-  });
+  return backend.updateSubscription(row, edits);
 }
 
 export function deleteSubscription(row: number): Promise<void> {
-  return request(`${BASE}/subscriptions/${row}`, { method: "DELETE" });
+  return backend.deleteSubscription(row);
 }
 
 type UpcomingSource = "EMI" | "Subscription" | "Credit Card" | "Salary";
@@ -446,5 +375,5 @@ export interface DashboardOverview {
 }
 
 export function getOverview(): Promise<DashboardOverview> {
-  return request(`${BASE}/overview`);
+  return backend.getOverview();
 }

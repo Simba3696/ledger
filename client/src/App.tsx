@@ -48,6 +48,20 @@ function TabFallback() {
 
 type Tab = "expenses" | "dashboard" | "finances" | "debts" | "creditCards" | "emi" | "subscriptions";
 
+// GitHub mode only (#7): the open tab and month, kept across the remount a
+// change from another device causes. Read through arguments[0] inside
+// __LEDGER_STORAGE__ === "github" branches, like headerActions, so the
+// default build doesn't change.
+export type LedgerTab = Tab;
+export type LedgerView = { tab: Tab; year: number; month: number };
+export interface LedgerViewSlot {
+  /** The view to open on, read as the Ledger mounts; null for the default. */
+  readonly initial: LedgerView | null;
+  /** An element that keeps `view`, the one on screen, once committed. */
+  report(view: LedgerView): import("react").ReactNode;
+}
+type GithubLedgerProps = { headerActions?: import("react").ReactNode; view?: LedgerViewSlot };
+
 // Every tab after Dashboard, in nav order, with the module (the server's
 // ENABLED_MODULES) that has to be on for it to show. `short` is the label
 // below 600px wide (App.css), where the full labels don't fit on one row.
@@ -78,11 +92,11 @@ function App() {
   return <Ledger key={auth.session.user.id} session={auth.session} />;
 }
 
-function Ledger({ session }: { session: Session }) {
+function Ledger({ session }: { session: Session | null } & GithubLedgerProps) {
   const now = new Date();
-  const [tab, setTab] = useState<Tab>("dashboard");
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1); // 1-12
+  const [tab, setTab] = useState<Tab>(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.tab ?? "dashboard" : "dashboard");
+  const [year, setYear] = useState(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.year ?? now.getFullYear() : now.getFullYear());
+  const [month, setMonth] = useState(__LEDGER_STORAGE__ === "github" ? () => (arguments[0] as GithubLedgerProps).view?.initial?.month ?? now.getMonth() + 1 : now.getMonth() + 1); // 1-12
 
   // Null until GET /api/config answers; nothing module-specific renders or
   // fetches before then, so a disabled module's routes are never called.
@@ -181,7 +195,7 @@ function Ledger({ session }: { session: Session }) {
     }
   }
 
-  if (notAllowed) return <NotAllowed email={session.user.email} />;
+  if (notAllowed) return <NotAllowed email={session!.user.email} />;
 
   return (
     <div className="app">
@@ -195,7 +209,14 @@ function Ledger({ session }: { session: Session }) {
             <MonthYearPicker month={month} year={year} onMonthChange={setMonth} onYearChange={setYear} />
           )}
           <ThemeToggle />
-          <SignOutButton />
+          {__LEDGER_STORAGE__ === "github" ? (
+            <>
+              {(arguments[0] as GithubLedgerProps).headerActions}
+              {(arguments[0] as GithubLedgerProps).view?.report({ tab, year, month })}
+            </>
+          ) : (
+            <SignOutButton />
+          )}
         </div>
       </header>
 
@@ -278,3 +299,4 @@ function Ledger({ session }: { session: Session }) {
 }
 
 export default App;
+export { Ledger };

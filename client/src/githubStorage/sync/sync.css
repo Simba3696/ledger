@@ -1,0 +1,203 @@
+/* GitHub mode's sync UI (#7): the status line, the messages that need the
+   person, and the non-modal review list of notices and changes a restore
+   left behind. The app's own colour and size tokens (index.css), so it
+   follows the light and dark themes. */
+
+.sync-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: var(--font-size-xs);
+  color: var(--text);
+}
+
+.sync-status > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sync-status-pending {
+  color: var(--text-h);
+}
+
+.sync-status-attention {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.sync-status-button {
+  min-height: 32px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-h);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sync-status-review[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.sync-message {
+  margin: 48px auto;
+  max-width: 420px;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--text-h);
+}
+
+.sync-messages {
+  margin: 8px 12px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.sync-message-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--text-h);
+  font-size: var(--font-size-sm);
+}
+
+.sync-message-note {
+  border-color: var(--border);
+}
+
+.sync-review {
+  margin: 4px 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-bg);
+}
+
+/* The review list stays in the page while closed (the toggle's
+   aria-controls names it), so hidden must win over any display rule. */
+.sync-review[hidden] {
+  display: none;
+}
+
+.sync-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.sync-review-item {
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.sync-review-list > .sync-review-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.sync-review-own .sync-review-text {
+  font-weight: 600;
+}
+
+.sync-review-text {
+  margin: 0 0 6px;
+  color: var(--text-h);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.sync-review-note,
+.sync-review-reason,
+.sync-review-done {
+  margin: 0 0 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  /* A value can be one long unbroken string (a remark, a card list): it
+     wraps anywhere rather than widen the page at phone width. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sync-review-done {
+  margin: 4px 12px;
+}
+
+.sync-review-error {
+  margin: 6px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.sync-review-changes {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  font-size: var(--font-size-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sync-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-review-action {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  /* A flex item shrinks below its content only with min-width 0. */
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sync-review button {
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: var(--font-size-control);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  /* A button names the exact values it writes, which can be long. */
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sync-review button.sync-review-primary {
+  border-color: var(--accent);
+}
+
+.sync-review button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sync-review-others {
+  margin-top: 12px;
+}
+
+.sync-review-others > summary {
+  /* A list item still, so the disclosure marker shows. */
+  padding: 10px 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-h);
+  cursor: pointer;
+}

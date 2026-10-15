@@ -21,3 +21,7 @@ supabase/.branches/
 supabase/.temp/
 Ledger.bat
 Ledger.ico
+# The sign-in helper's local secrets (signin-helper/.dev.vars.example) and
+# wrangler's local state.
+signin-helper/.dev.vars
+signin-helper/.wrangler/

@@ -1,6 +1,6 @@
 import { getSql, type Sql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
+import { LedgerError } from "@ledger/shared/errors";
 import { assertMoney, assertText } from "./validate.js";
 import { expenseTotalsForYears } from "./ledger.js";
 import {
@@ -11,18 +11,18 @@ import {
   type MonthFinanceSummary,
   type MonthIncome,
   type SavingsEntry,
-} from "../domain/financeMath.js";
+} from "@ledger/shared/financeMath";
 
 export {
   EARLIEST_YEAR,
   type MonthFinanceSummary,
   type MonthIncome,
-} from "../domain/financeMath.js";
+} from "@ledger/shared/financeMath";
 
-/** The `year` column is int4. The Excel edition had no upper bound; this is
- * only the column's limit, checked here so a huge year gets this store's own
- * "Invalid year" 400 rather than the generic out-of-range database error. */
-const LATEST_YEAR = 2147483647;
+/** Years have four digits: a read walks every month from EARLIEST_YEAR up
+ * to the year asked for, so an unbounded year (the int4 column holds up to
+ * 2147483647) let one request run out of memory (#12). */
+const LATEST_YEAR = 9999;
 
 export interface SetMonthIncomeInput {
   year: number;

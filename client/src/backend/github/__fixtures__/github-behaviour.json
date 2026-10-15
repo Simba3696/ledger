@@ -1,0 +1,933 @@
+{
+  "$comment": "Observed behaviour of the real GitHub REST API (api.github.com, X-GitHub-Api-Version 2022-11-28) for the calls GitHub sync uses. Recorded by probing a private throwaway repo with fictional content. docs/architecture/github-api-behaviour.md explains each fact and what the design does with it. fakeGitHub fidelity tests can assert against this file.",
+  "probedAt": "2026-10-11",
+  "target": {
+    "repo": "Simba3696/ledger-sync-probe",
+    "private": true,
+    "defaultBranch": "main",
+    "client": "gh 2.102.0 `gh api -i` (an OAuth user token with the repo scope; no fine-grained token was available)",
+    "edgeRegion": "centralindia",
+    "calls": {
+      "github": 410,
+      "unauthenticatedCurl": 15
+    }
+  },
+  "emptyRepo": {
+    "$comment": "A repo with no commits. Contents answers 404, every git/* endpoint answers 409.",
+    "responses": [
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/contents/",
+        "status": 404,
+        "message": "This repository is empty.",
+        "documentation_url": "https://docs.github.com/v3/repos/contents/#get-contents",
+        "statusField": "404"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/contents/ledger",
+        "status": 404,
+        "message": "This repository is empty.",
+        "documentation_url": "https://docs.github.com/v3/repos/contents/#get-contents",
+        "statusField": "404"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/contents/ledger?ref=main",
+        "status": 404,
+        "message": "This repository is empty.",
+        "documentation_url": "https://docs.github.com/v3/repos/contents/#get-contents",
+        "statusField": "404"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/git/ref/heads/main",
+        "status": 409,
+        "message": "Git Repository is empty.",
+        "documentation_url": "https://docs.github.com/rest/git/refs#get-a-reference",
+        "statusField": "409"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/git/refs/heads",
+        "status": 409,
+        "message": "Git Repository is empty.",
+        "documentation_url": "https://docs.github.com/rest/git/refs#get-all-references-in-a-namespace",
+        "statusField": "409"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/git/trees/main?recursive=1",
+        "status": 409,
+        "message": "Git Repository is empty.",
+        "documentation_url": "https://docs.github.com/rest/git/trees#get-a-tree",
+        "statusField": "409"
+      },
+      {
+        "method": "GET",
+        "path": "/repos/{o}/{r}/git/blobs/0000000000000000000000000000000000000000",
+        "status": 409,
+        "message": "Git Repository is empty.",
+        "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+        "statusField": "409"
+      }
+    ],
+    "firstPut": {
+      "status": 201,
+      "nestedPathCreated": true,
+      "commitParents": [],
+      "contentShaIsGitBlobSha": true
+    }
+  },
+  "put": {
+    "$comment": "PUT /repos/{o}/{r}/contents/{path} with {message, content (base64), sha?}.",
+    "responseKeys": {
+      "top": [
+        "content",
+        "commit"
+      ],
+      "content": [
+        "name",
+        "path",
+        "sha",
+        "size",
+        "url",
+        "html_url",
+        "git_url",
+        "download_url",
+        "type",
+        "_links"
+      ],
+      "commit": [
+        "sha",
+        "node_id",
+        "url",
+        "html_url",
+        "author",
+        "committer",
+        "tree",
+        "message",
+        "parents",
+        "verification"
+      ]
+    },
+    "commitParentsShape": "array of {sha, url, html_url}; [] for the repo's first commit",
+    "contentShaIsGitBlobSha": true,
+    "cases": [
+      {
+        "name": "create, no sha, path absent",
+        "status": 201
+      },
+      {
+        "name": "create, no sha, path exists",
+        "status": 422,
+        "message": "Invalid request.\n\n\"sha\" wasn't supplied."
+      },
+      {
+        "name": "update, well-formed but wrong sha",
+        "status": 409,
+        "message": "ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc does not match 6abd7d5cdfbf9c44a806872d2e0f200e39cf70c5",
+        "messagePattern": "^<path> does not match <sha>$"
+      },
+      {
+        "name": "update, malformed sha ('abc')",
+        "status": 409,
+        "message": "ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc does not match abc"
+      },
+      {
+        "name": "update, current sha",
+        "status": 200
+      },
+      {
+        "name": "update, current sha, byte-identical content",
+        "status": 200,
+        "newCommit": true,
+        "contentShaUnchanged": true,
+        "treeUnchanged": true
+      },
+      {
+        "name": "resend after the first landed (old sha, same content)",
+        "status": 409,
+        "message": "ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc does not match ec088b2227742ae88776d381ca0204523131ec67"
+      },
+      {
+        "name": "create, path absent, a sha supplied anyway",
+        "status": 201,
+        "note": "the sha is ignored when the path does not exist"
+      },
+      {
+        "name": "content base64 wrapped at 60 chars with \\n",
+        "status": 201,
+        "contentShaIsGitBlobSha": true
+      },
+      {
+        "name": "content not valid base64",
+        "status": 422,
+        "message": "content is not valid Base64"
+      }
+    ],
+    "errorBodyShape": {
+      "keys": [
+        "message",
+        "documentation_url",
+        "status"
+      ],
+      "statusFieldIsString": true
+    }
+  },
+  "concurrency": {
+    "$comment": "PUTs sent at the same moment (within ~30 ms) to the same branch.",
+    "differentPaths2": {
+      "rounds": 10,
+      "puts": 20,
+      "conflicts409": 10
+    },
+    "differentPaths3": {
+      "rounds": 5,
+      "puts": 15,
+      "conflicts409": 9,
+      "roundsWithTwoWinnersChained": 1
+    },
+    "samePath2": {
+      "rounds": 3,
+      "puts": 6,
+      "conflicts409": 3
+    },
+    "branchRaceMessagePattern": "^is at [0-9a-f]{40} but expected [0-9a-f]{40}$",
+    "branchRaceMessageExample": "is at 39ac360463a861ac0f8cdd72ac926cdb8421df29 but expected 69c6fa9755bceac034ac53cb6378e3d42281501a",
+    "branchRaceMeaning": "'is at <new head> but expected <head the request started from>': the branch ref compare-and-swap lost. The file's own sha may still be current.",
+    "staleFileShaMessagePattern": "^<path> does not match <sha>$",
+    "winnerParent": "a winner's commit.parents[0].sha is the head it was applied on; when two PUTs both succeed, the later one's parent is the earlier one's commit"
+  },
+  "contents": {
+    "file": {
+      "keys": [
+        "name",
+        "path",
+        "sha",
+        "size",
+        "url",
+        "html_url",
+        "git_url",
+        "download_url",
+        "type",
+        "content",
+        "encoding",
+        "_links"
+      ],
+      "etag": "strong, the quoted blob sha",
+      "etagExample": "\"2eb7d8617bb4d0a2891ae0325ed3659a575bb11e\"",
+      "cacheControl": "private, max-age=60, s-maxage=60",
+      "base64": {
+        "lineLength": 60,
+        "newlines": true,
+        "trailingNewline": true
+      },
+      "refCommitShaReturnsHistoricVersion": true
+    },
+    "inline": {
+      "$comment": "GET contents (JSON or application/vnd.github.object) inlines content only below 1 MiB.",
+      "inlineIffSizeBelow": 1048576,
+      "aboveLimit": {
+        "encoding": "none",
+        "content": ""
+      },
+      "observed": [
+        {
+          "bytes": 1000000,
+          "encoding": "base64",
+          "contentLength": 1355559,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        },
+        {
+          "bytes": 1000001,
+          "encoding": "base64",
+          "contentLength": 1355559,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        },
+        {
+          "bytes": 1048575,
+          "encoding": "base64",
+          "contentLength": 1421402,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        },
+        {
+          "bytes": 1048576,
+          "encoding": "none",
+          "contentLength": 0,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        },
+        {
+          "bytes": 1048577,
+          "encoding": "none",
+          "contentLength": 0,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        },
+        {
+          "bytes": 1500000,
+          "encoding": "none",
+          "contentLength": 0,
+          "rawOk": true,
+          "blobJsonOk": true,
+          "blobRawOk": true
+        }
+      ]
+    },
+    "raw": {
+      "accepts": [
+        "application/vnd.github.raw",
+        "application/vnd.github.raw+json"
+      ],
+      "contentType": {
+        "application/vnd.github.raw": "application/vnd.github.raw; charset=utf-8",
+        "application/vnd.github.raw+json": "application/vnd.github.raw+json; charset=utf-8"
+      },
+      "worksAbove1MiB": true
+    },
+    "listing": {
+      "keys": [
+        "name",
+        "path",
+        "sha",
+        "size",
+        "url",
+        "html_url",
+        "git_url",
+        "download_url",
+        "type",
+        "_links"
+      ],
+      "order": "ascending by name (byte order)",
+      "etag": "strong, the quoted ROOT tree sha of the commit (changes when anything in the repo changes)",
+      "etagExample": "\"f076b491681da2c2542eab978d368281fe2bc767\"",
+      "cacheControl": "private, max-age=60, s-maxage=60",
+      "refCommitShaWorks": true,
+      "refUnreferencedCommitWorks": true,
+      "refOldCommitReturnsHistoricListing": true,
+      "trailingSlashSame": true,
+      "bytesPerEntry": 1263,
+      "cap": {
+        "entriesInDir": 1005,
+        "returned": 1000,
+        "silent": true,
+        "linkHeader": null,
+        "keepsFirstByName": true,
+        "perPageAndPageIgnored": true
+      }
+    }
+  },
+  "trees": {
+    "keys": [
+      "sha",
+      "url",
+      "tree",
+      "truncated"
+    ],
+    "entryKeys": {
+      "blob": [
+        "path",
+        "mode",
+        "type",
+        "sha",
+        "size",
+        "url"
+      ],
+      "tree": [
+        "path",
+        "mode",
+        "type",
+        "sha",
+        "url"
+      ]
+    },
+    "acceptsCommitSha": true,
+    "acceptsBranchName": true,
+    "acceptsCommitColonPath": true,
+    "cacheControl": {
+      "byTreeOrCommitSha": "private, max-age=86400, s-maxage=86400",
+      "byBranch": "private, max-age=60, s-maxage=60",
+      "byCommitColonPath": "private, max-age=60, s-maxage=60"
+    },
+    "dirOf1005": {
+      "entries": 1005,
+      "truncated": false,
+      "sortedByName": true,
+      "everyBlobHasSize": true,
+      "bytesPerEntry": 258
+    },
+    "recursiveOf1018": {
+      "entries": 1018,
+      "truncated": false
+    },
+    "documentedLimits": "100,000 entries or 7 MB per recursive response, flagged by truncated: true (not reached in the probe)"
+  },
+  "blobs": {
+    "jsonKeys": [
+      "sha",
+      "node_id",
+      "size",
+      "url",
+      "content",
+      "encoding"
+    ],
+    "base64": {
+      "lineLength": 60,
+      "trailingNewline": true
+    },
+    "rawContentType": "text/plain; charset=utf-8",
+    "malformedSha": {
+      "status": 422,
+      "message": "The sha parameter must be exactly 40 characters and contain only [0-9a-f]."
+    },
+    "rawPlusJsonContentType": "text/plain; charset=utf-8",
+    "etag": "weak, and different per Accept header",
+    "cacheControl": "private, max-age=86400, s-maxage=86400",
+    "supersededBlobStillReadable": true,
+    "worksAbove1MiB": true
+  },
+  "ref": {
+    "path": "/repos/{o}/{r}/git/ref/heads/{branch}",
+    "body": {
+      "ref": "refs/heads/main",
+      "node_id": "REF_kwDOVEcgq69yZWZzL2hlYWRzL21haW4",
+      "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/refs/heads/main",
+      "object": {
+        "sha": "de546fc37ce5acefecf73e73d7c7fc98c049a43c",
+        "type": "commit",
+        "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/commits/de546fc37ce5acefecf73e73d7c7fc98c049a43c"
+      }
+    },
+    "etag": "weak W/\"<64 hex>\"; differs per Accept header",
+    "etagByAccept": {
+      "json": "W/\"10b0cb63564fbc2302746e446b8975de0471ece7bd958db1d5e3953376516ad1\"",
+      "vnd": "W/\"0ed36d213209a1aefb80748553931aab649679ef70ff25aa649c6606ddc1e303\"",
+      "vndVersion": "W/\"0ed36d213209a1aefb80748553931aab649679ef70ff25aa649c6606ddc1e303\""
+    },
+    "cacheControl": "private, max-age=60, s-maxage=60",
+    "pluralRefsDoesPrefixMatch": {
+      "path": "/repos/{o}/{r}/git/refs/heads/mai",
+      "status": 200,
+      "returnsArray": true
+    }
+  },
+  "conditional": {
+    "$comment": "If-None-Match with the ETag from the previous 200, same Accept header.",
+    "series": {
+      "ref": {
+        "path": "git/ref/heads/main",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          49,
+          49,
+          49,
+          49,
+          49
+        ],
+        "usedBefore": 49,
+        "usedAfterNext200": 50
+      },
+      "ref2": {
+        "path": "git/ref/heads/main",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          51,
+          51,
+          51,
+          51,
+          51
+        ],
+        "usedBefore": 51,
+        "usedAfterNext200": 52
+      },
+      "listing": {
+        "path": "contents/ledger",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          53,
+          53,
+          53,
+          53,
+          53
+        ],
+        "usedBefore": 53,
+        "usedAfterNext200": 54
+      },
+      "listingByCommit": {
+        "path": "contents/ledger?ref=de546fc37ce5acefecf73e73d7c7fc98c049a43c",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          55,
+          55,
+          55,
+          55,
+          55
+        ],
+        "usedBefore": 55,
+        "usedAfterNext200": 56
+      },
+      "treeByCommit": {
+        "path": "git/trees/de546fc37ce5acefecf73e73d7c7fc98c049a43c?recursive=1",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          57,
+          57,
+          57,
+          57,
+          57
+        ],
+        "usedBefore": 57,
+        "usedAfterNext200": 58
+      },
+      "blobRaw": {
+        "path": "git/blobs/2eb7d8617bb4d0a2891ae0325ed3659a575bb11e",
+        "statuses": [
+          304,
+          304,
+          304,
+          304,
+          304
+        ],
+        "usedOn304s": [
+          59,
+          59,
+          59,
+          59,
+          59
+        ],
+        "usedBefore": 59,
+        "usedAfterNext200": 60
+      }
+    },
+    "countsAgainstRateLimit": false,
+    "etagOn304": "strong form (no W/ prefix) of the same value",
+    "weakSentAsStrong": 304,
+    "mismatched": 200,
+    "star": 304,
+    "response304": {
+      "body": "",
+      "hasRateLimitHeaders": true,
+      "accessControlAllowOrigin": "*",
+      "exposesETag": true
+    }
+  },
+  "readAfterWrite": {
+    "$comment": "One PUT, then all eight reads at once, 20 times. Each read went out within ~0.1 s of the PUT response, plus gh start-up (a few hundred ms).",
+    "iterations": 20,
+    "summary": {
+      "ref": {
+        "fresh": 20,
+        "of": 20
+      },
+      "refInm": {
+        "fresh": 20,
+        "of": 20
+      },
+      "list": {
+        "fresh": 20,
+        "of": 20
+      },
+      "listInm": {
+        "fresh": 20,
+        "of": 20
+      },
+      "listAtCommit": {
+        "fresh": 20,
+        "of": 20
+      },
+      "file": {
+        "fresh": 20,
+        "of": 20
+      },
+      "tree": {
+        "fresh": 20,
+        "of": 20
+      },
+      "blob": {
+        "ok": 20,
+        "of": 20
+      }
+    },
+    "staleReadsObserved": 0,
+    "putMsMedian": 1491
+  },
+  "rateLimit": {
+    "headersOnEveryAuthenticatedResponse": [
+      "x-ratelimit-limit",
+      "x-ratelimit-remaining",
+      "x-ratelimit-used",
+      "x-ratelimit-reset",
+      "x-ratelimit-resource"
+    ],
+    "limit": 5000,
+    "resource": "core",
+    "readsAndWritesReportSeparateCounters": true,
+    "counters": {
+      "PUT/POST": {
+        "calls": 80,
+        "firstUsed": 1,
+        "lastUsed": 80,
+        "reset": "1791698856"
+      },
+      "GET": {
+        "calls": 328,
+        "firstUsed": 7,
+        "lastUsed": 303,
+        "reset": "1791698255"
+      }
+    },
+    "errorsCount": true,
+    "notModifiedCounts": false,
+    "rateLimitEndpointMatchesHeaders": false,
+    "rateLimitEndpointObserved": {
+      "limit": 5000,
+      "used": 0,
+      "remaining": 5000,
+      "reset": 1791698858
+    },
+    "secondaryLimitHit": false,
+    "unauthenticatedLimit": 60
+  },
+  "cors": {
+    "preflight": {
+      "origin": "https://someone.github.io",
+      "status": 204,
+      "allowOrigin": "*",
+      "allowMethods": [
+        "GET",
+        "POST",
+        "PATCH",
+        "PUT",
+        "DELETE"
+      ],
+      "allowHeaders": [
+        "Authorization",
+        "Content-Type",
+        "If-Match",
+        "If-Modified-Since",
+        "If-None-Match",
+        "If-Unmodified-Since",
+        "Accept-Encoding",
+        "X-GitHub-OTP",
+        "X-Requested-With",
+        "User-Agent",
+        "GraphQL-Features",
+        "X-Github-Next-Global-ID",
+        "X-GitHub-Api-Version",
+        "X-Fetch-Nonce",
+        "Copilot-Integration-Id",
+        "DD-CLIENT-TOKEN",
+        "X-Client-Application"
+      ],
+      "exposeHeaders": [
+        "ETag",
+        "Link",
+        "Location",
+        "Retry-After",
+        "X-GitHub-OTP",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Used",
+        "X-RateLimit-Resource",
+        "X-RateLimit-Reset",
+        "X-OAuth-Scopes",
+        "X-Accepted-OAuth-Scopes",
+        "X-Poll-Interval",
+        "X-GitHub-Media-Type",
+        "X-GitHub-SSO",
+        "X-GitHub-Request-Id",
+        "X-GitHub-Edge-Region",
+        "Deprecation",
+        "Sunset"
+      ],
+      "maxAge": 86400,
+      "sameForEveryPathAndMethod": true,
+      "notAllowedRequestHeaders": [
+        "Cache-Control",
+        "Pragma"
+      ]
+    },
+    "responses": {
+      "allowOrigin": "*",
+      "allowCredentials": null,
+      "exposeHeaders": [
+        "ETag",
+        "Link",
+        "Location",
+        "Retry-After",
+        "X-GitHub-OTP",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Used",
+        "X-RateLimit-Resource",
+        "X-RateLimit-Reset",
+        "X-OAuth-Scopes",
+        "X-Accepted-OAuth-Scopes",
+        "X-Poll-Interval",
+        "X-GitHub-Media-Type",
+        "X-GitHub-SSO",
+        "X-GitHub-Request-Id",
+        "Deprecation",
+        "Sunset",
+        "Warning"
+      ],
+      "onStatuses": [
+        200,
+        201,
+        304,
+        401,
+        404,
+        409,
+        422
+      ],
+      "everyRecordedResponseHadIt": true
+    }
+  },
+  "errors": [
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/contents/ledger/nope.enc",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/repos/contents#get-repository-content",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/contents/nodir",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/repos/contents#get-repository-content",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/contents/ledger?ref=nobranch",
+      "status": 404,
+      "message": "No commit found for the ref nobranch",
+      "documentation_url": "https://docs.github.com/v3/repos/contents/",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/contents/ledger?ref=0000000000000000000000000000000000000000",
+      "status": 404,
+      "message": "No commit found for the ref 0000000000000000000000000000000000000000",
+      "documentation_url": "https://docs.github.com/v3/repos/contents/",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/ref/heads/nobranch",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/refs#get-a-reference",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/blobs/0000000000000000000000000000000000000000",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/blobs/xyz",
+      "status": 422,
+      "message": "The sha parameter must be exactly 40 characters and contain only [0-9a-f].",
+      "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+      "statusField": "422"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/blobs/{a tree sha}",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/blobs#get-a-blob",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/trees/0000000000000000000000000000000000000000",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/trees#get-a-tree",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{r}/git/commits/0000000000000000000000000000000000000000",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/commits#get-a-commit-object",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{missing-repo}",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+      "statusField": "404"
+    },
+    {
+      "method": "GET",
+      "path": "/user (token 'github_pat_FICTIONAL…')",
+      "status": 401,
+      "message": "Bad credentials",
+      "documentation_url": "https://docs.github.com/rest",
+      "statusField": "401"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/{o}/{private r}/git/ref/heads/main (no Authorization)",
+      "status": 404,
+      "message": "Not Found",
+      "documentation_url": "https://docs.github.com/rest/git/refs#get-a-reference",
+      "statusField": "404"
+    }
+  ],
+  "samples": {
+    "putCreated": {
+      "content": {
+        "name": "e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc",
+        "path": "ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc",
+        "sha": "ec088b2227742ae88776d381ca0204523131ec67",
+        "size": 809,
+        "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/contents/ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc?ref=main",
+        "html_url": "https://github.com/Simba3696/ledger-sync-probe/blob/main/ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc",
+        "git_url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/ec088b2227742ae88776d381ca0204523131ec67",
+        "download_url": "https://raw.githubusercontent.com/Simba3696/ledger-sync-probe/main/ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc?token=REDACTED",
+        "type": "file",
+        "_links": {
+          "self": "https://api.github.com/repos/Simba3696/ledger-sync-probe/contents/ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc?ref=main",
+          "git": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/ec088b2227742ae88776d381ca0204523131ec67",
+          "html": "https://github.com/Simba3696/ledger-sync-probe/blob/main/ledger/e000001-9c1f22aa.d7c41e0a95b2d4f1.log.enc"
+        }
+      },
+      "commit": {
+        "sha": "e39858dc2c99ee42149df5527af5f3c6c1486a71",
+        "node_id": "C_kwDOVEcgq9oAKGUzOTg1OGRjMmM5OWVlNDIxNDlkZjU1MjdhZjVmM2M2YzE0ODZhNzE",
+        "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/commits/e39858dc2c99ee42149df5527af5f3c6c1486a71",
+        "html_url": "https://github.com/Simba3696/ledger-sync-probe/commit/e39858dc2c99ee42149df5527af5f3c6c1486a71",
+        "author": {
+          "name": "Alex Example",
+          "email": "alex@example.com",
+          "date": "2026-10-11T05:08:25Z"
+        },
+        "committer": {
+          "name": "Alex Example",
+          "email": "alex@example.com",
+          "date": "2026-10-11T05:08:25Z"
+        },
+        "tree": {
+          "sha": "30cee4e4798ab9974fc18915262a3bc0db6fb20e",
+          "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/trees/30cee4e4798ab9974fc18915262a3bc0db6fb20e"
+        },
+        "message": "Sync d7c41e0a",
+        "parents": [
+          {
+            "sha": "4782e9da5bd5bf416587d03798aa2d64688eb4ec",
+            "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/commits/4782e9da5bd5bf416587d03798aa2d64688eb4ec",
+            "html_url": "https://github.com/Simba3696/ledger-sync-probe/commit/4782e9da5bd5bf416587d03798aa2d64688eb4ec"
+          }
+        ],
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      }
+    },
+    "listingEntry": {
+      "name": "e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc",
+      "path": "ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc",
+      "sha": "bf3b3f8ee33cce9327711fd089203d741ab175e2",
+      "size": 546,
+      "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/contents/ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc?ref=main",
+      "html_url": "https://github.com/Simba3696/ledger-sync-probe/blob/main/ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc",
+      "git_url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/bf3b3f8ee33cce9327711fd089203d741ab175e2",
+      "download_url": "https://raw.githubusercontent.com/Simba3696/ledger-sync-probe/main/ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc?token=REDACTED",
+      "type": "file",
+      "_links": {
+        "self": "https://api.github.com/repos/Simba3696/ledger-sync-probe/contents/ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc?ref=main",
+        "git": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/bf3b3f8ee33cce9327711fd089203d741ab175e2",
+        "html": "https://github.com/Simba3696/ledger-sync-probe/blob/main/ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc"
+      }
+    },
+    "treeBlobEntry": {
+      "path": "ledger/e000001-9c1f22aa.d03ab9e2c1f4a702.log.enc",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bf3b3f8ee33cce9327711fd089203d741ab175e2",
+      "size": 546,
+      "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/bf3b3f8ee33cce9327711fd089203d741ab175e2"
+    },
+    "blobJson": {
+      "sha": "2eb7d8617bb4d0a2891ae0325ed3659a575bb11e",
+      "node_id": "B_kwDOVEcgq9oAKDJlYjdkODYxN2JiNGQwYTI4OTFhZTAzMjVlZDM2NTlhNTc1YmIxMWU",
+      "size": 809,
+      "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/blobs/2eb7d8617bb4d0a2891ae0325ed3659a575bb11e",
+      "content": "eyJ2IjoxLCJrZGYiOiJQQktERjItU0hBMjU2IiwiaXRlciI6NjAwMDAwLCJz\nYWx0IjoiWm1samRHbHZibUZzTFhOaGJIUT0iLCJpdiI6Iktrb2FDYjBSS0to\n…",
+      "encoding": "base64"
+    },
+    "commit": {
+      "sha": "de546fc37ce5acefecf73e73d7c7fc98c049a43c",
+      "tree": {
+        "sha": "f076b491681da2c2542eab978d368281fe2bc767",
+        "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/trees/f076b491681da2c2542eab978d368281fe2bc767"
+      },
+      "parents": [
+        {
+          "sha": "959593e4930eb73b1a5f55f26b06012d9ddf1d02",
+          "url": "https://api.github.com/repos/Simba3696/ledger-sync-probe/git/commits/959593e4930eb73b1a5f55f26b06012d9ddf1d02",
+          "html_url": "https://github.com/Simba3696/ledger-sync-probe/commit/959593e4930eb73b1a5f55f26b06012d9ddf1d02"
+        }
+      ],
+      "message": "Sync d03ab9e2"
+    }
+  }
+}

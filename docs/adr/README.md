@@ -10,3 +10,6 @@ One short file per significant decision, numbered in order. Records are never re
 | [0004](0004-express-as-single-netlify-function.md) | Keep Express, deploy as one Netlify Function with server-side SQL | Accepted |
 | [0005](0005-explicit-app-timezone.md) | Compute "today" in an explicit application timezone | Accepted |
 | [0006](0006-enabled-modules-per-deployment.md) | Choose a deployment's sections with `ENABLED_MODULES` | Accepted |
+| [0007](0007-serverless-github-storage-mode.md) | Add a serverless GitHub storage mode, built separately | Accepted |
+| [0008](0008-sync-github-storage-with-per-device-op-logs.md) | Sync GitHub storage through per-device op logs joined into registers | Accepted (amends 0007) |
+| [0009](0009-github-signin-helper.md) | Offer Sign in with GitHub through one optional, stateless helper | Accepted (adds to 0007) |

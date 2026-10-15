@@ -3,21 +3,27 @@
   "private": true,
   "workspaces": [
     "server",
-    "client"
+    "client",
+    "shared",
+    "signin-helper"
   ],
   "scripts": {
     "predev": "node scripts/kill-ports.js",
     "dev": "concurrently -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "stop": "node scripts/kill-ports.js",
     "test": "npm run test -w server",
+    "test:client": "npm run test -w client",
+    "test:helper": "npm run test -w signin-helper",
     "test:e2e": "tsx e2e/regression.ts && tsx e2e/expensesOnly.ts",
+    "test:e2e:github": "tsx e2e/githubStorage.ts && tsx e2e/githubSignIn.ts",
     "screenshots": "tsx e2e/screenshots.ts",
     "import-xlsx": "tsx scripts/import-xlsx.ts",
     "build": "npm run build -w client && npm run build -w server",
     "prestart": "node scripts/kill-ports.js",
     "start": "npm run build && npm run start -w server",
-    "lint": "npm run lint -w client && npm run lint -w server",
-    "knip": "knip"
+    "lint": "npm run lint -w client && npm run lint -w server && npm run lint -w shared && npm run lint -w signin-helper",
+    "knip": "knip",
+    "check:isolation": "node scripts/check-storage-isolation.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

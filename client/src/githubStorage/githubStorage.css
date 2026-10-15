@@ -1,0 +1,189 @@
+/* GitHub mode's onboarding screens (#8), on top of the sign-in card
+   (.auth-card, SignIn.css) and the app's buttons (shared.css). In the
+   GitHub chunk's own CSS file, so the Supabase build never loads it. */
+
+.gh-card {
+  /* Room for a walkthrough's list; still one column on a phone. */
+  max-width: 480px;
+  margin: 4vh auto 24px;
+}
+
+/* Each screen moves focus to its heading so a screen reader announces the
+   step. The heading is not a control, so it gets no ring: Chrome would
+   draw one on every page load, where the focus is the page's own. */
+.gh-card h2:focus {
+  outline: none;
+}
+
+.gh-card ol,
+.gh-card ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gh-step-count {
+  font-size: var(--font-size-xs);
+  color: var(--text);
+  margin: 0;
+}
+
+.gh-link {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+}
+
+.gh-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gh-choices .submit-btn {
+  align-self: stretch;
+  text-align: left;
+}
+
+.gh-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gh-secondary {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-h);
+  font-size: var(--font-size-control);
+  cursor: pointer;
+}
+
+.gh-card select {
+  font-size: var(--font-size-base);
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  max-width: 100%;
+}
+
+/* Checkboxes sit beside their words, not above them. */
+.gh-card label.gh-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  font-weight: 400;
+}
+
+.gh-card label.gh-check input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.gh-card fieldset.gh-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.gh-card details summary {
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.gh-card details[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gh-note {
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+
+/* A long org or repo name, or a token pasted into a message, never makes
+   the page scroll sideways at 360px. */
+.gh-card,
+.gh-card p,
+.gh-card li {
+  overflow-wrap: anywhere;
+}
+
+/* Settings (#8). */
+.gh-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.gh-settings-section h3 {
+  margin: 0;
+  font-size: var(--font-size-base);
+}
+
+.gh-warning {
+  font-size: var(--font-size-sm);
+  color: var(--danger);
+}
+
+.gh-invite {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--font-size-xs);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.gh-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  align-self: flex-start;
+}
+
+.gh-settings-section .gh-secondary {
+  align-self: flex-start;
+}
+
+/* The way on when this device's ledger version is gone (#8, D34, D35). */
+.gh-epoch-gone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Sign in with GitHub (#10): the button above the token paste, and the
+   install prompt when the App can't reach the repository yet. */
+.gh-signin,
+.gh-install {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gh-install {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.gh-or {
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  margin: 4px 0;
+}

@@ -1,12 +1,12 @@
 import { getSql } from "../db/client.js";
-import { DEFAULT_CATEGORIES, deriveForegroundColor, type CategoryConfig } from "../domain/categoryColors.js";
+import { DEFAULT_CATEGORIES, deriveForegroundColor, type CategoryConfig } from "@ledger/shared/categoryColors";
 
 export {
   DEFAULT_CATEGORIES,
   deriveForegroundColor,
   type Category,
   type CategoryConfig,
-} from "../domain/categoryColors.js";
+} from "@ledger/shared/categoryColors";
 
 interface CategoryRow {
   id: string;

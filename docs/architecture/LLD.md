@@ -5,8 +5,24 @@
 ## 1. Repository layout
 
 ```
-client/                      React app (the Excel edition's, plus auth and api.ts's bearer header)
+client/                      React app (the Excel edition's, plus auth and the API bearer header)
+  src/api.ts                 every data call, typed; one-line delegates to a LedgerBackend
   src/auth/                  Supabase client, <SignIn/>, session hook
+  src/backend/               LedgerBackend.ts (one method per api.ts export), HttpBackend.ts (httpBackend:
+                             the REST API, request() and its bearer header), ApiError.ts
+  src/backend/crypto.ts      GitHub storage mode's file format: gzip + AES-GCM-256 (header line as AAD),
+                             key from PBKDF2-SHA256; base64.ts beside it. No DOM, so Node can import it
+  src/backend/github/        GitHub storage mode (ADR-0007); index.ts's startGithubStorage is the
+                             one entry, reached only by main.tsx's dynamic import() in --mode github.
+                             contents.ts: GitHub contents API client (sha writes, typed errors);
+                             deviceStore.ts: the one store for the key and connection (IndexedDB
+                             ledger:github); fakeGitHub.ts: in-memory GitHub API for tests
+  src/backend/document/      DocumentBackend (GitHub storage mode's LedgerBackend, over an in-memory
+                             LedgerDocument and a host that persists it): types.ts, createDocument.ts,
+                             coerce.ts (the wire + routes.ts coercions), validate.ts (the store's checks,
+                             ported), operations.ts (the store's logic), sortKey.ts, handles.ts
+  src/githubStorage/         reserved for GitHub-mode-only UI
+  dist-pages/                output of `npm run build:pages -w client` (--mode github); gitignored
 server/
   src/
     app.ts                   createApp({ basePath }): request log, auth, module gate, JSON body, router, error handler
@@ -22,12 +38,19 @@ server/
       categories.ts  ledger.ts  finances.ts  debts.ts  emi.ts
       subscriptions.ts  creditCardBills.ts  overview.ts
       validate.ts            shared input checks (assertText, assertMoney, isRealDate, isPossibleId)
-    domain/                  pure calculations, no I/O (moved verbatim from the Excel edition's excel/*)
-      dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
-      today.ts               "today" in APP_TIMEZONE
-    errors.ts                LedgerError
+    today.ts                 appToday(): "today" in APP_TIMEZONE (DEFAULT_TIMEZONE when unset)
     dbErrors.ts              SQLSTATE → 400/409 mapping (§11)
-  test/                      vitest, against the local Supabase Postgres (api.test.ts: supertest on createApp)
+  test/                      vitest, against the local Supabase Postgres (api.test.ts: supertest on createApp);
+                             also runs shared/'s unit tests
+    parity/                  the backend parity suite (§10): each store case against the SQL store
+                             (over HTTP) and DocumentBackend; its own bundler tsconfig
+shared/                      @ledger/shared workspace: exports its .ts source, no build step; browser-safe
+  src/                       pure calculations, no I/O (moved verbatim from the Excel edition's excel/*)
+    dateMath.ts  emiMath.ts  subscriptionMath.ts  financeMath.ts  creditCardMath.ts  categoryColors.ts
+    today.ts                 todayInAppZone(now, timeZone): "today" in an explicit zone
+    errors.ts                LedgerError
+    money.ts                 decimal-string money for GitHub storage mode (numeric(14,2) rounding)
+  tsconfig.json              browser-safety typecheck (no DOM, no Node types), run under both TypeScripts
 netlify/
   functions/api.ts           serverless-http(createApp(...))
   tsconfig.json              typecheck-only (Bundler resolution, like Netlify's esbuild)
@@ -40,10 +63,13 @@ scripts/
   legacy-excel/              the old Excel readers, kept only for the importer, and
                              importer.ts (the import itself); typecheck-only
                              tsconfig.json; exceljs is a root devDependency
+  check-storage-isolation.mjs  npm run check:isolation: the default build has no GitHub-mode
+                             code, the Pages build has it behind the dynamic import (ADR-0007)
+.github/workflows/pages.yml  builds both clients, runs check:isolation, deploys dist-pages to Pages
 netlify.toml
 ```
 
-The rule the port followed, and new store code keeps: **store modules kept the Excel modules' exported names and return shapes**, so `routes.ts`, `overview.ts` and the client didn't change. Code that only computes moved into `domain/` untouched.
+The rule the port followed, and new store code keeps: **store modules kept the Excel modules' exported names and return shapes**, so `routes.ts`, `overview.ts` and the client didn't change. Code that only computes moved into `domain/` untouched (since moved again, to `shared/src/`, so the browser can run it too).
 
 ## 2. Data model
 
@@ -186,7 +212,7 @@ alter default privileges in schema public revoke all on tables from anon, authen
 
 ## 3. Domain layer (unchanged behaviour)
 
-These pure functions moved from the Excel edition's `excel/*` to `domain/*` with no logic changes:
+These pure functions moved from the Excel edition's `excel/*` to `domain/*` with no logic changes, and from there to `shared/src/*` (the `@ledger/shared` workspace, which the server imports by package name: `@ledger/shared/emiMath`). `shared/src/errors.ts` holds `LedgerError`. Nothing under `shared/src` may use `process`, Node modules or the DOM; `shared/tsconfig.json` enforces that.
 
 - `dateMath.ts`: `daysInMonth`, `clampDay`, `makeDate`, `addMonths`, `addYears`, `formatDate`, `parseDate`, `startOfDay`
 - `emiMath.ts`: `withComputed`, `countDueDatesPassed`, `nextDueDateAfter`, `dueDateOnOrAfter`, `nthFutureDueDate`, `computeOutstandingPrincipal`, `computeForeclosurePayoff`, plus the projection simulation behind `emiMonthlyProjection`, `resolveUntilTarget`, `settleEmiPayment` (the recordEmiPayment rule), `projectEmiMonthly`, `round2`
@@ -195,17 +221,24 @@ These pure functions moved from the Excel edition's `excel/*` to `domain/*` with
 - `creditCardMath.ts`: `summarize` (per-month due/paid/outstanding totals)
 - `categoryColors.ts`: `deriveForegroundColor`, `DEFAULT_CATEGORIES` (seed data)
 
-`today.ts` replaces every bare `new Date()` used as "today" ([ADR-0005](../adr/0005-explicit-app-timezone.md)):
+"Today" replaces every bare `new Date()` used as "today" ([ADR-0005](../adr/0005-explicit-app-timezone.md)). The shared function takes the zone explicitly; the server's `server/src/today.ts` supplies `APP_TIMEZONE`:
 
 ```ts
-export function todayInAppZone(now = new Date(), tz = process.env.APP_TIMEZONE || "Asia/Kolkata"): Date {
-  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" })
-    .format(now).split("-").map(Number);
-  return new Date(y, m - 1, d); // local-midnight Date for that calendar day, matching dateMath's conventions
+// shared/src/today.ts: both arguments required, no default zone
+export function todayInAppZone(now: Date, timeZone: string): Date {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  return new Date(get("year"), get("month") - 1, get("day")); // local-midnight Date for that calendar day, matching dateMath's conventions
+}
+
+// server/src/today.ts
+export const DEFAULT_TIMEZONE = "Asia/Kolkata";
+export function appToday(now: Date = new Date()): Date {
+  return todayInAppZone(now, process.env.APP_TIMEZONE || DEFAULT_TIMEZONE);
 }
 ```
 
-Functions that already accept an injectable `today` parameter keep it, so tests stay deterministic.
+The store functions default their `today` parameter to `appToday()`, so tests can inject a fixed day. The shared domain functions (`emiMath`'s `withComputed` and `projectEmiMonthly`, `subscriptionMath`'s `withComputed`) take `today` as a required argument, so shared code never falls back to a server-only zone.
 
 ## 4. Data access
 
@@ -310,7 +343,7 @@ Errors: `LedgerError(message, status)` → `{ error: message }` with that status
 **Client (`client/src/auth/`):** `@supabase/supabase-js`, created from `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (`supabase.ts`), is used for Auth only: email + password sign-in, keeping the session in localStorage and refreshing its access token. Data never goes through it. If either variable is missing from the build, the sign-in screen says so instead of the page failing to load.
 - `useSession()` (`session.ts`) follows `onAuthStateChange` (the stored session first, then every sign-in, refresh and sign-out). `App` renders nothing but `<SignIn/>` until a session exists, then the app itself, keyed on the user id so signing out and back in starts it fresh. Config and categories load after sign-in as before, under the same loading overlay.
 - `<SignIn/>` (`SignIn.tsx`): email and password only. There's no sign-up or magic-link UI, since sign-ups are disabled and the one account is created by the owner. A failed sign-in shows Supabase's message (e.g. "Invalid login credentials"), and the form is disabled while a sign-in is in flight. It shares the app's header (logo and theme toggle, which also applies the saved theme) and the add-forms' card and input styles.
-- `api.ts`'s shared `request()` reads the current session on every call (`supabase.auth.getSession()`, which hands back a refreshed token near expiry) rather than caching a token, and adds `Authorization: Bearer <access_token>`. If that refresh fails (Auth unreachable, a 5xx), supabase-js keeps the stored session but returns none; the call then fails with a "try again" error instead of going out without a token, so a network blip doesn't earn a 401 and sign the owner out. A non-2xx response is thrown as an `ApiError` carrying its `status`.
+- `api.ts` delegates every call to a `LedgerBackend`. In this build that is `httpBackend` (`client/src/backend/HttpBackend.ts`), whose shared `request()` is the client's only `fetch` and reads the current session on every call (`supabase.auth.getSession()`, which hands back a refreshed token near expiry) rather than caching a token, and adds `Authorization: Bearer <access_token>`. If that refresh fails (Auth unreachable, a 5xx), supabase-js keeps the stored session but returns none; the call then fails with a "try again" error instead of going out without a token, so a network blip doesn't earn a 401 and sign the owner out. A non-2xx response is thrown as an `ApiError` carrying its `status`.
 - A **401** signs out locally (`signOut({ scope: "local" })`: the API already refused the session, so there's nothing to revoke) and returns to `<SignIn/>` with the server's message ("Your session has expired. Sign in again.") as a notice. Requests in flight together can each get the 401; only the first notice is kept.
 - A **403** from the auth check (signed in, but not `OWNER_EMAIL`) is recognised on `GET /api/config`, the first request after sign-in. Every route answers a non-owner the same way, and a 403 can't mean "not the owner" everywhere because a locked month's write is also a 403 (§11). `App` then shows "This account is not allowed on this deployment." with the signed-in email and a Sign out button, instead of the app.
 - The header has a small icon **Sign out** button next to the theme toggle (local scope: other devices stay signed in). Below 500px wide the month picker moves to its own row under the logo, so both controls stay on screen.
@@ -399,6 +432,10 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | `APP_TIMEZONE` | server, function | IANA zone for "today" (default `Asia/Kolkata`) |
 | `AUTH_DISABLED` | local only | `true` skips JWT checks; refused under `NODE_ENV=production`, `NETLIFY`, `AWS_LAMBDA_FUNCTION_NAME` or `LAMBDA_TASK_ROOT`. `npm run dev` and e2e don't use it (they sign in as the seeded owner), and e2e refuses to run with it set |
 | `ENABLED_MODULES` | server, function | Comma-separated sections to serve: `expenses`, `finances`, `debts`, `emi`, `credit-cards`, `subscriptions`. Unset or blank = all. Unknown names fail at startup (§5.1, [ADR-0006](../adr/0006-enabled-modules-per-deployment.md)) |
+| `VITE_DEFAULT_MODULES` | client (build time), GitHub storage build only | The sections a new ledger starts with ticked on the Create screen (#8), with `ENABLED_MODULES`'s rules: unset or blank = all; an unknown name shows a "misconfigured" screen instead of onboarding. Read only in `client/src/githubStorage/defaults.ts`; the Supabase build ignores it |
+| `VITE_GITHUB_APP_CLIENT_ID` | client (build time, `--mode github` only) | The GitHub App's client ID for "Sign in with GitHub" (#10, [ADR-0009](../adr/0009-github-signin-helper.md)). Public. The button shows only when all three `VITE_GITHUB_*` sign-in settings are set and non-blank; otherwise the build has no button, no helper URL and no CSP change. Read only in `client/src/backend/github/appAuth.ts` |
+| `VITE_GITHUB_APP_SLUG` | client (build time, `--mode github` only) | The App's URL name, for its install link (`github.com/apps/<slug>/installations/new`). Public |
+| `VITE_GITHUB_SIGNIN_HELPER_URL` | client (build time, `--mode github` only) | The sign-in helper's base URL (`signin-helper/`, deployed by hand to Cloudflare Workers). Public. `client/vite.config.ts` appends its origin to the GitHub build's CSP `connect-src` |
 | `PORT` | local only | Dev server port (default 4000; a second checkout running alongside another sets its own, e.g. 4100) |
 | `VITE_DEV_PORT` | local only | Vite dev server port (default 5173; e.g. 5273 in a second checkout). `scripts/kill-ports.js` reads it too |
 | `VITE_API_PROXY_TARGET` | local only | Where the Vite dev server proxies `/api` (default `http://localhost:4000`); must match `PORT` |
@@ -408,11 +445,13 @@ Netlify doesn't set `NODE_ENV=production` at function runtime (and it can't go i
 | Layer | How |
 |---|---|
 | Domain | Unit tests on the pure functions, no database |
+| Client | `npm run test:client`: vitest in `client/` (node environment, `src/**/*.test.ts`), separate from the root `npm test`. `backend/HttpBackend.test.ts` stubs `fetch` and asserts the method, URL, `Content-Type`, bearer header and body each `api.ts` function sends, plus `request()`'s token, 401, non-JSON error and 204 paths. `backend/crypto.test.ts` and `base64.test.ts` cover the encrypted file format (round trip, wrong passphrase, tampered or weak header, fresh IV, import with no DOM); `backend/github/deviceStore.test.ts` the key and connection store on `fake-indexeddb`; `backend/github/contents.test.ts` the contents client against `fakeGitHub.ts`, which by default shows only the response headers GitHub's CORS policy lets a browser read (sha conflicts, blobs over 1 MB, typed errors, the one `onUnauthorized` retry, headers and `no-store`) |
 | Store | vitest against the local Supabase Postgres (`supabase start`, port 54322). Each file truncates the tables it touches in `beforeEach`. `fileParallelism: false`, since the files share one database. |
+| Parity | `server/test/parity/` (issue #5), under the root `npm test`: each `*.parity.test.ts` runs one store test file's cases, under the same describe and title, against both the SQL store and `DocumentBackend`. `harness.ts`'s `parity(title, fixture, scenario)` plants one backend-neutral fixture (`seed.ts`) as Postgres rows (after `resetTables`) and as a document, runs the scenario against `createApp()` over supertest (`AUTH_DISABLED=true`, `ENABLED_MODULES` per case; route coercion, the module gate and `app.ts`'s error mapping are part of what is compared) and against `DocumentBackend` on an in-memory host, and records each call's result or `{ status, message }`. The two transcripts must be `toStrictEqual`: the document side's raw results against the HTTP side's parsed JSON, success statuses not compared. Normalisation: each side's `row` numbers are relabelled by first appearance, per kind of record, in results and inside error messages; the clock is a pinned fake `Date` and `APP_TIMEZONE` is the document's zone. `manifest.ts` classifies every store case as `ported` or `sql-only` with one reason (`postgres-concurrency`, `database-internals`, `store-only-arguments`), and `manifest.test.ts` fails on an unclassified, renamed or unrun case. Typechecked by `server/test/parity/tsconfig.json` (bundler resolution, run with the client's TypeScript), which `server/tsconfig.json` excludes. `client/src/backend/document/DocumentBackend.test.ts` (`npm run test:client`) covers what only the document shows: atomic writes, stamps, tombstones, string money, the write queue, sort keys and handles |
 | Modules | `server/test/modules.test.ts` (parsing `ENABLED_MODULES`) and `server/test/overviewModules.test.ts` (`dashboardOverview` per module subset, with spies proving a disabled module's store is never called) |
 | API | `server/test/api.test.ts`: supertest on `createApp()` with a test-generated ES256 key pair injected as the JWKS. Covers enabled modules (every route mapped to a module or always on, `/api/config`, a 404 on every route of each disabled module, an expenses-only overview, unknown names failing at startup), auth (no token, malformed, unknown key, unknown `kid`, expired, no `exp`, wrong `aud`/`iss`, non-owner 403, owner 200, JWKS fetch failure 500, malformed JSON without a token 401), the startup checks (missing config, `AUTH_DISABLED` refused in production and on Netlify/Lambda), error mapping (including what a mapped database error logs, and no stack trace in a deployed 400), the request log's contents, and the Netlify handler invoked with API Gateway v1 events on both path shapes |
-| End to end | `e2e/regression.ts`, `e2e/expensesOnly.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on this checkout's `PORT`/`VITE_DEV_PORT`, with real auth: each script signs in through `<SignIn/>` as the seeded owner (§6) and makes its own direct API calls with the owner's token from the local Auth API (`e2e/auth.ts`). Before starting, `assertLocalAuth` refuses a `SUPABASE_URL` (`server/.env`) or `VITE_SUPABASE_URL` (`client/.env`) whose host isn't `127.0.0.1`/`localhost` (the same guard as `localDb.ts`'s for the database), a missing `OWNER_EMAIL` or anon key, and `AUTH_DISABLED=true`. `startDevServer` passes the `.env` files' auth settings to the spawned server explicitly, so values left in the calling shell can't override them. `regression.ts` also checks that a request without a token is a 401, a wrong password's error, sign-out (which survives a reload and keeps the theme), the not-allowed screen for a 403 (simulated on `/api/config` with `page.route`, since the local stack has only the owner and sign-ups are off) and its Sign out, and a mid-session 401 (a tampered token) signing out with a notice. `npm run test:e2e` then runs `e2e/expensesOnly.ts`, which starts the server with `ENABLED_MODULES=expenses` in its environment (never by editing `.env`) and checks the 401 without a token, the wrong-password error and sign-in, the two-tab nav, the Expenses tab on a database with no expenses showing an empty month and no error before the first expense (added through the form), expense add/edit/delete, a Dashboard with no disabled-module cards or console errors, a disabled route's 404, and sign-out. `npm run screenshots` (`e2e/screenshots.ts`) seeds a fictional dataset, checking each tab is empty before writing into it (through its form) and checking this month's expenses and last month's income through the API before the first write, then seeding those two through the API after every tab's check. "This month" is taken in `APP_TIMEZONE`, and the browser runs in that zone too. It writes every image in `docs/screenshots/`: the Dashboard at 1280×960 and each tab full-page at 720px wide, light and dark. All three scripts share `e2e/devServer.ts` and `e2e/auth.ts` |
-| Docs | `server/test/envDocs.test.ts`: every variable the server, function, client and `scripts/kill-ports.js` read is documented in `server/.env.example` or `client/.env.example`, every `# NAME=` example there is still read, and every variable a deployment sets appears in §9 and `docs/DEPLOY.md` |
+| End to end | `e2e/regression.ts`, `e2e/expensesOnly.ts` and `e2e/screenshots.ts` against the local stack plus the dev server on this checkout's `PORT`/`VITE_DEV_PORT`, with real auth: each script signs in through `<SignIn/>` as the seeded owner (§6) and makes its own direct API calls with the owner's token from the local Auth API (`e2e/auth.ts`). Before starting, `assertLocalAuth` refuses a `SUPABASE_URL` (`server/.env`) or `VITE_SUPABASE_URL` (`client/.env`) whose host isn't `127.0.0.1`/`localhost` (the same guard as `localDb.ts`'s for the database), a missing `OWNER_EMAIL` or anon key, and `AUTH_DISABLED=true`. `startDevServer` passes the `.env` files' auth settings to the spawned server explicitly, so values left in the calling shell can't override them. `regression.ts` also checks that a request without a token is a 401, a wrong password's error, sign-out (which survives a reload and keeps the theme), the not-allowed screen for a 403 (simulated on `/api/config` with `page.route`, since the local stack has only the owner and sign-ups are off) and its Sign out, and a mid-session 401 (a tampered token) signing out with a notice. `npm run test:e2e` then runs `e2e/expensesOnly.ts`, which starts the server with `ENABLED_MODULES=expenses` in its environment (never by editing `.env`) and checks the 401 without a token, the wrong-password error and sign-in, the two-tab nav, the Expenses tab on a database with no expenses showing an empty month and no error before the first expense (added through the form), expense add/edit/delete, a Dashboard with no disabled-module cards or console errors, a disabled route's 404, and sign-out. `npm run screenshots` (`e2e/screenshots.ts`) seeds a fictional dataset, checking each tab is empty before writing into it (through its form) and checking this month's expenses and last month's income through the API before the first write, then seeding those two through the API after every tab's check. "This month" is taken in `APP_TIMEZONE`, and the browser runs in that zone too. It writes every image in `docs/screenshots/`: the Dashboard at 1280×960 and each tab full-page at 720px wide, light and dark. All three scripts share `e2e/devServer.ts` and `e2e/auth.ts`. `npm run test:e2e:github` (`e2e/githubStorage.ts`) is the GitHub storage mode's end to end, with no local stack, server or network: it builds the Pages bundle with `--base /ledger/` into `client/dist-pages`, serves it with `vite preview --mode github` on `VITE_DEV_PORT + 1` (stopping only that process), and drives two or more Chromium contexts (America/New_York) whose `api.github.com` requests `e2e/fakeGithub.ts` routes into one shared `fakeGitHub.ts`, failing on any unmodelled endpoint, ownership violation or other host; it covers onboarding, expenses, the device key, sections, offline sync and concurrent edits, backup and restore, a revoked token and a ten-year ledger (size and load time printed), folding the repo's files in Node with the sync engine's own modules |
+| Docs | `server/test/envDocs.test.ts`: every variable the server, function, client and `scripts/kill-ports.js` read is documented in `server/.env.example` or `client/.env.example`, every `# NAME=` example there is still read, and every variable a deployment sets appears in §9 and `docs/DEPLOY.md`. A fixed `GITHUB_MODE` set (`VITE_DEFAULT_MODULES`) must still be read by the client and be named in `docs/DEPLOY-github.md` |
 | Import | `server/test/importXlsx.test.ts`: fixture folders built in a temp directory with `scripts/legacy-excel/fixtures.ts` (fictional data) and imported into the local database. A clean folder is read back through the store modules (`loadCategoryConfig`, `listMonth`, `yearSummary`, `isMonthLocked`, `getMonthIncome`, `financeSummary`, `listDebts`, `listEmis` and `listSubscriptions` with their computed fields, `getMonthBills`, `yearBillsSummary`) and compared with the legacy readers on the same folder, `row` aside. A messy folder checks each skip, difference and ignored-row report, including a skipped first Finances row for a month that a later row must not replace, and a 1.005 reported and stored as 1.01. Also: an all-empty workbook still records its year in `ledger_years` and lists and summarises as empty; a non-empty database is refused (dry run too) and left unchanged; `--force` replaces rather than duplicates; a dry run writes nothing; the default categories are replaced but custom ones refuse; the source folder is never modified; file names match ignoring case; an Excel `~$` owner file refuses the import; and the CLI refuses a remote host without `--yes`, never prints the password, rejects bad usage, resolves a relative `--from` against `INIT_CWD` and prints a dry run's report |
 
 The Excel edition's server test cases were the **parity contract** for the port: each one was ported with identical expectations, changing only the setup (database rows instead of scratch workbooks).

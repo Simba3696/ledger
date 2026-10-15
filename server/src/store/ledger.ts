@@ -1,7 +1,7 @@
 import { getSql, type Tx } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
-import { LedgerError } from "../errors.js";
-import type { Category } from "../domain/categoryColors.js";
+import { LedgerError } from "@ledger/shared/errors";
+import type { Category } from "@ledger/shared/categoryColors";
 import { loadCategoryConfig } from "./categories.js";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
 
@@ -10,9 +10,10 @@ export const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/** The `year` column's own bounds: `check (year >= 2018)` and int4. */
+/** The `year` column's lower bound, `check (year >= 2018)`, and four-digit
+ * years (#12: a read walks every month up to the year asked for). */
 const EARLIEST_YEAR = 2018;
-const LATEST_YEAR = 2147483647;
+const LATEST_YEAR = 9999;
 
 export interface LedgerEntry {
   /** The expense's database id (opaque and stable; no longer a sheet row). */

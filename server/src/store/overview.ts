@@ -1,11 +1,11 @@
 import { listDebts } from "./debts.js";
 import { listEmis } from "./emi.js";
-import { nextDueDateAfter } from "../domain/emiMath.js";
+import { nextDueDateAfter } from "@ledger/shared/emiMath";
 import { listSubscriptions } from "./subscriptions.js";
 import { getMonthBills, type CardBill } from "./creditCardBills.js";
 import { financeSummary, getMonthIncome, EARLIEST_YEAR } from "./finances.js";
-import { parseDate, formatDate, startOfDay, makeDate } from "../domain/dateMath.js";
-import { todayInAppZone } from "../domain/today.js";
+import { parseDate, formatDate, startOfDay, makeDate } from "@ledger/shared/dateMath";
+import { appToday } from "../today.js";
 import { MONTH_NAMES } from "./ledger.js";
 import { MODULES, type ModuleName } from "../modules.js";
 
@@ -95,7 +95,7 @@ function previousMonthOf(year: number, month: number): { year: number; month: nu
 }
 
 export async function dashboardOverview(
-  today: Date = todayInAppZone(),
+  today: Date = appToday(),
   modules: readonly ModuleName[] = MODULES,
 ): Promise<DashboardOverview> {
   const on = new Set(modules);

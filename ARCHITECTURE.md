@@ -53,8 +53,10 @@ serving the client.
 ## Request lifecycle
 
 1. A component calls a typed function from `client/src/api.ts` (e.g.
-   `getEmis()`, `setMonthBills(...)`). This is the *only* place the client
-   knows about HTTP. Its shared `request()` reads the current Supabase
+   `getEmis()`, `setMonthBills(...)`), which delegates to a `LedgerBackend`
+   (`client/src/backend/LedgerBackend.ts`). The Supabase build's only
+   backend is `httpBackend` (`backend/HttpBackend.ts`), the *only* place the
+   client knows about HTTP. Its shared `request()` reads the current Supabase
    session on every call (refreshing the access token near expiry) and adds
    `Authorization: Bearer <access_token>`.
 2. Netlify rewrites `/api/*` to the `api` function (`netlify.toml`), which is
@@ -69,8 +71,8 @@ serving the client.
    matching `server/src/store/*.ts` function. It has no business logic.
 5. The store module validates input (`store/validate.ts`), runs its SQL,
    and for any multi-statement write wraps it in `withTransaction`
-   (`db/tx.ts`). Calculations come from the pure `server/src/domain/*`
-   functions.
+   (`db/tx.ts`). Calculations come from the pure `shared/src/*` functions
+   (`@ledger/shared`).
 6. The response is plain JSON. Errors are a `LedgerError(message, status)`
    thrown from anywhere below the routes, turned into `{ error }` by one
    error handler in `app.ts`. Database refusals that slip past validation
@@ -91,7 +93,8 @@ loudly instead of per request.
 | `routes.ts` | The route table ([LLD §5](docs/architecture/LLD.md#5-api-contract)), input coercion only. |
 | `auth.ts` | `readAuthConfig` (startup checks) and `requireOwner` (bearer JWT, `ES256`/`RS256`/`EdDSA` only, `iss`/`aud`/`exp` checks, owner email). |
 | `modules.ts` | `ENABLED_MODULES` parsing, the route → module map, the disabled-module 404. |
-| `errors.ts`, `dbErrors.ts` | `LedgerError`; SQLSTATE → client error mapping. |
+| `dbErrors.ts` | SQLSTATE → client error mapping (as a `LedgerError`, from `@ledger/shared/errors`). |
+| `today.ts` | `appToday()`: the current day in `APP_TIMEZONE` (`DEFAULT_TIMEZONE`, `Asia/Kolkata`, when unset), through the shared `todayInAppZone`. The server's only `APP_TIMEZONE` read. |
 | `db/client.ts` | The postgres.js client: lazy, one connection per process or function instance, `prepare: false` for the transaction pooler, and type parsers keeping `date` as `YYYY-MM-DD` strings and `numeric`/`int8` as numbers. |
 | `db/tx.ts` | `withTransaction(fn)`. |
 | `store/ledger.ts` | Expenses: `listMonth`, `appendEntry`, `updateEntry`, `deleteEntry`, `moveEntry`, `yearSummary` (category totals per month), `isMonthLocked`/`setMonthLocked`. Every write checks the month lock inside its transaction under a per-month advisory lock. |
@@ -103,7 +106,23 @@ loudly instead of per request.
 | `store/subscriptions.ts` | Recurring subscriptions. |
 | `store/overview.ts` | Read-only aggregation for the Dashboard (Net Worth, Upcoming, EMI-free date), reading only enabled modules' stores. Never writes. |
 | `store/validate.ts` | Shared input checks matching the schema's bounds. |
-| `domain/*.ts` | Pure calculations, no I/O: `dateMath`, `emiMath`, `subscriptionMath`, `financeMath`, `creditCardMath`, `categoryColors`, and `today.ts` (`todayInAppZone`). |
+
+## Shared domain package (`shared/src/`, `@ledger/shared`)
+
+A workspace package with no build step: it exports its TypeScript source
+(`"./*": "./src/*.ts"`), which `tsx`, vitest and Netlify's esbuild load
+directly (the compiled server starts with `node --import tsx` for the same
+reason). Server code imports it by package name only
+(`@ledger/shared/emiMath`), so every runtime loads one `LedgerError` class.
+It is browser-safe, checked by `shared/tsconfig.json` (no DOM, no Node
+types, the client's strict flags) under both the client's and the server's
+TypeScript.
+
+| Module | Responsibility |
+|---|---|
+| `dateMath`, `emiMath`, `subscriptionMath`, `financeMath`, `creditCardMath`, `categoryColors` | Pure calculations, no I/O. Every function that needs "today" takes it as a required argument. |
+| `today.ts` | `todayInAppZone(now, timeZone)`: the calendar day in an explicit zone. No default zone and no `process.env`. |
+| `errors.ts` | `LedgerError(message, status)`. |
 
 ## Design principles
 
@@ -113,9 +132,9 @@ These shaped nearly every feature, and new code should follow them.
 
 Everything that computes (EMI decay, payoff and foreclosure math, renewal
 advance, finance series, card totals, the overview's rules) lives in
-`server/src/domain/` as pure functions over plain values, with "today"
-passed in. SQL and I/O live only in `server/src/store/`. That kept behaviour
-identical through the move from Excel to Postgres (the domain code moved
+`shared/src/` (`@ledger/shared`) as pure functions over plain values, with
+"today" passed in. SQL and I/O live only in `server/src/store/`. That kept
+behaviour identical through the move from Excel to Postgres (the domain code moved
 unchanged and the existing tests became the parity contract), and it's what
 still lets calculation and UI changes cherry-pick between this edition and
 the `personal` (Excel) edition.
@@ -153,8 +172,9 @@ The numbers can never be stale, because there's no stale copy.
 
 ### 5. "Today" is explicit
 
-The function runs in UTC, so every "today" comes from `todayInAppZone()`
-(`APP_TIMEZONE`, default `Asia/Kolkata`) or an injected `today` parameter,
+The function runs in UTC, so every "today" comes from `appToday()`
+(`server/src/today.ts`: `APP_TIMEZONE`, default `Asia/Kolkata`, passed to
+the shared `todayInAppZone(now, timeZone)`) or an injected `today` parameter,
 never a bare `new Date()`
 ([ADR-0005](docs/adr/0005-explicit-app-timezone.md)). Calendar dates are
 `date` columns read back as `YYYY-MM-DD` strings, never JS `Date`s built at
@@ -215,9 +235,14 @@ has the full table. The differences:
   month/year-scoped (Expenses, Finances, Credit Cards: `year`/`month` live in
   `App.tsx` and are passed down, since `MonthYearPicker` drives all three).
 - **`api.ts`** is the single boundary to the backend: every exported
-  function makes one request and returns a typed result. A non-2xx response
-  throws an `ApiError` carrying its `status`. Components never build a URL
-  or call `fetch` themselves.
+  function makes one call and returns a typed result. Each is a one-line
+  delegate to a `LedgerBackend` (`backend/LedgerBackend.ts`, one method per
+  export, same signatures; defaults such as `getEmiMonthlyProjection`'s
+  `months = 12` stay in `api.ts`). The only backend today is `httpBackend`
+  (`backend/HttpBackend.ts`), which holds the URLs and `request()`, the one
+  `fetch` call. A failed call throws an `ApiError` (`backend/ApiError.ts`,
+  re-exported by `api.ts`) carrying its `status`. Components never build a
+  URL or call `fetch` themselves.
 - **Component shape**: most tabs follow the same pattern: `<Tab>.tsx`
   (fetch + state + form), `<Item>Row.tsx` (display), `Edit<Item>Row.tsx`
   (inline edit, swapped in for the row being edited). Row actions go through
@@ -260,8 +285,8 @@ has the full table. The differences:
 
 ## Testing
 
-All of it runs against the local Supabase stack in Docker; nothing touches
-a hosted project. [LLD §10](docs/architecture/LLD.md#10-testing) has the
+The server and e2e suites run against the local Supabase stack in Docker;
+nothing touches a hosted project. The client unit tests need neither. [LLD §10](docs/architecture/LLD.md#10-testing) has the
 full coverage list, and README's **Testing** section the commands.
 
 - **`server/test/*.test.ts` (vitest)**: domain unit tests with no database;
@@ -269,13 +294,38 @@ full coverage list, and README's **Testing** section the commands.
   touches; `fileParallelism: false` since the files share one database;
   `dbHelpers.ts` refuses any non-local host); schema constraint tests;
   `api.test.ts` with supertest on `createApp()` and a test-generated ES256
-  key pair injected as the JWKS.
+  key pair injected as the JWKS. `server/test/parity/` runs the store
+  cases against both the SQL store (over HTTP) and GitHub storage mode's
+  `DocumentBackend`, requiring identical results and errors (LLD §10).
+- **`client/src/**/*.test.ts` (vitest, `npm run test:client`)**: client
+  unit tests in a node environment, no database or browser.
+  `backend/HttpBackend.test.ts` stubs `fetch` and pins the exact request
+  every `api.ts` function sends, plus `request()`'s auth and error paths.
+  GitHub storage mode's low-level pieces are tested the same way:
+  `backend/crypto.test.ts` (file format, wrong passphrase, tampered
+  header), `backend/base64.test.ts`, `backend/github/deviceStore.test.ts`
+  (IndexedDB through `fake-indexeddb`) and `backend/github/contents.test.ts`
+  against `backend/github/fakeGitHub.ts`, an in-memory GitHub API.
+  `backend/document/DocumentBackend.test.ts` covers what only its
+  document shows (atomic writes, record stamps, tombstones, string money).
+  The root `npm test` stays the server suite.
 - **`e2e/regression.ts` and `e2e/expensesOnly.ts` (Playwright, plain
   scripts)**: reset the local database (`e2e/localDb.ts`, local hosts only),
   start the dev server on this checkout's ports (`e2e/devServer.ts`), sign
   in through the real form as the seeded owner (`e2e/auth.ts`, which refuses
   a non-local Supabase URL or `AUTH_DISABLED`), and drive the whole app;
   the second script runs with `ENABLED_MODULES=expenses`.
+- **`e2e/githubStorage.ts` (`npm run test:e2e:github`)**: the GitHub
+  storage mode end to end, with no database, server or network. It builds
+  the Pages bundle (`build:pages -- --base /ledger/`, into
+  `client/dist-pages`), serves it with `vite preview` on `CLIENT_PORT + 1`
+  and stops only that process. Each simulated device is a Playwright
+  browser context; `e2e/fakeGithub.ts` routes their `api.github.com`
+  requests into one shared `backend/github/fakeGitHub.ts` (the fake the
+  client unit tests use), with a request log, per-context offline and
+  every other host refused. The stored files are seeded and folded in Node
+  with the sync engine's own modules. Its `buildAndPreview` helper is
+  exported for other GitHub-mode e2e scripts.
 - **`e2e/screenshots.ts`**: regenerates every image in `docs/screenshots/`
   (Dashboard and each tab, light and dark) from a fixed fictional dataset
   with the same isolation, asserting every tab is empty before writing
@@ -291,6 +341,12 @@ full coverage list, and README's **Testing** section the commands.
   variables ([LLD §9](docs/architecture/LLD.md#9-configuration)); the
   `VITE_*` ones are build-time, the rest are read by the function at
   startup. Step by step: [docs/DEPLOY.md](docs/DEPLOY.md).
+- **GitHub Pages (GitHub storage mode, ADR-0007):** `.github/workflows/pages.yml`
+  builds `npm run build:pages -w client -- --base <the Pages base path>`
+  into `client/dist-pages` (never `client/dist`), checks storage isolation,
+  runs `npm run test:client` and `npm run test:e2e:github` in its `e2e`
+  job, and deploys only when both jobs pass. No server and no secrets.
+  Step by step, for users and forks: [docs/DEPLOY-github.md](docs/DEPLOY-github.md).
 - **Local:** `npm run dev` runs the server (`tsx watch`) and Vite with hot
   reload. `npm run build` + `npm start` serve the built client and API from
   one process on `PORT`.
@@ -312,18 +368,25 @@ unaware second checkout would otherwise kill the first one's server. Both
 ```
 client/
   src/
-    api.ts            Every backend call, typed, with the bearer token: the only fetch() boundary
+    api.ts            Every backend call, typed; delegates to a LedgerBackend
+    backend/          LedgerBackend.ts (the interface), HttpBackend.ts (REST API + bearer token:
+                      the only fetch() boundary), ApiError.ts; github/ is GitHub storage mode (ADR-0007):
+                      crypto.ts + base64.ts (the encrypted file format), github/contents.ts (GitHub
+                      REST client), github/deviceStore.ts (key and token in IndexedDB), document/
+                      (DocumentBackend: the LedgerBackend over an in-memory LedgerDocument)
     App.tsx           Session gate, config load, tab state, top-level layout
     auth/             supabase.ts, session.ts, SignIn.tsx, SignOutButton.tsx
     components/       One flat set of .tsx + co-located .css
     format.ts, id.ts, constants.ts   Small shared utilities
 server/
   src/
-    app.ts, index.ts, routes.ts, auth.ts, modules.ts, errors.ts, dbErrors.ts
+    app.ts, index.ts, routes.ts, auth.ts, modules.ts, dbErrors.ts, today.ts
     db/               client.ts, tx.ts
     store/            One module per concern (SQL), plus validate.ts
-    domain/           Pure calculations
-  test/               vitest suites + dbHelpers.ts / ledgerSeed.ts
+  test/               vitest suites (including shared/'s) + dbHelpers.ts / ledgerSeed.ts
+shared/
+  src/                @ledger/shared: pure calculations, todayInAppZone, LedgerError (browser-safe)
+  tsconfig.json       Browser-safety typecheck (no DOM, no Node types)
 netlify/
   functions/api.ts    The API as one Netlify Function
   tsconfig.json       Typecheck-only config for the function
@@ -333,6 +396,8 @@ supabase/
   seed.sql            Local only: default categories + the test owner
 e2e/
   regression.ts, expensesOnly.ts, screenshots.ts
+  githubStorage.ts    GitHub storage mode e2e (Pages bundle + fake GitHub)
+  fakeGithub.ts       Routes a browser context's GitHub requests into the shared fake
   devServer.ts, auth.ts, localDb.ts   Shared helpers
 scripts/
   kill-ports.js       Frees this checkout's dev ports (PORT / VITE_DEV_PORT)
@@ -340,6 +405,7 @@ scripts/
   legacy-excel/       The Excel edition's readers, plus importer.ts (the import itself)
 docs/
   DEPLOY.md           Standing up a copy on Netlify + Supabase
+  DEPLOY-github.md    Using GitHub storage mode, and running a copy on GitHub Pages
   architecture/       HLD.md, LLD.md
   adr/                Decision records
   screenshots/        Images embedded in README.md

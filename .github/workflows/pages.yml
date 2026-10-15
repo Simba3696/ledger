@@ -1,0 +1,111 @@
+# The static GitHub storage build (ADR-0007), deployed to GitHub Pages.
+# Every pull request builds both clients and runs the isolation check, which
+# proves the default (Supabase) bundle carries no GitHub-storage code, and
+# runs the client unit tests and the GitHub storage e2e against a fake GitHub
+# API. Pushes to main and manual runs also deploy client/dist-pages, only once
+# both jobs passed. The repo's Pages
+# source must be set to "GitHub Actions" for the deploy (and configure-pages)
+# to work.
+name: Pages
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages reads the site's settings to get its base path.
+      pages: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The bundle Netlify publishes, built with no VITE_* values, so the
+      # isolation check has a default build to inspect.
+      - name: Build the default client
+        run: npm run build -w client
+      # /<repo>/ for a project site, empty (so "/") for a custom domain.
+      # Pull requests can't call configure-pages, so they use /<repo-name>/.
+      - name: Read the Pages base path
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Build the GitHub Pages client
+        env:
+          PAGES_BASE: ${{ github.event_name == 'pull_request' && format('/{0}/', github.event.repository.name) || format('{0}/', steps.pages.outputs.base_path) }}
+          # Sign in with GitHub (#10, signin-helper/README.md): all three are
+          # public, so they are Actions variables, not secrets. Without all
+          # three (a fork, say) the build has no button and no helper URL.
+          VITE_GITHUB_APP_CLIENT_ID: ${{ vars.VITE_GITHUB_APP_CLIENT_ID }}
+          VITE_GITHUB_APP_SLUG: ${{ vars.VITE_GITHUB_APP_SLUG }}
+          VITE_GITHUB_SIGNIN_HELPER_URL: ${{ vars.VITE_GITHUB_SIGNIN_HELPER_URL }}
+        run: npm run build:pages -w client -- --base "$PAGES_BASE"
+      - name: Check storage isolation
+        run: npm run check:isolation
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: client/dist-pages
+
+  # The client unit tests (#4 to #9) and e2e/githubStorage.ts, which builds
+  # the Pages bundle itself and drives it against an in-memory fake of
+  # GitHub's API: no secrets, no Supabase, no real GitHub request.
+  e2e:
+    runs-on: ubuntu-latest
+    # A normal run takes about 3 minutes; a hung browser shouldn't hold a
+    # deploy for GitHub's default 6 hours.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Client unit tests
+        run: npm run test:client
+      - name: GitHub storage e2e
+        env:
+          # Where the e2e saves a screenshot of each device when a step fails.
+          E2E_ARTIFACT_DIR: e2e-artifacts
+        run: npm run test:e2e:github
+      - name: Keep the failed run's screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-storage-e2e
+          path: e2e-artifacts/
+          if-no-files-found: ignore
+
+  deploy:
+    needs: [build, e2e]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
