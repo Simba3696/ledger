@@ -1194,14 +1194,22 @@ export class SyncEngine {
       applyOp(afterOwn, me, op);
       late = detectNotices(afterOwn, between.source, between, me).filter((notice) => notice.loser.L === op.L);
     }
-    // That join told the same clash against an older own write, the newer
-    // one not applied yet: a join after the save tells it once, naming this
-    // op, and so must this save (#14). The older notice goes, or keeps only
-    // the registers this op didn't write again.
-    const superseded = late.length > 0 ? supersededNotices(this.#notices, late, me) : { drop: [], keep: [] };
-    const told = [...fenceNotices, ...superseded.keep, ...late.map(({ key, ...body }): [string, NoticeBody] => [key, body])];
+    // That join told its clashes against an older own write, this one not
+    // applied yet: what it told about a register this op wrote again, or a
+    // clash this save tells again naming this op, is no longer so, as a
+    // join after the save would show (#14). Such an older notice goes, or
+    // keeps only its other registers, in its place in the list.
+    const tagged = (winner: { L: number; device: string }) => (t: Tag) => t[0] === winner.L && t[1] === winner.device;
+    const arrived = (winner: { L: number; device: string }) =>
+      between !== null &&
+      (between.ops.some(([device, o]) => device === winner.device && o.L === winner.L) ||
+        [...between.source.rec.values()].some((regs) => [...regs.values()].some((reg) => tagged(winner)(reg.t))) ||
+        [...between.source.unit.values()].some((reg) => tagged(winner)(reg.t)) ||
+        [...between.source.del.values()].some((deletion) => deletion.L === winner.L && deletion.by === winner.device));
+    const superseded = between !== null && op !== null ? supersededNotices(this.#notices, { L: op.L, wrote: new Set(op.set.map(([key]) => key)) }, late, me, arrived) : { drop: [], keep: [] };
+    const told = [...fenceNotices, ...late.map(({ key, ...body }): [string, NoticeBody] => [key, body])];
     const dropped = [...settled, ...superseded.drop];
-    const noticeWrites = told.length > 0 || dropped.length > 0 ? await this.#noticeWrites(told, dropped) : null;
+    const noticeWrites = told.length > 0 || dropped.length > 0 ? await this.#noticeWrites(told, dropped, superseded.keep) : null;
     if (noticeWrites) writes.notices = noticeWrites.writes;
     if (resolves !== undefined) {
       writes.leftBehind = { delete: [resolves] };
@@ -2917,13 +2925,16 @@ export class SyncEngine {
   }
 
   /** The notice writes that store `added` (by key) and remove `drop` in a
-   * mutation: a key already stored is left as it is (a pair is told once),
+   * mutation (and store `restored` again as they are, after `drop`): a key
+   * already stored is left as it is (a pair is told once),
    * each new one is numbered after the last, and past the cap the oldest
    * go. Null when nothing changes; otherwise the writes, and the notices to
    * keep (#keepNotices) once they commit. */
-  async #noticeWrites(added: [key: string, notice: NoticeBody][], drop: string[] = []): Promise<{ writes: NonNullable<Mutation["notices"]>; next: Map<string, StoredNotice> } | null> {
+  async #noticeWrites(added: [key: string, notice: NoticeBody][], drop: string[] = [], restored: [key: string, notice: StoredNotice][] = []): Promise<{ writes: NonNullable<Mutation["notices"]>; next: Map<string, StoredNotice> } | null> {
     const next = new Map(this.#notices);
     for (const key of drop) next.delete(key);
+    // Stored again as they are, seq and at kept (a notice trimmed in place).
+    for (const [key, notice] of restored) next.set(key, notice);
     let seq = this.#noticeSeq;
     const at = this.#now();
     const fresh: string[] = [];
@@ -2934,7 +2945,7 @@ export class SyncEngine {
     }
     const over = overCap(new Map([...next].map(([key, notice]) => [key, notice.seq])));
     for (const key of over) next.delete(key);
-    const put = await Promise.all(fresh.filter((key) => next.has(key)).map(async (key): Promise<[string, string]> => [key, await seal(next.get(key)!, this.#key)]));
+    const put = await Promise.all([...restored.map(([key]) => key), ...fresh].filter((key) => next.has(key)).map(async (key): Promise<[string, string]> => [key, await seal(next.get(key)!, this.#key)]));
     const remove = [...drop, ...over].filter((key) => this.#notices.has(key));
     if (put.length === 0 && remove.length === 0) return null;
     return { writes: { put, delete: remove }, next };
