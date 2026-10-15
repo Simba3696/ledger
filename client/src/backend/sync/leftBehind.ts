@@ -239,6 +239,99 @@ export function withoutHeld(group: LeftBehindGroup, restored: SyncState): LeftBe
   return { ...group, set, del, records };
 }
 
+/** `group` with only the registers `keepSet` takes and the deletes `keepDel`
+ * takes, each field group (an EMI's balance pair) whole or not at all, and
+ * the record snapshots of what is left. Null when nothing is left; `group`
+ * itself when everything is. */
+function restrict(group: LeftBehindGroup, keepSet: (key: string) => boolean, keepDel: (rk: string) => boolean): LeftBehindGroup | null {
+  const left = new Set(group.set.filter(([key]) => keepSet(key)).map(([key]) => key));
+  // A field group goes whole when any of it goes.
+  for (const [key] of group.set) {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind !== "field" || !left.has(key)) continue;
+    const rk = `${parsed.coll}/${parsed.id}`;
+    const together = TOGETHER[parsed.coll].find((fields) => fields.includes(parsed.field));
+    if (together?.some((field) => group.set.some(([k]) => k === `${rk}/${field}`) && !left.has(`${rk}/${field}`))) left.delete(key);
+  }
+  const del = group.del.filter(keepDel);
+  if (left.size === group.set.length && del.length === group.del.length) return group;
+  if (left.size === 0 && del.length === 0) return null;
+  const set = group.set.filter(([key]) => left.has(key));
+  const touched = new Set(del);
+  for (const [key] of set) {
+    const parsed = parseRegisterKey(key);
+    if (parsed?.kind === "field") touched.add(`${parsed.coll}/${parsed.id}`);
+  }
+  const records = Object.fromEntries(Object.entries(group.records).filter(([rk]) => touched.has(rk)));
+  return { ...group, set, del, records };
+}
+
+/** The part of `group` that `restored` (a genesis state) holds: exactly
+ * what withoutHeld leaves out, a field group only when all of it is held.
+ * Null when it holds none of it. A switch keeps this part (#14): it is not
+ * offered while that genesis is in the winner's line, and is owed again
+ * should that genesis lose. */
+export function heldIn(group: LeftBehindGroup, restored: SyncState): LeftBehindGroup | null {
+  const left = withoutHeld(group, restored);
+  if (left === null) return group;
+  if (left === group) return null;
+  const set = new Set(left.set.map(([key]) => key));
+  const del = new Set(left.del);
+  return restrict(group, (key) => !set.has(key), (rk) => !del.has(rk));
+}
+
+/** Whether a register was written in the epoch whose state holds it: any
+ * tag but the genesis's. */
+function written(reg: Register | undefined): boolean {
+  return reg !== undefined && (reg.t[0] !== GENESIS_TAG[0] || reg.t[1] !== GENESIS_TAG[1]);
+}
+
+/** `part` (what a genesis held of a group) less what `state`, the state of
+ * an epoch this device leaves, superseded: a register an op of that epoch
+ * wrote (this device's or one it joined: its tag isn't the genesis's,
+ * whatever the value), a field or create of a record that epoch deleted, a
+ * field group whole when any of it is, and a delete of a record any op of
+ * that epoch wrote. A register still under the genesis tag, at any value,
+ * was written by no one there: a restore's backup is not a later write.
+ * Each record the epoch wrote that is still shown there is snapshotted
+ * again from it, so what an add re-creates is never older than what this
+ * device last saw. Null when nothing is left (#14: such a part is never
+ * offered again). */
+export function unsupersededIn(part: LeftBehindGroup, state: SyncState): LeftBehindGroup | null {
+  const left = restrict(
+    part,
+    (key) => {
+      const parsed = parseRegisterKey(key);
+      if (parsed?.kind !== "field") return !written(state.unit.get(key));
+      const rk = `${parsed.coll}/${parsed.id}`;
+      return !state.del.has(rk) && !written(state.rec.get(rk)?.get(parsed.field));
+    },
+    (rk) => ![...(state.rec.get(rk)?.values() ?? [])].some(written),
+  );
+  if (left === null) return null;
+  let records: Record<string, Record<string, unknown>> | null = null;
+  for (const rk of Object.keys(left.records)) {
+    const regs = state.rec.get(rk);
+    if (!regs || !isVisible(state, rk) || ![...regs.values()].some(written)) continue;
+    records ??= { ...left.records };
+    records[rk] = Object.fromEntries([...regs].map(([field, reg]) => [field, structuredClone(reg.v)]));
+  }
+  return records === null ? left : { ...left, records };
+}
+
+/** Two parts of one group (the same marker) as one: `a`'s value and record
+ * snapshot win where both have one. */
+export function mergeGroups(a: LeftBehindGroup, b: LeftBehindGroup): LeftBehindGroup {
+  const set = new Map(a.set);
+  for (const [key, value] of b.set) if (!set.has(key)) set.set(key, value);
+  return {
+    ...a,
+    set: [...set].sort(([x], [y]) => compareText(x, y)),
+    del: [...new Set([...a.del, ...b.del])].sort(compareText),
+    records: { ...b.records, ...a.records },
+  };
+}
+
 // --- Stored groups ----------------------------------------------------------
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
