@@ -35,6 +35,14 @@ export function compareEpochKeys(a: string, b: string): number {
   return da < db ? -1 : da > db ? 1 : a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** By epoch number alone: two keys of one number (racing restores) are
+ * equal here. */
+export function compareEpochNumbers(a: string, b: string): number {
+  const [da, db] = [epochDigits(a), epochDigits(b)];
+  if (da.length !== db.length) return da.length - db.length;
+  return da < db ? -1 : da > db ? 1 : 0;
+}
+
 /** The key for a restore's epoch: the one after `winner`, the winning epoch
  * of a fresh listing, or the first epoch when none is listed. */
 export function nextEpochKey(winner: string | null, hex: (count: number) => string = randomHex): string {

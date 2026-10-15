@@ -22,9 +22,9 @@ import { canonicalJson } from "./canonical";
 import { CHAIN_START, FORMAT_VERSION, chainNext, checkRepoFile, encodeState, opHash, opProblem, vectorOf } from "./codec";
 import { diffDocuments } from "./diff";
 import { draftOf, settleDraft } from "./draft";
-import { compareEpochKeys, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
+import { compareEpochKeys, compareEpochNumbers, epochCounted, epochJoined, epochMove, isEpochKey, nextEpochKey, parseRepoFileName, repoFileName, winningEpoch, type RepoFile } from "./epoch";
 import { Fence, type FenceNotice } from "./fence";
-import { checkGroup, inEffect, leftBehind, leftBehindItems, reapplyTo, splitFigures, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
+import { aboveCutIn, checkGroup, heldIn, inEffect, leftBehind, leftBehindItems, mergeGroups, reapplyTo, splitFigures, unsupersededIn, withoutHeld, type LeftBehindGroup, type LeftBehindItem, type ReapplyResult } from "./leftBehind";
 import { damagedFileMessage, damagedGenesis, forgetRestore, rememberRestore, winningEpochNow, writeGenesis, type DamagedFile, type EpochNow, type GenesisContent } from "./ledgerRepo";
 import { materialize, readerOf, rematerialize } from "./materialize";
 import { ShownChanged, actionDay, applyAction, noticeView, type NoticeActionKind, type NoticeView, type ShownAction } from "./noticeActions";
@@ -43,7 +43,9 @@ import {
   unseal,
   type Delta,
   type DeviceKey,
+  type HeldPart,
   type OldEpoch,
+  type OldRecord,
   type SyncMeta,
 } from "./records";
 import { rehomeReissue } from "./rehome";
@@ -709,6 +711,12 @@ interface NewEpoch {
    * device that skipped an epoch projects what it had with these exact
    * cuts instead of {} (stage 8a). */
   line?: ReadonlyMap<string, VersionVector>;
+  /** The geneses of that line the walk read (each epoch's own), and where
+   * the walk ended (#lineCuts): what tells whether an epoch whose genesis
+   * held a part (#14) is in the winner's line, and whether a genesis in
+   * that line holds it. */
+  lineGeneses?: ReadonlyMap<string, LedgerDocument>;
+  lineEnd?: LineEnd;
   /** #8's rejoin from a gone epoch (D34, D36): the gone epoch is offered
    * whole (cut {}, nothing filtered as held), groups shown now are
    * carried as they are, and no kept epoch is projected again: the winner
@@ -718,6 +726,16 @@ interface NewEpoch {
    * which everything this device keeps is sealed under in the switch's
    * own transaction, and which the engine uses from then on. */
   rekey?: DeviceKey;
+}
+
+/** Where a walk down a restore's line ended (#lineCuts): at `epoch`, one
+ * of the epochs the switch needs (`needed`: the line passes through it),
+ * at a genesis based on nothing (`closed`: the whole line is known), or
+ * anywhere else (`open`: below a genesis that isn't listed or can't be
+ * read, or below both needed epochs, the line is unknown). */
+interface LineEnd {
+  epoch: string;
+  how: "needed" | "closed" | "open";
 }
 
 /** What a write's commit does besides its op. `resolves`: a left-behind
@@ -3354,12 +3372,12 @@ export class SyncEngine {
     // GETs (stage 8a review, E3). A switch that happened meanwhile makes
     // #adoptEpoch answer false, as it would for any other.
     const basedOnFrom = this.#meta!.basedOn;
-    const line = file.basedOn !== null && file.basedOn.epoch !== from ? await this.#lineCuts(listing, file.basedOn, basedOnFrom === undefined ? [from] : [from, basedOnFrom]) : undefined;
+    const walk = file.basedOn !== null && file.basedOn.epoch !== from ? await this.#lineCuts(listing, file.basedOn, basedOnFrom === undefined ? [from] : [from, basedOnFrom]) : undefined;
     const turn = this.#turn();
     try {
       await turn.ready;
       this.#assertWritable();
-      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, ...(line ? { line } : {}), ...(rejoin ? { rejoin: true as const } : {}) });
+      const switched = await this.#switchEpoch(from, { epoch: winner, sha: listed.sha, state: genesisState(file.doc), basedOn: file.basedOn, by: file.by, at: file.at, ...(walk ? { line: walk.cuts, lineGeneses: walk.geneses, lineEnd: walk.end } : {}), ...(rejoin ? { rejoin: true as const } : {}) });
       // The cycle reads and records for the epoch it switched to.
       // A rejoin's switch leaves a running cycle labelled with the epoch it
       // read, so nothing that cycle read is joined into the new one.
@@ -3382,13 +3400,17 @@ export class SyncEngine {
    * needed cut not found then falls back to {}, which may offer more but
    * loses nothing), and after as many steps as geneses are listed. Read
    * only when a device switches to a restore not based on its own epoch:
-   * one GET for each epoch in the line above the first needed one. */
-  async #lineCuts(listing: Listing, basedOn: NonNullable<GenesisContent["basedOn"]>, needed: readonly string[]): Promise<Map<string, VersionVector>> {
+   * one GET for each epoch in the line above the first needed one. Also
+   * returns the geneses it read, by epoch, and where it ended (#14). */
+  async #lineCuts(listing: Listing, basedOn: NonNullable<GenesisContent["basedOn"]>, needed: readonly string[]): Promise<{ cuts: Map<string, VersionVector>; geneses: Map<string, LedgerDocument>; end: LineEnd }> {
     const cuts = new Map<string, VersionVector>();
+    const geneses = new Map<string, LedgerDocument>();
     let next: GenesisContent["basedOn"] = basedOn;
+    let end: LineEnd = { epoch: basedOn.epoch, how: "open" };
     for (let steps = 0; next !== null && !cuts.has(next.epoch) && steps < listing.files.size; steps++) {
       const epoch = next.epoch;
       cuts.set(epoch, next.seen);
+      end = { epoch, how: needed.includes(epoch) ? "needed" : "open" };
       if (needed.includes(epoch) || needed.every((e) => compareEpochKeys(epoch, e) < 0)) break;
       const name = repoFileName({ kind: "genesis", epoch });
       const listed = listing.files.get(name);
@@ -3396,13 +3418,15 @@ export class SyncEngine {
       try {
         const read = await this.#read(name, listed);
         if (!read.ok || read.read.file.kind !== "genesis") break;
+        geneses.set(epoch, read.read.file.doc);
         next = read.read.file.basedOn;
+        if (next === null) end = { epoch, how: "closed" };
       } catch (err) {
         this.#log("warn", `the genesis of ${epoch} couldn't be read for its restore cut; what this device had there is offered with the cut {}`, err);
         break;
       }
     }
-    return cuts;
+    return { cuts, geneses, end };
   }
 
   /** Switches from epoch `from` to `genesis`'s, in the mutation queue;
@@ -3436,15 +3460,26 @@ export class SyncEngine {
     const pre = this.#state!;
     const into = { epoch: genesis.epoch, by: genesis.by, at: genesis.at, state: genesis.state };
     const basedOn = genesis.basedOn;
+    // What the new genesis holds of what this switch would offer is not
+    // offered, but kept (#14, #heldAcross): owed again should that genesis
+    // lose.
+    const heldNow: HeldPart[] = [];
+    const holdBack = (whole: LeftBehindGroup) => {
+      const held = heldIn(whole, genesis.state);
+      if (held !== null) heldNow.push({ by: [genesis.epoch], group: held });
+    };
     // Groups shown now are carried, less what the new genesis already holds
     // (the projection's rule): a marker joined here never reaches the new
     // epoch, so nothing else would hide one the genesis took in.
     const groups = new Map<string, LeftBehindGroup>();
     for (const [marker, group] of this.#leftBehind) {
-      const carried = this.#isHidden(group, pre) ? null : genesis.rejoin ? group : withoutHeld(group, genesis.state);
+      if (this.#isHidden(group, pre)) continue;
+      const carried = genesis.rejoin ? group : withoutHeld(group, genesis.state);
       if (carried !== null) groups.set(marker, carried);
+      if (carried !== group) holdBack(group);
     }
-    const kept = await this.#readOld();
+    const record = await this.#readOld();
+    const kept = record.entries;
     // The new genesis is based on an epoch this device never joined, nor
     // kept (E1 -> E2a, then E3 based on E2b, which beat E2a while this
     // device was away): what E2a's genesis held (E1's state at E2a's cut)
@@ -3467,9 +3502,11 @@ export class SyncEngine {
     // A rejoin projects no kept epoch again (D36): what this device kept
     // from them stays as it was carried.
     const cutFor = (epoch: string): VersionVector | null => (genesis.rejoin ? null : basedOn !== null && basedOn.epoch === epoch ? basedOn.seen : epoch === fallback ? (line.get(epoch) ?? {}) : null);
+    const projectedAgain = new Set<string>();
     for (const entry of kept) {
       const cut = cutFor(entry.epoch);
       if (cut === null || entry.epoch === from) continue;
+      projectedAgain.add(entry.epoch);
       // The winner's cut (or {}, for the epoch a skipped one was based
       // on) decides what of this epoch is left behind. Another
       // device's group the losing epoch resolved stays resolved. This
@@ -3494,7 +3531,8 @@ export class SyncEngine {
       for (const [marker, group] of [...groups]) if (marker.startsWith(`${entry.epoch}/`) && decided(group)) groups.delete(marker);
       for (const group of projected) groups.set(group.marker, group);
     }
-    for (const group of leftBehind(pre, genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {}), into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
+    const fromCut = genesis.rejoin ? {} : (cutFor(from) ?? line.get(from) ?? {});
+    for (const group of leftBehind(pre, fromCut, into, { epoch: from, me: meta.deviceId }, { all: genesis.rejoin === true })) {
       if (!group.own && groups.get(group.marker)?.own === true) continue;
       // Joining a racing create's winner (D32): this device's month figures
       // and settings are a group of their own, so getting its entries back
@@ -3506,6 +3544,15 @@ export class SyncEngine {
         continue;
       }
       groups.set(group.marker, group);
+    }
+    // What the new genesis holds of `from` above that cut is held back too
+    // (a rejoin offers it all, D36, so holds none back). A kept epoch
+    // projected again needs nothing held back: it stays the anchor, and is
+    // projected again whenever a winner's line may leave this genesis out.
+    if (!genesis.rejoin) {
+      for (const whole of leftBehind(pre, fromCut, into, { epoch: from, me: meta.deviceId }, { all: true })) {
+        if (whole.own || groups.get(whole.marker)?.own !== true) holdBack(whole);
+      }
     }
     // The epoch switched from is kept even with no group: a restore that
     // raced this one, based on it with another cut, may leave something of
@@ -3524,6 +3571,8 @@ export class SyncEngine {
     // nothing, and an own change only the losing genesis held was offered
     // nowhere).
     const anchor = basedOn === null ? undefined : skipped && !genesis.rejoin ? (fallback ?? from) : basedOn.epoch;
+    const { held, offeredAgain } = this.#heldAcross(from, genesis, record.held, { pre, groups, kept, projectedAgain, anchor });
+    held.push(...heldNow);
     const hasGroups = (epoch: string) => [...groups.keys()].some((marker) => marker.startsWith(`${epoch}/`));
     const keep = (epoch: string) => epoch !== from && (epoch === anchor || hasGroups(epoch));
     const olds: OldEpoch[] = [...kept.filter((entry) => keep(entry.epoch)), { epoch: from, device: meta.deviceId, state: pre }];
@@ -3563,7 +3612,7 @@ export class SyncEngine {
     // stays as it is (it reads under no key here).
     const key = genesis.rekey ?? this.#key;
     const base = await seal(storedState(next), key);
-    const oldText = olds.length > 0 ? await seal(storedOld(olds), key) : null;
+    const oldText = olds.length > 0 || held.length > 0 ? await seal(storedOld(olds, held), key) : null;
     const put = await Promise.all([...groups.values()].map(async (group): Promise<[string, string]> => [group.marker, await seal(group, key)]));
     const remove = [...this.#leftBehind.keys()].filter((marker) => !groups.has(marker));
     const notices = genesis.rekey ? await Promise.all([...this.#notices].map(async ([id, notice]): Promise<[string, string]> => [id, await seal(notice, key)])) : [];
@@ -3603,21 +3652,138 @@ export class SyncEngine {
     this.#leftBehind = groups;
     this.#oldText = oldText;
     this.#refreshLeftBehind();
-    this.#log("info", `a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind`);
+    this.#log("info", `a restore started epoch ${genesis.epoch}; this device switched to it as a new device, with ${groups.size} groups of changes left behind (${offeredAgain} parts a losing genesis held offered again, ${held.length} held back)`);
     this.#emit();
     return true;
+  }
+
+  /** Parts a genesis held, across a switch (#14). A switch offers nothing
+   * the new genesis holds (withoutHeld, and the projection's rule), and
+   * that is right while that genesis is in the winner's line (owner
+   * decision D18: held by a genesis in the line, the change is in the
+   * ledger). But if that genesis later loses, the part is in no ledger, so
+   * the switch keeps it (`held` in `old`, each part with the epochs whose
+   * genesis held it, `by`), and every later switch decides it afresh:
+   *
+   *  1. Superseded: an op of the epoch now left (this device's or one it
+   *     joined) wrote over it, or deleted its record (unsupersededIn, by
+   *     tag, never by value). It goes for good: its value was replaced,
+   *     and offering it would set the newer one back (the D27/D28 trap
+   *     that sank two earlier designs). Each epoch this device leaves is
+   *     checked as it is left, so every state it held after the part was
+   *     held is checked once.
+   *  2. Held still: some epoch in `by` is in the winner's line. Kept while
+   *     one of those is the new epoch, the one it is based on, or the
+   *     anchor (one switch of depth, as `old` keeps states); dropped once
+   *     the line runs past them (settled deep in the line).
+   *  3. Owed: no epoch in `by` is in the winner's line (or the walk can't
+   *     tell). Then a genesis in the winner's line may still hold it (the
+   *     winner's own, or one the walk read): held by that one instead (D18
+   *     and, for a rejoin, the rejoined epoch's genesis, S3); else offered
+   *     again, merged into its group (marker) as a group carried across
+   *     this switch is. Another device's part whose marker the epoch left
+   *     joined stays resolved, as the projection's rule has it.
+   *
+   * A part of an epoch projected again at this switch, or of `from`, is
+   * left to that projection, which decides it with the winner's cut. A
+   * part of the epoch switched to (a rejoin going back into an epoch this
+   * device used before) is that epoch's own history, which its logs hold
+   * or superseded (D36, S3), and goes. A part of an epoch in the winner's
+   * line under a cut known here (the walk's, or the winner's own) keeps
+   * only what the kept state of that epoch shows was written above it. */
+  #heldAcross(
+    from: string,
+    genesis: NewEpoch,
+    parts: readonly HeldPart[],
+    { pre, groups, kept, projectedAgain, anchor }: { pre: SyncState; groups: Map<string, LeftBehindGroup>; kept: readonly OldEpoch[]; projectedAgain: ReadonlySet<string>; anchor: string | undefined },
+  ): { held: HeldPart[]; offeredAgain: number } {
+    const held: HeldPart[] = [];
+    let offeredAgain = 0;
+    if (parts.length === 0) return { held, offeredAgain };
+    const basedOn = genesis.basedOn;
+    const line = genesis.line ?? new Map<string, VersionVector>();
+    const end = genesis.lineEnd;
+    /** Whether epoch `b`, whose genesis held a part and which is in the
+     * line of `from` (every part kept was held so, see 2), is in the
+     * winner's line. The walk (#lineCuts) names the line from the epoch
+     * the winner is based on down to where it ended. */
+    const inLine = (b: string): "in" | "out" | "unknown" => {
+      if (b === genesis.epoch) return "in";
+      if (basedOn === null) return "out";
+      // The winner is based on `from`: its line holds `from`'s.
+      if (basedOn.epoch === from || line.has(b)) return "in";
+      if (end === undefined) return "unknown";
+      if (end.how === "closed") return "out";
+      if (end.how === "needed") {
+        if (end.epoch === from) return "in";
+        // The line passes through the anchor: `from`'s line below it is
+        // the winner's, and above it each number's epoch is in the walk.
+        return compareEpochNumbers(b, end.epoch) < 0 ? "in" : "out";
+      }
+      // Below where the walk ended, nothing is known.
+      return compareEpochNumbers(b, end.epoch) >= 0 ? "out" : "unknown";
+    };
+    const keepFor = new Set([genesis.epoch, ...(basedOn ? [basedOn.epoch] : []), ...(anchor ? [anchor] : [])]);
+    const keepHeld = (by: Iterable<string>, group: LeftBehindGroup) => {
+      const still = [...new Set(by)].filter((b) => keepFor.has(b)).sort(compareEpochKeys);
+      if (still.length > 0) held.push({ by: still, group });
+    };
+    // The geneses of the winner's line this switch can read: its own, then
+    // the walk's, top down (each state made only when a part needs it).
+    const lineStates: [string, () => SyncState][] = [[genesis.epoch, () => genesis.state]];
+    for (const [epoch, doc] of genesis.lineGeneses ?? []) {
+      let state: SyncState | null = null;
+      lineStates.push([epoch, () => (state ??= genesisState(doc))]);
+    }
+    const into = { epoch: genesis.epoch, by: genesis.by, at: genesis.at };
+    for (const { by, group } of parts) {
+      if (group.epoch === from || group.epoch === genesis.epoch || projectedAgain.has(group.epoch)) continue;
+      let live = unsupersededIn(group, pre);
+      // The epoch the part came from is in the winner's line, under a cut
+      // known here: what that cut covers, the winner's line saw.
+      const lineCut = basedOn !== null && basedOn.epoch === group.epoch ? basedOn.seen : line.get(group.epoch);
+      const source = lineCut === undefined ? undefined : kept.find((entry) => entry.epoch === group.epoch);
+      if (live !== null && lineCut !== undefined && source !== undefined) live = aboveCutIn(live, source.state, lineCut);
+      if (live === null) continue;
+      const holding = by.filter((b) => inLine(b) === "in");
+      if (holding.length > 0) {
+        // Held still; the new genesis may hold some of it too.
+        const alsoHere = heldIn(live, genesis.state);
+        const rest = alsoHere === live ? null : alsoHere === null ? live : withoutHeld(live, genesis.state);
+        if (alsoHere !== null) keepHeld([...holding, genesis.epoch], alsoHere);
+        if (rest !== null) keepHeld(holding, rest);
+        continue;
+      }
+      // Every genesis that held it lost: owed, unless one in the line
+      // holds it.
+      let owed: LeftBehindGroup | null = live;
+      for (const [epoch, state] of lineStates) {
+        if (owed === null) break;
+        const here = heldIn(owed, state());
+        if (here === null) continue;
+        keepHeld([epoch], here);
+        owed = here === owed ? null : withoutHeld(owed, state());
+      }
+      if (owed === null) continue;
+      if (!owed.own && pre.ra.has(owed.marker)) continue;
+      const shown = groups.get(owed.marker);
+      if (shown !== undefined && !owed.own && shown.own) continue;
+      groups.set(owed.marker, shown === undefined ? { ...owed, into } : mergeGroups(shown, owed));
+      offeredAgain++;
+    }
+    return { held, offeredAgain };
   }
 
   /** The previous epochs' states kept in `old`. A load reads them first, so
    * one that can't be read leaves the device unreadable; this is only a
    * fallback (logged and left out: the groups stay as they were). */
-  async #readOld(): Promise<OldEpoch[]> {
-    return (await this.#decodeOld()) ?? [];
+  async #readOld(): Promise<OldRecord> {
+    return (await this.#decodeOld()) ?? { entries: [], held: [] };
   }
 
   /** `old` decoded, or null (logged) when it can't be read. */
-  async #decodeOld(): Promise<OldEpoch[] | null> {
-    if (this.#oldText === null) return [];
+  async #decodeOld(): Promise<OldRecord | null> {
+    if (this.#oldText === null) return { entries: [], held: [] };
     try {
       const old = decodeOld(await this.#open(this.#oldText));
       if (typeof old === "string") throw new Error(old);
@@ -3632,18 +3798,21 @@ export class SyncEngine {
    * the epoch this device last switched from (meta.prev) and the one its
    * epoch's genesis is based on, or the anchor standing for it (meta.basedOn,
    * see #adoptEpoch), are kept even with no group,
+   * and the parts geneses held (#heldAcross) are kept as they are,
    * since a restore that raced the one switched to may be based on either
    * with another cut, until the device switches again; an earlier epoch
    * only while a group from it is left. Undefined when that changes
    * nothing, or when `old` can't be read (it is then left as it is). */
   async #oldKeeping(markers: readonly string[]): Promise<string | null | undefined> {
     if (this.#oldText === null) return undefined;
-    const entries = await this.#decodeOld();
-    if (entries === null) return undefined;
+    const record = await this.#decodeOld();
+    if (record === null) return undefined;
+    const { entries, held } = record;
     const { prev, basedOn } = this.#meta!;
     const keep = entries.filter((entry) => entry.epoch === prev?.epoch || entry.epoch === basedOn || markers.some((marker) => marker.startsWith(`${entry.epoch}/`)));
     if (keep.length === entries.length) return undefined;
-    return keep.length === 0 ? null : seal(storedOld(keep), this.#key);
+    // The parts geneses held (#14) stay as they are.
+    return keep.length === 0 && held.length === 0 ? null : seal(storedOld(keep, held), this.#key);
   }
 
   /** Whether a group is no longer shown: its marker joined (another device
