@@ -588,3 +588,36 @@ describe("a held part under the rejoined winner's cut (#14)", () => {
     expect(offeredOf(a)).toEqual([]);
   });
 });
+
+// Review of the third attempt: a part held at a switch must be checked
+// against the epoch being left at that very switch. Alex's E1 45 is shown
+// in E2, where Alex then sets 70, leaving the group unresolved; E3a holds
+// 45 (a backup), so the switch into it trims the carried group; E3b wins
+// with 10. Only E2's 70 is owed: offering E1's 45 too would let a re-apply
+// in list order end at 45.
+describe("a part a genesis held, superseded in the epoch left at that switch (#14 third review)", () => {
+  it("is never offered", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 45));
+    await quiesce(w, a);
+    const with45 = structuredClone(a.engine.current());
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await a.backend.updateEntry(2026, 5, await row(a, "Groceries"), entry("Groceries", 70));
+    await quiesce(w, a);
+    expect(offersValue(a, "45.00")).toBe(true);
+    await plantRestore("e000003-0000000a", with45, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offersValue(a, "45.00")).toBe(false);
+    expect(offeredOf(a)).toEqual([{ epoch: "e000002-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "70.00" })}`] }]);
+  });
+});
