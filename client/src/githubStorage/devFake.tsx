@@ -5,7 +5,10 @@ import { completeSignIn, type SignInConfig } from "../backend/github/appAuth";
 import { createFakeGitHub, type FakeGitHub } from "../backend/github/fakeGitHub";
 import { SECTIONS } from "./defaults";
 import { GitHubGate } from "./GitHubGate";
-import { connect, createNew, type Deps } from "./ledgerAccess";
+import { createEmptyDocument } from "../backend/document/createDocument";
+import { FORMAT_VERSION } from "../backend/sync/codec";
+import { seal } from "../backend/sync/records";
+import { connect, createNew, keyFor, type Deps } from "./ledgerAccess";
 
 // A development page only (client/fake.html, served by `vite --mode github`
 // and never built: the build's one entry is index.html). It runs the real
@@ -38,6 +41,12 @@ import { connect, createNew, type Deps } from "./ledgerAccess";
 // (with ledgerFake.revokeToken(<the ghu_ token>), the sign-in expires).
 // Signing in again from Replace token needs a real reload, which empties
 // the fake, so it isn't simulated here.
+//
+// A racing create (D32): after creating a ledger here under any passphrase
+// other than "correct horse battery staple", ledgerFakeRace("alex") in the
+// console puts another epoch 1 into alex/ledger-data, created by Sam at the
+// same moment under that household passphrase with the greater key, so
+// this page's next sync finds it has lost the race and offers the join.
 
 const PASSPHRASE = "correct horse battery staple";
 
@@ -56,6 +65,16 @@ const fake = createFakeGitHub({
 });
 
 (globalThis as { ledgerFake?: FakeGitHub }).ledgerFake = fake;
+
+/** Another device's create of epoch 1 that wins a race (D32). */
+async function race(owner = "alex"): Promise<void> {
+  const epoch = "e000001-ffffffff";
+  const key = await keyFor(PASSPHRASE);
+  const doc = createEmptyDocument({ modules: [...SECTIONS], timeZone: "Asia/Kolkata" });
+  const genesis = { fv: FORMAT_VERSION, kind: "genesis", epoch, reason: "create", by: "sam", at: Date.now(), basedOn: null, doc };
+  await fake.seedFile(`${owner}/ledger-data`, `ledger/${epoch}.genesis.enc`, await seal(genesis, key));
+}
+(globalThis as { ledgerFakeRace?: typeof race }).ledgerFakeRace = race;
 
 const params = new URLSearchParams(location.search);
 
