@@ -702,4 +702,31 @@ describe("an own group carried into an epoch that lost, and resolved there (#17)
     expect(a.engine.epochKey).toBe("e000003-0000000b");
     expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: [`edit ${JSON.stringify({ amount: "45.00" })}`] }]);
   });
+
+  // Review of #17: a delete leaves the record's registers under the
+  // genesis tag, so only the deletion itself shows the epoch wrote over it.
+  it("a re-applied delete there is offered once, under that epoch's marker, when that epoch loses", async () => {
+    const a = await open({ login: "alex" });
+    await a.backend.addEntry(entry("Groceries", 10));
+    await a.backend.addEntry(entry("Tea", 5));
+    await quiesce(w, a);
+    const deviceInE1 = a.engine.deviceId!;
+    const pushed = Math.max(...(await repoOps(w, a)));
+    const before = structuredClone(a.engine.current());
+    await a.backend.deleteEntry(2026, 5, await row(a, "Tea"));
+    await quiesce(w, a);
+    await plantRestore("e000002-0000000a", before, { [deviceInE1]: pushed });
+    await cycle(w, a);
+    await plantRestore("e000003-0000000a", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000a");
+    expect(offeredOf(a)).toEqual([{ epoch: EPOCH, own: true, items: ["delete"] }]);
+    await a.engine.reapply(a.engine.leftBehind()[0].id);
+    await quiesce(w, a);
+    expect({ offered: offeredOf(a), amounts: amounts(a) }).toEqual({ offered: [], amounts: ["Groceries=10.00"] });
+    await plantRestore("e000003-0000000b", before, {}, "e000002-0000000a");
+    await cycle(w, a);
+    expect(a.engine.epochKey).toBe("e000003-0000000b");
+    expect(offeredOf(a)).toEqual([{ epoch: "e000003-0000000a", own: true, items: ["delete"] }]);
+  });
 });
