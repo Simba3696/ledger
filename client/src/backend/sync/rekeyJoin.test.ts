@@ -6,7 +6,7 @@ import { FakeLocks } from "./localTestkit";
 import type { DeviceKey } from "./records";
 import { genesisState } from "./state";
 import type { SyncEngine } from "./SyncEngine";
-import { Rng, testEnv } from "./testkit";
+import { Replica, Rng, deviceId, testEnv } from "./testkit";
 
 // The racing-create window closed (ADR-0008, owner decision D32, option A):
 // two devices create a ledger at the same moment, each under its own salt,
@@ -67,7 +67,7 @@ async function lostRace(options: DeviceOptions = {}): Promise<{ a: Device; y: De
   const a = await open(ownKey, MINE, { login: "alex", ...options });
   await a.backend.addEntry(entry("Lunch"));
   await cycle(w, a);
-  expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", raceLost: { winner: THEIRS } });
+  expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", raceLost: { winner: THEIRS, joinable: true } });
   return { a, y };
 }
 
@@ -205,4 +205,28 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
       expect(remarks(y).sort(), `seed ${seed}`).toEqual(remarks(a).sort());
     }
   }, 300_000);
+
+  it("a loser whose ledger started from a backup (a restore into an empty repo) is not offered the join: what the backup held would be lost (review of D32)", async () => {
+    // Alex used Create's "start from a backup" while Sam created: Alex's
+    // genesis holds the backup's records, which a join (the cut {}) never
+    // offers back. Its way on is D35's: a backup of this device, then
+    // Forget and join.
+    const r = new Replica(deviceId(0xe), w.doc, { actor: "alex" });
+    await r.backend.addEntry(entry("From the backup"));
+    const backup = r.current();
+    w.fake.removeFile(FULL, `ledger/${MINE}.genesis.enc`);
+    await plant(w, { kind: "genesis", epoch: MINE }, { fv: 1, kind: "genesis", epoch: MINE, reason: "restore", by: "alex", at: 1, basedOn: null, doc: backup }, ownKey);
+    const y = await open(theirKey, THEIRS, { login: "sam" });
+    await y.backend.addEntry(entry("Groceries"));
+    await quiesce(w, y);
+    const a = await device({ ...w, key: ownKey }, { init: { epoch: MINE, state: genesisState(backup) }, login: "alex" });
+    running.push(a.engine);
+    await a.backend.addEntry(entry("Lunch"));
+    await cycle(w, a);
+    expect(a.engine.getState()).toMatchObject({ status: "needsPassphrase", raceLost: { winner: THEIRS, joinable: false } });
+    const before = { puts: puts(w).length, mutations: a.store.mutations.length };
+    expect(await a.engine.rekeyAndJoin(HOUSEHOLD)).toEqual({ kind: "fromBackup", epoch: THEIRS });
+    expect({ puts: puts(w).length, mutations: a.store.mutations.length }).toEqual(before);
+    expect(remarks(a).sort()).toEqual(["From the backup", "Lunch"]);
+  }, 60_000);
 });
