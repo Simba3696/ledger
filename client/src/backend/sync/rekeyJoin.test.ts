@@ -257,4 +257,37 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     expect(right.engine.epochKey).toBe(THEIRS);
     expect(right.engine.leftBehind().filter((g) => g.own)).toHaveLength(1);
   }, 60_000);
+
+  it("this device's month figures and settings are a group of their own: re-applying its entries never touches the winner's figures (review of D32)", async () => {
+    const y = await open(theirKey, THEIRS, { login: "sam" });
+    await y.backend.setMonthIncome(2026, 5, { salary: 52000, otherIncome: null, savings: [] });
+    await quiesce(w, y);
+    const a = await open(ownKey, MINE, { login: "alex" });
+    await a.backend.addEntry(entry("Lunch"));
+    await a.backend.setMonthIncome(2026, 5, { salary: 50000, otherIncome: null, savings: [] });
+    await a.backend.setMonthLock(2026, 5, true);
+    await cycle(w, a);
+    expect(await a.engine.rekeyAndJoin(HOUSEHOLD)).toMatchObject({ kind: "joined" });
+    await quiesce(w, a, y);
+    const own = a.engine.leftBehind().filter((g) => g.own);
+    // LeftBehindView.figures, as the fix adds it.
+    const isFigures = (g: object) => (g as { figures?: boolean }).figures === true;
+    const entries = own.find((g) => !isFigures(g))!;
+    const figures = own.find((g) => isFigures(g))!;
+    expect(own).toHaveLength(2);
+    expect(entries.items.map((i) => i.kind)).toEqual(["add"]);
+    expect(figures.items.map((i) => (i.kind === "unit" ? i.key : i.kind)).sort()).toEqual(["fm/2026-05", "lk/2026-05"]);
+    // Lunch back: Sam's salary stays, and the month stays open, everywhere.
+    await a.engine.reapply(entries.id);
+    await quiesce(w, a, y);
+    for (const d of [a, y]) {
+      expect(remarks(d).sort()).toEqual(["Lunch"]);
+      expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe("52000.00");
+      expect(d.engine.current().monthLocks["2026-05"]).toBeUndefined();
+    }
+    // Re-applied on purpose, this device's figures replace Sam's.
+    await a.engine.reapply(figures.id);
+    await quiesce(w, a, y);
+    for (const d of [a, y]) expect((await d.backend.getMonthIncome(2026, 5)).salary).toBe("50000.00");
+  }, 60_000);
 });
