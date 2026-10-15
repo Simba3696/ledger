@@ -11,9 +11,7 @@ name: Pages
 on:
   pull_request:
   push:
-    # TEMPORARY: feat/github-storage deploys the test site while epic #1 is
-    # tried on phones. Remove it before the epic merges into main.
-    branches: [main, feat/github-storage]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
