@@ -356,6 +356,11 @@ describe("a group's heading", () => {
     expect(leftBehindHeading(group(false, B, { into }))).toMatch(/^1 change from sam wasn't in the ledger sam started on .+.$/);
     expect(leftBehindHeading(group(true, A))).toContain("kai restored a backup on");
   });
+
+  it("names this device's month figures and settings, kept apart when it joined, and what re-applying them does (review of D32)", () => {
+    const into = { epoch: "e000001-ffffffff", by: "sam", at: Date.UTC(2026, 9, 15) };
+    expect(leftBehindHeading(group(true, A, { into, figures: true }))).toBe("Your month figures and settings from before you joined sam's ledger. Re-applying them replaces what that ledger has for them.");
+  });
 });
 
 describe("accessibility (finding 9)", () => {
