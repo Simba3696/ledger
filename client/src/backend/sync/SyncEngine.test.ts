@@ -732,6 +732,24 @@ describe("saved state this build can't read (section 12, B13, B22)", () => {
     await expectUnreadable(await device(), "undecryptable", before);
   });
 
+  it("parts a genesis held (`old`'s held, #14) load when absent or well formed, and are unreadable otherwise", async () => {
+    const group = { marker: `${EPOCH}/${X}`, epoch: EPOCH, device: X, own: false, who: "sam", into: { epoch: "e000002-0000000a", by: "sam", at: 7 }, set: [["lk/2026-05", true]], del: [], records: {} };
+    await savedDevice();
+    for (const held of [undefined, [], [{ by: ["e000002-0000000a"], group }]]) {
+      const text = await seal({ entries: [], ...(held === undefined ? {} : { held }) }, key);
+      await tamper("ledger:sync", "old", (s) => s.put(text, "old"));
+      const d = await device();
+      expect(d.engine.getState().status, JSON.stringify(held)).not.toBe("unreadable");
+      d.engine.stop();
+    }
+    for (const held of ["no", [{ by: [], group }], [{ by: ["nope"], group }], [{ by: ["e000002-0000000a"], group: { ...group, marker: "x" } }]]) {
+      const text = await seal({ entries: [], held }, key);
+      await tamper("ledger:sync", "old", (s) => s.put(text, "old"));
+      const before = await dumpDatabase();
+      await expectUnreadable(await device(), "malformed", before);
+    }
+  });
+
   it("an own log that disagrees with the state is unreadable", async () => {
     await savedDevice();
     await tamper("ledger:sync", "tail", (s) => s.clear());
