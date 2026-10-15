@@ -6,7 +6,7 @@ import { DocumentBackend } from "../../backend/document/DocumentBackend";
 import { MemoryStore } from "../../backend/sync/cycleTestkit";
 import { damagedFileMessage } from "../../backend/sync/ledgerRepo";
 import type { LeftBehindView } from "../../backend/sync/SyncEngine";
-import { EPOCH_GONE, EPOCH_GONE_EMPTY, RESTORED, RESTORE_UNKNOWN, SyncEngine, type EngineState } from "../../backend/sync/SyncEngine";
+import { ENTRIES_FIRST, EPOCH_GONE, EPOCH_GONE_EMPTY, RESTORED, RESTORE_UNKNOWN, SyncEngine, type EngineState } from "../../backend/sync/SyncEngine";
 import { SyncedHost } from "../../backend/sync/SyncedHost";
 import { testKey } from "../../backend/sync/localTestkit";
 import type { ActionPreview, NoticeView } from "../../backend/sync/noticeActions";
@@ -332,6 +332,16 @@ describe("SyncPanel: this device's own left-behind changes (D18, section 9.3 ste
     const html = renderToString(SyncLayers({ value, revision: 0, bar: createElement(SyncPanel) }));
     expect(html).toContain("Added Taxi");
     expect(html).not.toContain("to review");
+  });
+});
+
+describe("a figures group waiting for its entries (review of D32, round 2)", () => {
+  it("has Re-apply disabled with the reason, and Discard enabled", () => {
+    const into = { epoch: "e000001-ffffffff", by: "sam", at: Date.UTC(2026, 9, 15) };
+    const html = renderToString(createElement("div", null, LeftBehindList({ groups: [group(true, A, { into, figures: true, waitsForEntries: true })], work: { busy: null, errors: {} }, onReapply: () => {}, onDiscard: () => {} })));
+    expect(html).toContain(ENTRIES_FIRST);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Re-apply<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Discard<\/button>/);
   });
 });
 
