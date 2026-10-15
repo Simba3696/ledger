@@ -14,7 +14,10 @@ import { useSyncState } from "./sync/syncContext";
 
 export const RACE_LOST =
   "Someone else in your household created the ledger at the same moment as this device, and theirs is the one in the repo. Join it with the household passphrase: everything you entered here is kept, and offered back to re-apply.";
-export const RACE_LOST_BACKUP = "";
+/** A ledger started from a backup: the join would lose what the backup
+ * held, so only D35's way is offered. */
+export const RACE_LOST_BACKUP =
+  "Someone else in your household created the ledger at the same moment as this device, and theirs is the one in the repo. Your ledger here started from a backup, so it can't be joined with theirs: download a backup of this device, then forget this device and join theirs with the household passphrase. Your backup keeps everything here, to restore what you need.";
 const OTHER_PASSPHRASE = "If you two chose different passphrases, download a backup of this device first, then forget this device and join with the other passphrase.";
 
 export function RaceLostPanel({
@@ -50,15 +53,19 @@ export function RaceLostPanel({
   return (
     <div className="sync-messages gh-race-lost" data-testid="gh-race-lost">
       <p className="sync-message-line" role="alert">
-        {RACE_LOST}
+        {sync.raceLost.joinable ? RACE_LOST : RACE_LOST_BACKUP}
       </p>
       {error && <ErrorText>{error}</ErrorText>}
-      <div className="gh-actions">
-        <button type="button" className="submit-btn" disabled={busy} onClick={onJoin} data-testid="gh-join-race">
-          Join their ledger
-        </button>
-      </div>
-      <p className="sync-message-line">{OTHER_PASSPHRASE}</p>
+      {sync.raceLost.joinable && (
+        <>
+          <div className="gh-actions">
+            <button type="button" className="submit-btn" disabled={busy} onClick={onJoin} data-testid="gh-join-race">
+              Join their ledger
+            </button>
+          </div>
+          <p className="sync-message-line">{OTHER_PASSPHRASE}</p>
+        </>
+      )}
       <div className="gh-actions">
         <button
           type="button"

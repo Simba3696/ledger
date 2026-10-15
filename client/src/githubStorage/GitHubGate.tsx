@@ -471,7 +471,10 @@ export function GitHubGate({ deps = {}, signIn = { kind: "none" } }: { deps?: De
           work.current.key = result.key;
           setRemembered(await remember(open.connection, result.key));
           return dispatch({ type: "unlocked" });
+        // Nothing to join here (any more), or a ledger started from a
+        // backup, whose panel says the backup way: back to the ledger.
         case "notRaceLost":
+        case "fromBackup":
           return dispatch({ type: "unlocked" });
         case "wrongPassphrase":
           return dispatch({ type: "wrongPassphrase" });
