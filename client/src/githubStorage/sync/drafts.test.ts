@@ -290,6 +290,31 @@ describe("FormDrafts: Add Expense", () => {
     expect(selectedIn(chips)).toBe("Food");
   });
 
+  it("a save cancels what still waits: a chip that arrives after the save isn't selected in the cleared form", () => {
+    const actions = fakeActions();
+    const drafts = new FormDrafts(actions);
+    const before = addExpenseForm();
+    const root = ledger(before.form);
+    typeInto(drafts, before.amount, "75");
+    tap(drafts, before.chip("Food"));
+
+    drafts.beforeRemount(root, null);
+    const after = addExpenseForm([]);
+    remount(root, after.form);
+    drafts.afterRemount(0);
+    drafts.step(root, 0);
+    expect(after.amount.value).toBe("75");
+
+    // The person saves before the categories arrive (Enter in the restored
+    // amount); then they arrive.
+    drafts.event("submit", after.form, true);
+    const chips = choiceGroup("category-picker", ["Food", "Travel"], null, "category-chip");
+    after.form.children[0].children[1].replace(after.chips, chips);
+    for (let t = 1; t < 10 && drafts.step(root, t); t++);
+
+    expect(selectedIn(chips)).toBe(null);
+  });
+
   it("gives up on what never appears once the window has passed", () => {
     const actions = fakeActions();
     const drafts = new FormDrafts(actions);

@@ -529,7 +529,10 @@ export class FormDrafts {
     return this.#pending !== null;
   }
 
-  /** A restored field counts as touched, from what the new tree showed. */
+  /** A restored field counts as touched, from what the new tree showed.
+   * Called BEFORE the restore acts on the field: Chromium fires trusted
+   * input and change events for a scripted checkbox click(), and event()
+   * tells them from the person's only by #restored. */
   #own(el: DraftNode, base: string | null): void {
     this.#restored.add(el);
     if (!this.#bases.has(el)) this.#bases.set(el, base);
@@ -537,8 +540,11 @@ export class FormDrafts {
 
   /** A save started in `scope` (null: a form that couldn't be told). Its
    * fields are re-based to what is being saved, so a saved value is never a
-   * draft, and the scope isn't captured until the person edits it again. */
+   * draft, and the scope isn't captured until the person edits it again.
+   * Whatever still waits to be put back is dropped: a draft arriving after
+   * the save (a chip loaded late) would land in the cleared form. */
   #startSave(scope: DraftNode | null): void {
+    this.#pending = null;
     if (!scope) {
       this.#savingAll = true;
       return;
