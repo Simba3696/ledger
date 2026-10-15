@@ -162,6 +162,7 @@ describe("rekeyAndJoin: the loser of two racing creates joins the winner (D32)",
     b.engine.stop();
     const c = await device({ ...w, key: result.key }, { login: "alex", store, locks });
     running.push(c.engine);
+    for (let i = 0; i < 50 && c.engine.getState().status === "locked"; i++) await nextTask();
     expect(c.engine.epochKey).toBe(THEIRS);
     await c.backend.addEntry(entry("Tea"));
     expect(remarks(c)).toContain("Tea");
