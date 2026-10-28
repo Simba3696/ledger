@@ -1,8 +1,9 @@
 /**
- * Regenerates docs/screenshots/dashboard.png and dashboard-dark.png against
- * a fixed, fictional demo dataset (Alex/Sam, Visa Rewards/Amex Gold, Car
- * Loan/Home Loan, Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY —
- * the same cast every other screenshot in docs/screenshots already uses).
+ * Regenerates every README screenshot in docs/screenshots/ (Dashboard,
+ * Expenses form and list, and each tab, in light and dark) against a fixed,
+ * fictional demo dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home
+ * Loan, Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY, and a few
+ * everyday expenses), so a UI change can refresh them all in one run.
  *
  * Isolation follows the exact same recipe as e2e/regression.ts, for the same
  * reason: `LEDGER_DB_DIR` is passed as an env var straight to the spawned
@@ -242,8 +243,89 @@ async function main() {
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "dashboard-dark.png") });
 
+    // --- One screenshot per tab, top of the page (dark first, since the
+    // theme is already dark from the Dashboard shot above) ---
+    const TAB_SHOTS: [label: string, file: string][] = [
+      ["Finances", "finances"],
+      ["Debts", "debts"],
+      ["Credit Cards", "credit-cards"],
+      ["EMI", "emi"],
+      ["Subscriptions", "subscriptions"],
+    ];
+    const shootTabs = async (suffix: string) => {
+      for (const [label, file] of TAB_SHOTS) {
+        await page.click(`.tabs button:has-text("${label}")`);
+        await page.waitForSelector(".loading-overlay", { state: "detached" });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: path.join(SCREENSHOTS_DIR, `${file}${suffix}.png`) });
+      }
+    };
+    await shootTabs("-dark");
+    await page.click(".theme-toggle");
+    await page.waitForTimeout(300);
+    await shootTabs("");
+
+    // --- Expenses: reached by clicking this month on the Dashboard chart ---
+    await page.click('.tabs button:has-text("Dashboard")');
+    await page.waitForSelector(".chart-wrap svg");
+    await page.locator(".chart-wrap").scrollIntoViewIfNeeded();
+    // No expenses exist yet, so there are no bars to target: click the middle
+    // of this month's column in the plot area instead (the chart's click
+    // handler only needs the hovered column). Re-measured each attempt, since
+    // Recharts can re-mount its elements right after render.
+    const monthIndex = new Date().getMonth();
+    for (let attempt = 0; attempt < 20 && (await page.locator(".add-expense-form").count()) === 0; attempt++) {
+      const grid = page.locator(".chart-wrap .recharts-cartesian-grid").first();
+      const gridBox = await grid.boundingBox({ timeout: 2000 }).catch(() => null);
+      if (gridBox) {
+        const x = gridBox.x + ((monthIndex + 0.5) * gridBox.width) / 12;
+        await page.mouse.move(x, gridBox.y + gridBox.height / 2, { steps: 8 });
+        await page.waitForTimeout(150);
+        await page.mouse.down();
+        await page.mouse.up();
+      }
+      await page.waitForTimeout(400);
+    }
+    await page.waitForSelector(".add-expense-form");
+    await assertEmpty(page, ".entry-row", "Expenses");
+
+    const fillExpense = async (amount: string, remarks: string, category: string, card: boolean) => {
+      await page.fill('.add-expense-form input[placeholder="0.00"]', amount);
+      await page.fill('.add-expense-form input[placeholder="What was this for?"]', remarks);
+      await page.click(`.add-expense-form .category-chip:has-text("${category}")`);
+      await page.click(`.add-expense-form .payment-toggle button:has-text("${card ? "Credit Card" : "Cash"}")`);
+    };
+    const addExpense = async (amount: string, remarks: string, category: string, card = false) => {
+      await fillExpense(amount, remarks, category, card);
+      await page.click(".add-expense-form .submit-btn");
+      await page.waitForSelector(`.entry-row:has-text("${remarks}")`);
+    };
+    await addExpense("1200", "Movie night", "Other");
+    await addExpense("18000", "Monthly rent", "Rent");
+    await addExpense("320", "Cab to airport", "Transportation", true);
+    await addExpense("850", "Grocery run", "Food");
+
+    // The form filled in (light, then dark), then the same entry saved into
+    // the month's list (dark, then light).
+    await fillExpense("250", "Coffee with a friend", "Food", false);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "add-expense.png") });
+    await page.click(".theme-toggle");
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "add-expense-dark.png") });
+    await page.click(".add-expense-form .submit-btn");
+    await page.waitForSelector('.entry-row:has-text("Coffee with a friend")');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "recent-entries-dark.png") });
+    await page.click(".theme-toggle");
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(SCREENSHOTS_DIR, "recent-entries.png") });
+
     await browser.close();
-    console.log(`\nWrote dashboard.png and dashboard-dark.png to ${SCREENSHOTS_DIR}`);
+    console.log(`\nWrote every docs/screenshots/*.png (light and dark) to ${SCREENSHOTS_DIR}`);
   } finally {
     console.log("Stopping dev server...");
     if (devProcess.pid) {

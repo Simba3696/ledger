@@ -293,8 +293,8 @@ gives every entry.
   Cards), theme persistence. Not the `@playwright/test` runner — a plain
   script was simpler than wiring up its `webServer` orchestration for one
   script.
-- **`e2e/screenshots.ts` (Playwright, plain script)** — regenerates the
-  Dashboard screenshots in `docs/screenshots/` against a fixed fictional
+- **`e2e/screenshots.ts` (Playwright, plain script)** — regenerates every
+  README screenshot in `docs/screenshots/` against a fixed fictional
   demo dataset, reusing `regression.ts`'s exact isolation recipe (scratch
   `LEDGER_DB_DIR` passed to a `npm run dev` spawned on this checkout's own
   ports) rather than any custom port setup, plus an explicit empty-tab

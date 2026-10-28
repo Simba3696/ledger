@@ -794,11 +794,11 @@ Two suites, covering different layers:
   any client-side change, or before considering a session's changes done.
 
 - **`npm run screenshots`** — `e2e/screenshots.ts` (Playwright, plain
-  script). Regenerates `docs/screenshots/dashboard.png` and
-  `dashboard-dark.png` against a fixed fictional demo dataset (Alex/Sam,
-  Visa Rewards/Amex Gold, Car Loan/Home Loan, Netflix/Spotify/Amazon Prime,
-  Emergency Fund/PPF/NPS/APY — the same cast every other screenshot already
-  uses). Deliberately copies `e2e/regression.ts`'s exact isolation recipe
+  script). Regenerates every screenshot in `docs/screenshots/` (Dashboard,
+  the Expenses form and list, and each tab, light and dark) against a fixed
+  fictional demo dataset (Alex/Sam, Visa Rewards/Amex Gold, Car Loan/Home
+  Loan, Netflix/Spotify/Amazon Prime, Emergency Fund/PPF/NPS/APY, and a few
+  everyday expenses). Deliberately copies `e2e/regression.ts`'s exact isolation recipe
   (`LEDGER_DB_DIR` passed as an env var to a `npm run dev` spawned on this
   checkout's own ports, never a separate custom port) rather than a
   from-scratch setup — see the comment at the top of the file for why: an
