@@ -11,6 +11,9 @@
   /* Dashboard Upcoming tags: one colour per source (EMI uses --accent). */
   --light-tag-card: #6d28d9;
   --light-tag-sub: #b45309;
+  /* Dropdown arrow: the Lucide chevron-down in --accent. A data URI can't
+     read a CSS variable, so it carries its own copy of the colour. */
+  --light-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
   --dark-text: #d1d5db;
   --dark-text-h: #f3f4f6;
@@ -21,6 +24,7 @@
   --dark-accent-soft: #1e3a5f;
   --dark-tag-card: #c4b5fd;
   --dark-tag-sub: #fcd34d;
+  --dark-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2360a5fa' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
   /* Errors/destructive actions and success/positive figures read the same
      in both themes, so unlike the pairs above these aren't split by
@@ -42,6 +46,7 @@
   --accent-soft: var(--light-accent-soft);
   --tag-card: var(--light-tag-card);
   --tag-sub: var(--light-tag-sub);
+  --select-chevron: var(--light-select-chevron);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -78,6 +83,7 @@
     --accent-soft: var(--dark-accent-soft);
     --tag-card: var(--dark-tag-card);
     --tag-sub: var(--dark-tag-sub);
+    --select-chevron: var(--dark-select-chevron);
   }
 }
 
@@ -94,6 +100,7 @@
   --accent-soft: var(--light-accent-soft);
   --tag-card: var(--light-tag-card);
   --tag-sub: var(--light-tag-sub);
+  --select-chevron: var(--light-select-chevron);
   color-scheme: light;
 }
 
@@ -107,6 +114,7 @@
   --accent-soft: var(--dark-accent-soft);
   --tag-card: var(--dark-tag-card);
   --tag-sub: var(--dark-tag-sub);
+  --select-chevron: var(--dark-select-chevron);
   color-scheme: dark;
 }
 
