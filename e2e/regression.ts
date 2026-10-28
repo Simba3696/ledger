@@ -1521,6 +1521,23 @@ async function main() {
       (await navButtons.nth(1).innerText()) === "CC Bills" && (await navButtons.nth(4).innerText()) === "Subs",
     );
 
+    // Nothing on any tab may be wider than a small phone: one overflowing
+    // row (the header's month/year pickers, an EMI's figures, a row of sort
+    // chips) scrolls the whole page sideways.
+    await page.setViewportSize({ width: 360, height: 800 });
+    const overflowingTabs: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      await navButtons.nth(i).click();
+      await page.waitForSelector(".loading-overlay", { state: "detached" });
+      await page.waitForTimeout(400);
+      const extra = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (extra > 0) overflowingTabs.push(`${await navButtons.nth(i).innerText()} +${extra}px`);
+    }
+    if (overflowingTabs.length) console.log("  Overflowing at 360px:", overflowingTabs.join(", "));
+    check("No tab scrolls sideways at phone width (360px)", overflowingTabs.length === 0);
+    await navButtons.nth(0).click();
+    await waitForDashboardData();
+
     await page.setViewportSize({ width: 1280, height: 720 }); // restore Playwright's default
 
     // Clicking an Upcoming item is a shortcut to go pay/settle it — EMI
