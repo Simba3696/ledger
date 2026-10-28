@@ -18,10 +18,13 @@ interface Props {
 /** A "⋮" trigger that reveals a small dropdown of actions. Generic — takes a
  * list of items rather than being specific to any one feature, so it's
  * reusable anywhere a row of actions would otherwise crowd the UI. */
-// Rough menu height estimate (a handful of ~30px items plus padding) — good
-// enough for a "will this clip off the bottom of the screen" decision;
-// doesn't need to be exact since it only flips list-in the *other* direction.
-const ESTIMATED_MENU_HEIGHT = 200;
+// Rough menu height estimate (~33px per item including the gap, plus the
+// list's padding) — good enough for a "will this clip off the bottom of the
+// screen" decision; doesn't need to be exact since it only flips list-in the
+// *other* direction. Per item rather than fixed, since menus range from a few
+// items to seven (an EMI with Move up/down).
+const ESTIMATED_ITEM_HEIGHT = 33;
+const ESTIMATED_MENU_PADDING = 10;
 
 export function OverflowMenu({ items, disabled }: Props) {
   const [open, setOpen] = useState(false);
@@ -36,7 +39,7 @@ export function OverflowMenu({ items, disabled }: Props) {
       // A row near the bottom of the viewport (or with the on-screen
       // keyboard open shrinking it) would otherwise render this dropdown
       // partly or fully off-screen with no way to reach it.
-      setOpenUpward(window.innerHeight - rect.bottom < ESTIMATED_MENU_HEIGHT);
+      setOpenUpward(window.innerHeight - rect.bottom < items.length * ESTIMATED_ITEM_HEIGHT + ESTIMATED_MENU_PADDING);
     }
     setOpen((o) => !o);
   }

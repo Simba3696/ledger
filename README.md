@@ -382,8 +382,12 @@ auto-advances forward to the next real cycle, never silently going stale:
   automatic decay already assumed it). Each row shows **Balance as of
   &lt;date&gt;** — the decay anchor everything since is auto-projected from, not
   a confirmed payment — so it's obvious before reaching for "Paid this
-  month" whether that cycle is already covered. Sortable by Name, Due Day,
-  EMI Amount, Remaining, or **% Paid** (`(Total Amount − Remaining) / Total
+  month" whether that cycle is already covered. Under the Name sort, EMIs on
+  the same card list in workbook row order, and each row's menu has **Move
+  up** / **Move down** (shown only when there's another EMI on that card to
+  swap with) to match the order the card's statement lists them; a move
+  swaps the two rows in `EMI.xlsx`, so Excel shows the same order. Sortable
+  by Name, Due Day, EMI Amount, Total Amount, Remaining, or **% Paid** (`(Total Amount − Remaining) / Total
   Amount`) — % Paid in particular surfaces a good "quick win" foreclosure
   candidate better than sorting by raw Remaining does, since a loan that
   started small can have a low balance without being anywhere near paid

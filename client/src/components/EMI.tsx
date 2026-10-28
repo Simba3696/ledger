@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../api";
+import { addEmi, deleteEmi, getEmis, moveEmi, payEmi, type EmiEntryComputed } from "../api";
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
 import { LoadingOverlay } from "./LoadingOverlay";
@@ -201,6 +201,26 @@ export function EMI() {
     }
   }
 
+  async function handleMove(row: number, direction: "up" | "down") {
+    setBusyRow(row);
+    setError(null);
+    try {
+      await moveEmi(row, direction);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusyRow(null);
+    }
+  }
+
+  // Move up/down reorders EMIs within one card (to match its statement), and
+  // only the Name sort shows a card's EMIs together in that stored order —
+  // under any other sort a move would have no visible effect.
+  function sameCardNeighbour(index: number, offset: -1 | 1): boolean {
+    return sortField === "name" && sortedEmis[index + offset]?.cardOrBank === sortedEmis[index].cardOrBank;
+  }
+
   function handlePaidThisMonth(emi: EmiEntryComputed) {
     handlePay(emi.row, emi.emiAmount);
   }
@@ -391,7 +411,7 @@ export function EMI() {
         {!loading && emis.length === 0 && <p className="empty">No EMIs tracked yet.</p>}
 
         <ul className="emi-list">
-          {sortedEmis.map((emi) =>
+          {sortedEmis.map((emi, index) =>
             editingRow === emi.row ? (
               <EditEmiRow
                 key={emi.row}
@@ -412,6 +432,8 @@ export function EMI() {
                 onPaidThisMonth={() => handlePaidThisMonth(emi)}
                 onRecordPayment={() => handleRecordPayment(emi)}
                 onForeclose={() => handleForeclose(emi)}
+                onMoveUp={sameCardNeighbour(index, -1) ? () => handleMove(emi.row, "up") : undefined}
+                onMoveDown={sameCardNeighbour(index, 1) ? () => handleMove(emi.row, "down") : undefined}
               />
             ),
           )}

@@ -10,6 +10,9 @@ interface Props {
   onPaidThisMonth: () => void;
   onRecordPayment: () => void;
   onForeclose: () => void;
+  /** Only passed when there's a same-card EMI to swap with in that direction. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 function formatMonthYear(ym: string | null): string {
@@ -36,7 +39,7 @@ function ordinal(day: number): string {
   }
 }
 
-export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordPayment, onForeclose }: Props) {
+export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordPayment, onForeclose, onMoveUp, onMoveDown }: Props) {
   // Foreclosure hint: how much of this loan is already behind you vs. what a
   // lump-sum payoff would still cost today (== `remaining`, shown separately
   // in the figures column). Comparing this percentage across loans — not
@@ -89,6 +92,8 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
           { label: "Record payment", icon: "💰", onClick: onRecordPayment, disabled: emi.isPaidOff },
           { label: "Foreclose EMI", icon: "🏁", onClick: onForeclose },
           { label: "Edit", icon: "✏️", onClick: onEdit },
+          ...(onMoveUp ? [{ label: "Move up", icon: "⬆️", onClick: onMoveUp }] : []),
+          ...(onMoveDown ? [{ label: "Move down", icon: "⬇️", onClick: onMoveDown }] : []),
           { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
         ]}
       />

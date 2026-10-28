@@ -19,6 +19,7 @@ import {
   deleteEmi,
   emiMonthlyProjection,
   listEmis,
+  moveEmi,
   recordEmiPayment,
   updateEmi,
   type EmiEditsInput,
@@ -332,6 +333,16 @@ router.patch("/emi/:row/pay", async (req, res, next) => {
     const { amount } = req.body ?? {};
     const entry = await recordEmiPayment(Number(req.params.row), Number(amount));
     res.json(entry);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/emi/:row/move", async (req, res, next) => {
+  try {
+    const { direction } = req.body ?? {};
+    await moveEmi(Number(req.params.row), direction);
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

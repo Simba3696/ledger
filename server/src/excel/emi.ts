@@ -681,6 +681,46 @@ export async function recordEmiPayment(
   });
 }
 
+/** Swaps an EMI with the next one up or down on the same card, so a card's
+ * EMIs can be put in the order its statement lists them. The EMI tab's Name
+ * sort keeps same-card EMIs in workbook row order, so swapping the two rows
+ * is all it takes: no order column to keep in sync, and Excel shows the same
+ * order. The neighbour comes from `listEmis` (real entries only), the same
+ * list the tab groups, so a malformed row with the same name is never swapped
+ * in. Read and write share one lock, like `recordEmiPayment`. */
+export async function moveEmi(rowNumber: number, direction: "up" | "down"): Promise<void> {
+  if (direction !== "up" && direction !== "down") {
+    throw new LedgerError(`Invalid direction: ${direction}`, 400);
+  }
+  await withFileLock(EMI_PATH, async () => {
+    const emis = await listEmis();
+    const moving = emis.find((e) => e.row === rowNumber);
+    if (!moving) throw new LedgerError(`No EMI entry at row ${rowNumber}`, 404);
+    const sameCard = emis.filter((e) => e.cardOrBank === moving.cardOrBank);
+    const neighbour = sameCard[sameCard.indexOf(moving) + (direction === "up" ? -1 : 1)];
+    if (!neighbour) {
+      throw new LedgerError(`No other ${moving.cardOrBank} EMI ${direction === "up" ? "above" : "below"} this one`, 400);
+    }
+
+    const workbook = await loadOrCreateWorkbook();
+    const sheet = getEmiSheet(workbook);
+    const a = sheet.getRow(rowNumber);
+    const b = sheet.getRow(neighbour.row);
+    for (let col = 1; col <= HEADERS.length; col++) {
+      const cellA = a.getCell(col);
+      const cellB = b.getCell(col);
+      const { value, style } = cellA;
+      cellA.value = cellB.value;
+      cellA.style = cellB.style;
+      cellB.value = value;
+      cellB.style = style;
+    }
+    a.commit();
+    b.commit();
+    await saveWorkbook(workbook, EMI_PATH);
+  });
+}
+
 /** Removes an EMI entry entirely — e.g. after foreclosing a loan early. */
 export async function deleteEmi(rowNumber: number): Promise<void> {
   await withFileLock(EMI_PATH, async () => {

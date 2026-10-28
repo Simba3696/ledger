@@ -1061,6 +1061,69 @@ async function main() {
     await page.click('.emi-sort button:has-text("Name")'); // back to default for the rest of the flow
     await page.waitForTimeout(200);
 
+    // --- Move up/down: put one card's EMIs in its statement's order ---
+    async function addTealEmi(remarks: string) {
+      await page.fill('.add-emi-form input[placeholder="Who\'s it with?"]', "E2E Teal");
+      await emiNumberInputs.nth(0).fill("300"); // EMI Amount
+      await emiNumberInputs.nth(1).fill("10"); // Due Day
+      await emiNumberInputs.nth(2).fill("3000"); // Total Amount
+      await page.fill('.add-emi-form input[placeholder="Optional"]', remarks);
+      await page.click('.add-emi-form button:has-text("Add EMI")');
+      await page.waitForSelector(`.emi-row:has-text("${remarks}")`);
+    }
+    async function menuLabels(row: ReturnType<typeof page.locator>): Promise<string> {
+      await row.locator(".overflow-menu-trigger").click();
+      const labels = (await row.locator(".overflow-menu-list").innerText()).replace(/\s+/g, " ");
+      await row.locator(".overflow-menu-trigger").click(); // close it again
+      return labels;
+    }
+    const tealOrder = async () => (await page.locator('.emi-row:has-text("E2E Teal") .emi-remarks').allInnerTexts()).join(",");
+    const tealFirst = page.locator(".emi-row", { hasText: "Teal First" });
+    const tealSecond = page.locator(".emi-row", { hasText: "Teal Second" });
+
+    await addTealEmi("Teal First");
+    await addTealEmi("Teal Second");
+    check("EMI: a card's EMIs start in the order they were added", (await tealOrder()) === "Teal First,Teal Second");
+
+    const firstLabels = await menuLabels(tealFirst);
+    check(
+      "EMI: the first EMI on a card offers Move down but not Move up",
+      firstLabels.includes("Move down") && !firstLabels.includes("Move up"),
+    );
+    const secondLabels = await menuLabels(tealSecond);
+    check(
+      "EMI: the last EMI on a card offers Move up but not Move down",
+      secondLabels.includes("Move up") && !secondLabels.includes("Move down"),
+    );
+    check(
+      "EMI: an EMI alone on its card offers no Move items",
+      !(await menuLabels(page.locator(".emi-row", { hasText: "E2E Amber" }))).includes("Move"),
+    );
+
+    await clickMenuItem(tealFirst, "Move down");
+    await page.waitForTimeout(400);
+    check("EMI: Move down puts it after the next EMI on the same card", (await tealOrder()) === "Teal Second,Teal First");
+    await page.reload();
+    await page.click('.tabs button:has-text("EMI")');
+    await page.waitForSelector('.emi-row:has-text("Teal First")');
+    check("EMI: the moved order survives a reload (it's saved, not just on screen)", (await tealOrder()) === "Teal Second,Teal First");
+
+    // Only the Name sort shows a card's EMIs together, so other sorts hide the Move items.
+    await page.click('.emi-sort button:has-text("EMI Amount")');
+    check("EMI: Move items are hidden when not sorted by Name", !(await menuLabels(tealFirst)).includes("Move"));
+    await page.click('.emi-sort button:has-text("Name")');
+    await page.waitForTimeout(200);
+
+    await clickMenuItem(tealFirst, "Move up");
+    await page.waitForTimeout(400);
+    check("EMI: Move up puts it back before the other EMI on the same card", (await tealOrder()) === "Teal First,Teal Second");
+
+    for (const tealRow of [tealFirst, tealSecond]) {
+      await clickMenuItem(tealRow, "Foreclose EMI");
+      await acceptDialog();
+      await page.waitForTimeout(400);
+    }
+
     // Clean up so the suite is idempotent across runs — via the real
     // "Foreclose EMI" action (matches the user's actual workflow: once a
     // loan is fully paid off, it comes off the list entirely).

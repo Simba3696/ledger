@@ -195,6 +195,7 @@ is a local/Tailscale-only single-user tool.
 | PUT | `/emi/:row` | `emi.updateEmi` |
 | DELETE | `/emi/:row` | `emi.deleteEmi` |
 | PATCH | `/emi/:row/pay` | `emi.recordEmiPayment` |
+| PATCH | `/emi/:row/move` | `emi.moveEmi` |
 | GET | `/emi-monthly-projection` | `emi.emiMonthlyProjection` |
 | GET | `/subscriptions` | `subscriptions.listSubscriptions` |
 | POST | `/subscriptions` | `subscriptions.addSubscription` |

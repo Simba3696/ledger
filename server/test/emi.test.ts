@@ -718,3 +718,42 @@ describe("emiMonthlyProjection auto mode (until paid off)", () => {
     await emi.deleteEmi(added.row);
   });
 });
+
+describe("moveEmi (statement order within a card)", () => {
+  const moveInput = { emiAmount: 1000, dueDay: 5, totalAmount: 6000, remarks: "", remainingAsOf: 6000 };
+
+  async function cardRemarks(card: string): Promise<string[]> {
+    return (await emi.listEmis()).filter((e) => e.cardOrBank === card).map((e) => e.remarks);
+  }
+
+  it("swaps an EMI with the next one on the same card, skipping other cards in between", async () => {
+    const phone = await emi.addEmi({ ...moveInput, cardOrBank: "Move Card A", remarks: "Phone", interestRate: 14 });
+    const other = await emi.addEmi({ ...moveInput, cardOrBank: "Move Card B", remarks: "Other card" });
+    await emi.addEmi({ ...moveInput, cardOrBank: "Move Card A", remarks: "Laptop", emiAmount: 2500 });
+
+    await emi.moveEmi(phone.row, "down");
+    expect(await cardRemarks("Move Card A")).toEqual(["Laptop", "Phone"]);
+    // The whole entry moves with it, and the other card's row is untouched.
+    const [laptop, phoneAfter] = (await emi.listEmis()).filter((e) => e.cardOrBank === "Move Card A");
+    expect(laptop).toMatchObject({ row: phone.row, emiAmount: 2500, interestRate: null });
+    expect(phoneAfter).toMatchObject({ emiAmount: 1000, interestRate: 14 });
+    expect((await emi.listEmis()).find((e) => e.row === other.row)?.cardOrBank).toBe("Move Card B");
+
+    await emi.moveEmi(phoneAfter.row, "up");
+    expect(await cardRemarks("Move Card A")).toEqual(["Phone", "Laptop"]);
+  });
+
+  it("rejects moving past the first or last EMI on a card", async () => {
+    const [first, last] = (await emi.listEmis()).filter((e) => e.cardOrBank === "Move Card A");
+    await expect(emi.moveEmi(first.row, "up")).rejects.toMatchObject({ status: 400 });
+    await expect(emi.moveEmi(last.row, "down")).rejects.toMatchObject({ status: 400 });
+    const [onlyB] = (await emi.listEmis()).filter((e) => e.cardOrBank === "Move Card B");
+    await expect(emi.moveEmi(onlyB.row, "down")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("rejects a missing row or an unknown direction", async () => {
+    const [first] = (await emi.listEmis()).filter((e) => e.cardOrBank === "Move Card A");
+    await expect(emi.moveEmi(999, "up")).rejects.toMatchObject({ status: 404 });
+    await expect(emi.moveEmi(first.row, "sideways" as "up")).rejects.toMatchObject({ status: 400 });
+  });
+});

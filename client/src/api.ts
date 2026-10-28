@@ -347,6 +347,15 @@ export function payEmi(row: number, amount: number): Promise<EmiEntryComputed> {
   }).then((r) => handle(r));
 }
 
+/** Swaps an EMI with the next one up or down on the same card (statement order). */
+export function moveEmi(row: number, direction: "up" | "down"): Promise<void> {
+  return fetch(`${BASE}/emi/${row}/move`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ direction }),
+  }).then((r) => handle(r));
+}
+
 export interface EmiMonthlyProjection {
   month: string; // YYYY-MM
   count: number;
