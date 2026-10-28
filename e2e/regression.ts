@@ -1543,6 +1543,22 @@ async function main() {
       "Header: theme toggle and Sign out stay on screen at phone width, with no sideways scroll",
       headerBoxes.every((b) => !!b && b.width > 0 && b.x >= 0 && b.x + b.width <= 375) && noSideScroll,
     );
+
+    // Nothing on any tab may be wider than a small phone: one overflowing
+    // row (the header's month/year pickers, an EMI's figures, a row of sort
+    // chips) scrolls the whole page sideways.
+    await page.setViewportSize({ width: 360, height: 800 });
+    const overflowingTabs: string[] = [];
+    const tabCount = await navButtons.count();
+    for (let i = 0; i < tabCount; i++) {
+      await navButtons.nth(i).click();
+      await page.waitForSelector(".loading-overlay", { state: "detached" });
+      await page.waitForTimeout(400);
+      const extra = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      if (extra > 0) overflowingTabs.push(`${await navButtons.nth(i).innerText()} +${extra}px`);
+    }
+    if (overflowingTabs.length) console.log("  Overflowing at 360px:", overflowingTabs.join(", "));
+    check("No tab scrolls sideways at phone width (360px)", overflowingTabs.length === 0);
     await navButtons.nth(0).click();
     await waitForDashboardData();
 

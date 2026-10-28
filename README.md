@@ -338,6 +338,9 @@ auto-advances to the next real cycle, never silently going stale:
   every phone and browser, rather than emoji. Blue also marks the active tab,
   focused fields, stat cards and section titles; red and green are kept for
   money (owed vs. saved).
+- Every tab fits a phone screen without scrolling sideways (checked at 360px
+  by the e2e suite): on narrow screens the header controls drop below the
+  logo, sort buttons wrap, and each EMI's figures move under its name.
 - Light/dark theme: a sun/moon slider in the header (top right). The choice
   is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.

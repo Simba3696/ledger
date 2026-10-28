@@ -71,10 +71,15 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
         {emi.foreclosurePayoff !== emi.remaining && (
           <span className="emi-foreclosure-payoff">Foreclosure payoff: {rupee.format(emi.foreclosurePayoff)}</span>
         )}
+        {/* One no-wrap span per part, with the space between parts outside
+            them, so a long line wraps between parts rather than mid-figure
+            or not at all (see .emi-schedule in EMI.css). */}
         <span className="emi-schedule">
-          {rupee.format(emi.emiAmount)}/mo, due {ordinal(emi.dueDay)}
-          {emi.interestRate !== null && ` · ${emi.interestRate}% p.a.`}
-          {emi.foreclosureCharge !== null && ` · ${emi.foreclosureCharge}% foreclosure fee`}
+          <span>
+            {rupee.format(emi.emiAmount)}/mo, due {ordinal(emi.dueDay)}
+          </span>
+          {emi.interestRate !== null && <>{" "}<span>· {emi.interestRate}% p.a.</span></>}
+          {emi.foreclosureCharge !== null && <>{" "}<span>· {emi.foreclosureCharge}% foreclosure fee</span></>}
         </span>
         {/* The balance/decay anchor — everything since this date is an
             auto-projected assumption, not a confirmed payment. Shown so

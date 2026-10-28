@@ -23,8 +23,13 @@
 
 header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  /* When the header controls don't fit beside the logo they drop to a second
+     line instead of widening the page (below 500px the month picker also
+     gets a row of its own, see below). */
+  gap: 12px;
   margin-bottom: 24px;
 }
 
@@ -68,11 +73,6 @@ button.brand {
    were pushed off the right edge. Keep the logo and the two controls on the
    first row and give the month picker a row of its own below them. */
 @media (max-width: 500px) {
-  header {
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-
   .brand {
     margin-right: auto;
   }
