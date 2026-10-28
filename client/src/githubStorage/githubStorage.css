@@ -104,14 +104,21 @@
   cursor: pointer;
 }
 
+/* Same blue chevron as every other dropdown (.select in shared.css). */
 .gh-card select {
+  appearance: none;
   font-size: var(--font-size-base);
-  padding: 10px 12px;
+  padding: 10px 36px 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
   color: var(--text-h);
   max-width: 100%;
+  cursor: pointer;
 }
 
 /* Checkboxes sit beside their words, not above them. */
