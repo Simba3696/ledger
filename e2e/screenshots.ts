@@ -244,7 +244,7 @@ async function main() {
       await page.fill('.add-subscription-form input[type="number"]', amount);
       await page.selectOption(".add-subscription-form select", duration);
       await page.fill('.add-subscription-form input[type="date"]', renewal);
-      if (card) await page.fill('.add-subscription-form input[placeholder="Or leave blank for N/A"]', card);
+      if (card) await page.fill('.add-subscription-form input[placeholder="Blank for N/A"]', card);
       await page.click('.add-subscription-form button:has-text("Add Subscription")');
       await page.waitForSelector(`.subscription-row:has-text("${service}")`);
     };

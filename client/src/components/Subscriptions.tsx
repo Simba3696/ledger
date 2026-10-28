@@ -185,7 +185,7 @@ export function Subscriptions() {
               type="text"
               value={cardOrBank}
               onChange={(e) => setCardOrBank(e.target.value)}
-              placeholder="Or leave blank for N/A"
+              placeholder="Blank for N/A"
             />
           </label>
         </div>

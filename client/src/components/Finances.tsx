@@ -89,7 +89,7 @@ function SavingsEditor({ rows, onChange, disabled }: SavingsEditorProps) {
           <div className="savings-row-main">
             <input
               type="text"
-              placeholder="Scheme (PPF, NPS, APY…)"
+              placeholder="Scheme (PPF, NPS…)"
               value={row.name}
               onChange={(e) => updateRow(row.id, { name: e.target.value })}
               disabled={disabled}

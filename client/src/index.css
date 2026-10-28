@@ -107,6 +107,18 @@ body {
   overscroll-behavior-y: contain;
 }
 
+/* Phones: placeholders drop to caption size so they fit the same fields
+   (two add-form fields per row leave ~135px; edit-row numbers ~88px). Only
+   the placeholder shrinks: the input keeps --font-size-base, so field sizes
+   don't change and iOS still doesn't zoom on focus. Placeholder wording is
+   kept short enough to fit in full (desktop number fields lose ~16px more to
+   the spin buttons): a cut-off or "…" hint can't be read either way. */
+@media (max-width: 600px) {
+  input::placeholder {
+    font-size: var(--font-size-xs);
+  }
+}
+
 h1, h2 {
   font-family: var(--sans);
   font-weight: 600;
