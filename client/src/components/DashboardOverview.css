@@ -190,8 +190,25 @@
   font-weight: 600;
   padding: 3px 8px;
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  /* Each source sets --tag (below); the fill is a tint of the same colour
+     mixed into the card colour (opaque, so the greenish row behind it can't
+     muddy it), which works in both themes. */
+  --tag: var(--accent);
+  background: color-mix(in srgb, var(--tag) 16%, var(--card-bg));
+  color: var(--tag);
+}
+
+.upcoming-source.credit-card {
+  --tag: var(--tag-card);
+}
+
+.upcoming-source.subscription {
+  --tag: var(--tag-sub);
+}
+
+/* Money coming in, so the same green as the app's other positive figures. */
+.upcoming-source.salary {
+  --tag: var(--success);
 }
 
 .upcoming-name {
