@@ -461,13 +461,13 @@ function entriesList(drafts: FormDrafts, entries: { row: number; remarks: string
     return { li, amount, remarks, chips, save };
   }
   function row(entry: (typeof entries)[number]): El {
-    const trigger = h("button", { type: "button", class: "overflow-menu-trigger", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "More actions" }, "⋮");
+    const trigger = h("button", { type: "button", class: "overflow-menu-trigger", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "More actions" }, h("svg", { class: "lucide" }));
     const menu = h("div", { class: "overflow-menu" }, trigger);
     const li = h("li", { class: "entry-row", "data-row": String(entry.row) }, h("span", { class: "entry-remarks" }, entry.remarks), h("span", { class: "entry-amount" }, entry.amount), menu);
     trigger.onClick = () => {
       trigger.attrs.set("aria-expanded", "true");
       const item = (label: string, onClick: () => void) => {
-        const b = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", { class: "overflow-menu-item-icon" }, "✏️"), h("span", {}, label));
+        const b = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", { class: "overflow-menu-item-icon" }, h("svg", { class: "lucide" })), h("span", {}, label));
         b.onClick = onClick;
         return h("li", { role: "none" }, b);
       };
@@ -529,7 +529,7 @@ describe("FormDrafts: an open edit row", () => {
     const reopened = newList.edits.get(4)!;
     expect(reopened).toBeDefined();
     expect(newList.edits.size).toBe(1);
-    expect(actions.done.slice(0, 2)).toEqual(["click ⋮", "click ✏️Edit"]);
+    expect(actions.done.slice(0, 2)).toEqual(["click More actions", "click Edit"]);
     expect(reopened.amount.value).toBe("65");
     expect(reopened.remarks.value).toBe("Train home");
     expect(actions.focused).toEqual({ el: reopened.remarks, start: 10, end: 10 });
@@ -795,12 +795,12 @@ function debtsList(drafts: FormDrafts, debts: { id: string; name: string; amount
   const ul = h("ul", { class: "debts-list" });
   const opened: { id: string; li: El; amount: El }[] = [];
   const row = (debt: (typeof debts)[number]) => {
-    const trigger = h("button", { type: "button", class: "overflow-menu-trigger", "aria-haspopup": "menu", "aria-expanded": "false" }, "⋮");
+    const trigger = h("button", { type: "button", class: "overflow-menu-trigger", "aria-haspopup": "menu", "aria-expanded": "false" }, h("svg", { class: "lucide" }));
     const menu = h("div", { class: "overflow-menu" }, trigger);
     const li = h("li", { class: "debt-row" }, h("span", { class: "debt-name" }, debt.name), h("span", { class: "debt-amount" }, debt.amount), menu);
     trigger.onClick = () => {
       trigger.attrs.set("aria-expanded", "true");
-      const item = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", {}, "✏️"), h("span", {}, "Edit"));
+      const item = h("button", { type: "button", role: "menuitem", class: "overflow-menu-item" }, h("span", {}, h("svg", { class: "lucide" })), h("span", {}, "Edit"));
       item.onClick = () => {
         const amount = h("input", { type: "number", placeholder: "Amount", value: debt.amount });
         const edit = h("li", { class: "debt-row row-editing" }, h("div", { class: "edit-fields" }, h("input", { type: "text", placeholder: "Name", value: debt.name }), amount));

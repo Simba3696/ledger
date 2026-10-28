@@ -82,9 +82,9 @@ export interface DraftActions {
 export const DRAFT_WINDOW_MS = 5000;
 /** The most menu clicks spent reopening one edit row. */
 const REOPEN_TRIES = 4;
-/** OverflowMenu's Edit item as it renders (its icon, then its label): the
- * only item an edit row is reopened by. */
-const EDIT_ITEM = "✏️Edit";
+/** OverflowMenu's Edit item as its text reads: its icon is an SVG with no
+ * text, so just the label. The only item an edit row is reopened by. */
+const EDIT_ITEM = "Edit";
 
 type Kind = "text" | "check" | "choice";
 
