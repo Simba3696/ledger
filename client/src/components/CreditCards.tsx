@@ -286,7 +286,9 @@ export function CreditCards({ year, month }: Props) {
     ? [
         { label: "Total Due", value: rupee.format(thisMonth.totalDue) },
         { label: "Total Paid", value: rupee.format(thisMonth.totalPaid) },
-        { label: "Earliest Due Date", value: formatDate(thisMonth.earliestDueDate) },
+        // Red, like Overpaid: it's the deadline to look up each month, so it
+        // should stand out from the plain totals beside it.
+        { label: "Earliest Due Date", value: formatDate(thisMonth.earliestDueDate), negative: thisMonth.earliestDueDate !== null },
         {
           label: thisMonth.overpaidOrSaved < 0 ? "Overpaid" : "Saved",
           value: rupee.format(Math.abs(thisMonth.overpaidOrSaved)),
