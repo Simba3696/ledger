@@ -10,6 +10,7 @@ import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import { generateId } from "../id";
 import "./CreditCards.css";
+import { GripVertical, X } from "lucide-react";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -147,7 +148,7 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
             title="Drag to reorder"
             onPointerDown={disabled ? undefined : (e) => handleHandlePointerDown(e, row.id)}
           >
-            ⠿
+            <GripVertical />
           </span>
           <input
             type="text"
@@ -196,7 +197,7 @@ function CardsEditor({ rows, onChange, disabled }: CardsEditorProps) {
             disabled={disabled}
             aria-label={`Remove ${row.name || "this card"}`}
           >
-            ×
+            <X />
           </button>
         </div>
       ))}

@@ -6,6 +6,7 @@ import { LoadingOverlay } from "./LoadingOverlay";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./EMI.css";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 type SortField = "name" | "dueDay" | "emiAmount" | "totalAmount" | "remaining" | "percentPaid";
 type SortDir = "asc" | "desc";
@@ -399,7 +400,7 @@ export function EMI() {
               onClick={() => toggleSort(opt.field)}
             >
               {opt.label}
-              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? <ChevronUp /> : <ChevronDown />}</span>}
             </button>
           ))}
         </div>

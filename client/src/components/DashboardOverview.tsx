@@ -3,6 +3,7 @@ import { getOverview, type DashboardOverview as DashboardOverviewData, type Upco
 import { LoadingOverlay } from "./LoadingOverlay";
 import { rupee } from "../format";
 import "./DashboardOverview.css";
+import { ChevronDown } from "lucide-react";
 
 const SOURCE_LABEL: Record<UpcomingItem["source"], string> = {
   EMI: "EMI",
@@ -105,7 +106,7 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
             aria-expanded={!collapsed}
           >
             <span className={`upcoming-chevron${collapsed ? " collapsed" : ""}`} aria-hidden="true">
-              ▾
+              <ChevronDown />
             </span>
             <h3>
               <span className="upcoming-title-full">Upcoming (next 2 weeks)</span>

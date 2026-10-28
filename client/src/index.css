@@ -6,6 +6,8 @@
   --light-border: #c9d6cd;
   --light-card-bg: #ffffff;
   --light-accent: #3b82f6;
+  /* Tinted fill behind blue text (tags) and the focus ring around inputs. */
+  --light-accent-soft: #dbeafe;
 
   --dark-text: #d1d5db;
   --dark-text-h: #f3f4f6;
@@ -13,6 +15,7 @@
   --dark-border: #2e303a;
   --dark-card-bg: #1f2028;
   --dark-accent: #60a5fa;
+  --dark-accent-soft: #1e3a5f;
 
   /* Errors/destructive actions and success/positive figures read the same
      in both themes, so unlike the pairs above these aren't split by
@@ -31,6 +34,7 @@
   --border: var(--light-border);
   --card-bg: var(--light-card-bg);
   --accent: var(--light-accent);
+  --accent-soft: var(--light-accent-soft);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -64,6 +68,7 @@
     --border: var(--dark-border);
     --card-bg: var(--dark-card-bg);
     --accent: var(--dark-accent);
+    --accent-soft: var(--dark-accent-soft);
   }
 }
 
@@ -77,6 +82,7 @@
   --border: var(--light-border);
   --card-bg: var(--light-card-bg);
   --accent: var(--light-accent);
+  --accent-soft: var(--light-accent-soft);
   color-scheme: light;
 }
 
@@ -87,6 +93,7 @@
   --border: var(--dark-border);
   --card-bg: var(--dark-card-bg);
   --accent: var(--dark-accent);
+  --accent-soft: var(--dark-accent-soft);
   color-scheme: dark;
 }
 
@@ -105,6 +112,25 @@ body {
      dismissing a dropdown) can trigger Android Chrome's native
      pull-to-refresh and reload the page, discarding any in-progress edit. */
   overscroll-behavior-y: contain;
+  /* Checkboxes and other native controls pick up the app's blue. */
+  accent-color: var(--accent);
+}
+
+/* Lucide icons size to the surrounding text (1em), so each spot sizes its
+   icon with font-size, the same way it sized the emoji they replaced. */
+svg.lucide {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+}
+
+/* A blue edge and soft blue glow on the field being typed in. */
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* Phones: placeholders drop to caption size so they fit the same fields
@@ -123,4 +149,16 @@ h1, h2 {
   font-family: var(--sans);
   font-weight: 600;
   color: var(--text-h);
+}
+
+/* A short blue bar before every page and section title. */
+h2::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 0.8em;
+  margin-right: 10px;
+  border-radius: 2px;
+  background: var(--accent);
+  vertical-align: -0.05em;
 }

@@ -422,6 +422,10 @@ auto-advances forward to the next real cycle, never silently going stale:
   rather than swapping content out for plain "Loading…" text — previous
   content (e.g. last month's stats while this month's are being fetched)
   stays visible-but-faded underneath instead of flashing to blank.
+- Icons are line-style SVGs (Lucide) in the app's blue accent, the same on
+  every phone and browser, rather than emoji. Blue also marks the active tab,
+  focused fields, stat cards and section titles; red and green are kept for
+  money (owed vs. saved).
 - Light/dark theme: a sun/moon slider toggle in the header (top right). The
   choice is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.

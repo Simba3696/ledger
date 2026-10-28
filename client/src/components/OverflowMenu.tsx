@@ -1,10 +1,11 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { EllipsisVertical } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
 import "./OverflowMenu.css";
 
 interface OverflowMenuItem {
   label: string;
-  icon?: string;
+  icon?: ReactNode;
   onClick: () => void;
   disabled?: boolean;
   destructive?: boolean;
@@ -55,7 +56,7 @@ export function OverflowMenu({ items, disabled }: Props) {
         aria-expanded={open}
         aria-label="More actions"
       >
-        ⋮
+        <EllipsisVertical />
       </button>
       {open && (
         <ul className={`overflow-menu-list${openUpward ? " upward" : ""}`} role="menu">

@@ -1,6 +1,7 @@
 import type { PointerEvent } from "react";
 import type { LedgerEntry } from "../api";
 import { CATEGORY_SWATCH } from "../categoryColors";
+import { ArrowDown, ArrowUp, Copy, GripVertical, Pencil, Trash2 } from "lucide-react";
 import { OverflowMenu } from "./OverflowMenu";
 
 interface Props {
@@ -59,7 +60,7 @@ export function EntryRow({
           title="Drag to reorder"
           onPointerDown={canDrag ? onHandlePointerDown : undefined}
         >
-          ⠿
+          <GripVertical />
         </span>
       )}
       <span className="entry-remarks">{entry.remarks}</span>
@@ -69,11 +70,11 @@ export function EntryRow({
         <OverflowMenu
           disabled={busy}
           items={[
-            { label: "Move up", icon: "⬆️", onClick: onMoveUp, disabled: !canMoveUp },
-            { label: "Move down", icon: "⬇️", onClick: onMoveDown, disabled: !canMoveDown },
-            { label: "Copy", icon: "📋", onClick: onCopy },
-            { label: "Edit", icon: "✏️", onClick: onEdit },
-            { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
+            { label: "Move up", icon: <ArrowUp />, onClick: onMoveUp, disabled: !canMoveUp },
+            { label: "Move down", icon: <ArrowDown />, onClick: onMoveDown, disabled: !canMoveDown },
+            { label: "Copy", icon: <Copy />, onClick: onCopy },
+            { label: "Edit", icon: <Pencil />, onClick: onEdit },
+            { label: "Delete", icon: <Trash2 />, onClick: onDelete, destructive: true },
           ]}
         />
       )}

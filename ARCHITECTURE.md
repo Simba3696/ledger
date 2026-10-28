@@ -225,7 +225,7 @@ gives every entry.
   `<Tab>.tsx` (fetch + state + form), `<Item>Row.tsx` (display), `Edit<Item>Row.tsx`
   (inline edit, swapped in for the row being edited). Shared row-action
   affordances (Edit/Delete/Copy/etc.) go through `OverflowMenu.tsx`, a
-  generic `items: {label, onClick, ...}[]` menu, not a bespoke dropdown per
+  generic `items: {label, icon, onClick, ...}[]` menu, not a bespoke dropdown per
   tab. A signed amount (Debts, the Finances savings delta) goes through
   `SignedAmountInput.tsx` rather than a plain `<input type="number">` —
   splitting sign (an explicit two-button toggle) from magnitude sidesteps a
@@ -236,10 +236,18 @@ gives every entry.
   stylesheet, so anything genuinely shared lives in `shared.css` instead of
   being duplicated or accidentally leaking from one component into another).
   Theming is CSS custom properties (`--bg`, `--card-bg`, `--text`,
-  `--text-h`, `--border`, `--success`, `--danger`, …) redefined per theme in
-  `index.css`; `ThemeToggle.tsx` sets `data-theme` on `<html>` and persists
-  the choice to `localStorage`, falling back to `prefers-color-scheme` until
-  an explicit choice is made.
+  `--text-h`, `--border`, `--accent`, `--accent-soft`, `--success`,
+  `--danger`, …) redefined per theme in `index.css`. Blue (`--accent`) marks
+  interactive and structural UI: buttons, the active tab, icons, focus rings,
+  stat-card edges and heading markers. Red/green stay reserved for money
+  meaning (owed vs. saved), never decoration. `ThemeToggle.tsx` sets
+  `data-theme` on `<html>` and persists the choice to `localStorage`,
+  falling back to `prefers-color-scheme` until an explicit choice is made.
+- **Icons** are `lucide-react` SVG components (imported one by one, so only
+  the icons used are bundled), never emoji: emoji render differently on every
+  OS and can't take the theme's colours. A global `svg.lucide` rule sizes
+  every icon to `1em`, so each spot sets icon size with `font-size` and colour
+  with `color`, like text.
 - **Dashboard** (`Dashboard.tsx` + `DashboardOverview.tsx` +
   `EmiProjectionChart.tsx`) is the default tab and the only place that reads
   across multiple concerns — via the one `/api/overview` aggregation

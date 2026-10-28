@@ -1,4 +1,5 @@
 import type { EmiEntryComputed } from "../api";
+import { ArrowDown, ArrowUp, CircleCheck, Flag, Pencil, Trash2, Wallet } from "lucide-react";
 import { OverflowMenu } from "./OverflowMenu";
 import { rupee } from "../format";
 
@@ -88,13 +89,13 @@ export function EmiRow({ emi, busy, onEdit, onDelete, onPaidThisMonth, onRecordP
       <OverflowMenu
         disabled={busy}
         items={[
-          { label: "Paid this month", icon: "✅", onClick: onPaidThisMonth, disabled: emi.isPaidOff },
-          { label: "Record payment", icon: "💰", onClick: onRecordPayment, disabled: emi.isPaidOff },
-          { label: "Foreclose EMI", icon: "🏁", onClick: onForeclose },
-          { label: "Edit", icon: "✏️", onClick: onEdit },
-          ...(onMoveUp ? [{ label: "Move up", icon: "⬆️", onClick: onMoveUp }] : []),
-          ...(onMoveDown ? [{ label: "Move down", icon: "⬇️", onClick: onMoveDown }] : []),
-          { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
+          { label: "Paid this month", icon: <CircleCheck />, onClick: onPaidThisMonth, disabled: emi.isPaidOff },
+          { label: "Record payment", icon: <Wallet />, onClick: onRecordPayment, disabled: emi.isPaidOff },
+          { label: "Foreclose EMI", icon: <Flag />, onClick: onForeclose },
+          { label: "Edit", icon: <Pencil />, onClick: onEdit },
+          ...(onMoveUp ? [{ label: "Move up", icon: <ArrowUp />, onClick: onMoveUp }] : []),
+          ...(onMoveDown ? [{ label: "Move down", icon: <ArrowDown />, onClick: onMoveDown }] : []),
+          { label: "Delete", icon: <Trash2 />, onClick: onDelete, destructive: true },
         ]}
       />
     </li>

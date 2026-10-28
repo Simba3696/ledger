@@ -15,6 +15,7 @@
   gap: 6px;
   background: var(--card-bg);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: 12px;
   padding: 14px 16px;
 }
@@ -70,7 +71,8 @@
 }
 
 .subscriptions-sort .sort-arrow {
-  font-size: 10px;
+  display: inline-flex;
+  font-size: 14px;
 }
 
 .subscriptions-body {
