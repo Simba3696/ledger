@@ -76,6 +76,15 @@ npm run lint                                            # oxlint on client/, ser
 npm run knip                                            # unused files, exports and dependencies
 ```
 
+## gstack
+
+This project uses [gstack](https://github.com/garrytan/gstack), installed globally at `~/.claude/skills/gstack`. The full skill list is in the global `~/.claude/CLAUDE.md`.
+
+- Use `/browse` for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+- Typical flow: `/office-hours` or `/spec` to shape an idea, `/plan-eng-review` before building, `/review` before landing, `/qa` to test the running app, `/ship` to land. `/investigate` for bugs.
+- `/qa`, `/benchmark` and `/design-review` run against this worktree on ports 4100/5273, never the live `personal` app on :4000.
+- A push to `main` redeploys the Netlify sites, so `/ship` and `/land-and-deploy` are deploys. Never push or merge across `main` and `personal` (cherry-pick only, ADR 0005).
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. Route only to skills in the session's available-skills list; answer directly for quick questions or small scoped edits.
