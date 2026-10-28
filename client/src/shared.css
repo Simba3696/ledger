@@ -1,13 +1,41 @@
 /* Generic classes reused by more than one component — kept together here
    rather than co-located, since no single component "owns" them. */
 
+/* Every dropdown (Upcoming EMIs scale, Yearly Overview's average and year,
+   the header's month/year). The browser's own arrow sat jammed against the
+   text and matched nothing else, so it's replaced by the app's blue chevron
+   with room of its own, and the corners match the other fields. */
 .select {
+  appearance: none;
   font-size: var(--font-size-control);
-  padding: 6px 8px;
-  border-radius: 6px;
+  padding: 8px 36px 8px 12px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  background: var(--card-bg);
+  background-color: var(--card-bg);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
   color: var(--text-h);
+  cursor: pointer;
+}
+
+.select:hover {
+  border-color: var(--accent);
+}
+
+/* Inside a form or an edit row, a dropdown matches the inputs beside it:
+   the same fill, height and 16px text (under 16px, iOS Safari zooms the
+   page on focus, as with inputs). */
+.field-row .select,
+.edit-fields .select {
+  font-size: var(--font-size-base);
+  background-color: var(--bg);
+}
+
+.field-row .select {
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
 .submit-btn {

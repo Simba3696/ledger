@@ -335,7 +335,8 @@ auto-advances to the next real cycle, never silently going stale:
   keeping the previous content visible underneath instead of flashing to
   blank.
 - Icons are line-style SVGs (Lucide) in the app's blue accent, the same on
-  every phone and browser, rather than emoji. Blue also marks the active tab,
+  every phone and browser, rather than emoji (dropdowns use the same blue
+  chevron). Blue also marks the active tab,
   focused fields, stat cards and section titles; red and green are kept for
   money (owed vs. saved).
 - Every tab fits a phone screen without scrolling sideways (checked at 360px

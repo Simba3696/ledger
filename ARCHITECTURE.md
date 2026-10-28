@@ -268,7 +268,9 @@ has the full table. The differences:
   the icons used are bundled), never emoji: emoji render differently on every
   OS and can't take the theme's colours. A global `svg.lucide` rule sizes
   every icon to `1em`, so each spot sets icon size with `font-size` and colour
-  with `color`, like text.
+  with `color`, like text. Dropdowns (`.select` in `shared.css`) can't hold an
+  SVG child, so they draw the same chevron as a background image from the
+  per-theme `--select-chevron` token, with the browser's own arrow turned off.
 - **Dashboard** (`Dashboard.tsx` + `DashboardOverview.tsx`) is the default
   tab and the only place that reads across concerns, through the one
   `/api/overview` endpoint, not parallel fetches to each tab's API.
