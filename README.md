@@ -60,7 +60,8 @@ concurrent-with-Excel writes, no cached/stale derived numbers).
 
 **Dashboard** — Net Worth and an Upcoming list combining every EMI due date,
 subscription renewal, and outstanding credit card bill in the next two
-weeks, above a yearly spending chart. Supports light and dark themes:
+weeks (each tagged in its own colour: EMI blue, Card violet, Sub amber), above
+a yearly spending chart. Supports light and dark themes:
 
 | Light | Dark |
 |---|---|

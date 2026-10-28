@@ -240,7 +240,10 @@ gives every entry.
   `--danger`, …) redefined per theme in `index.css`. Blue (`--accent`) marks
   interactive and structural UI: buttons, the active tab, icons, focus rings,
   stat-card edges and heading markers. Red/green stay reserved for money
-  meaning (owed vs. saved), never decoration. `ThemeToggle.tsx` sets
+  meaning (owed vs. saved), never decoration. The Dashboard Upcoming tags
+  get one colour per source so they can be told apart at a glance: EMI on
+  `--accent`, cards on `--tag-card`, subscriptions on `--tag-sub`, and the
+  Salary reminder on `--success` (money coming in). `ThemeToggle.tsx` sets
   `data-theme` on `<html>` and persists the choice to `localStorage`,
   falling back to `prefers-color-scheme` until an explicit choice is made.
 - **Icons** are `lucide-react` SVG components (imported one by one, so only

@@ -12,6 +12,15 @@ const SOURCE_LABEL: Record<UpcomingItem["source"], string> = {
   Salary: "Salary",
 };
 
+// Each source's tag gets its own colour (DashboardOverview.css), so EMIs,
+// cards and subscriptions are told apart at a glance.
+const SOURCE_CLASS: Record<UpcomingItem["source"], string> = {
+  EMI: "emi",
+  Subscription: "subscription",
+  "Credit Card": "credit-card",
+  Salary: "salary",
+};
+
 const UPCOMING_COLLAPSED_KEY = "ledger-upcoming-collapsed";
 
 function getInitialCollapsed(): boolean {
@@ -138,7 +147,7 @@ export function DashboardOverview({ onSelectUpcomingItem }: Props) {
                                 : "Credit Cards"
                         }`}
                       >
-                        <span className="upcoming-source">{SOURCE_LABEL[item.source]}</span>
+                        <span className={`upcoming-source ${SOURCE_CLASS[item.source]}`}>{SOURCE_LABEL[item.source]}</span>
                         <span className="upcoming-name">{item.name}</span>
                         {item.source === "Salary" ? (
                           <>

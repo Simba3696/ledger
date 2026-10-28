@@ -8,6 +8,9 @@
   --light-accent: #3b82f6;
   /* Tinted fill behind blue text (tags) and the focus ring around inputs. */
   --light-accent-soft: #dbeafe;
+  /* Dashboard Upcoming tags: one colour per source (EMI uses --accent). */
+  --light-tag-card: #6d28d9;
+  --light-tag-sub: #b45309;
 
   --dark-text: #d1d5db;
   --dark-text-h: #f3f4f6;
@@ -16,6 +19,8 @@
   --dark-card-bg: #1f2028;
   --dark-accent: #60a5fa;
   --dark-accent-soft: #1e3a5f;
+  --dark-tag-card: #c4b5fd;
+  --dark-tag-sub: #fcd34d;
 
   /* Errors/destructive actions and success/positive figures read the same
      in both themes, so unlike the pairs above these aren't split by
@@ -35,6 +40,8 @@
   --card-bg: var(--light-card-bg);
   --accent: var(--light-accent);
   --accent-soft: var(--light-accent-soft);
+  --tag-card: var(--light-tag-card);
+  --tag-sub: var(--light-tag-sub);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
@@ -69,6 +76,8 @@
     --card-bg: var(--dark-card-bg);
     --accent: var(--dark-accent);
     --accent-soft: var(--dark-accent-soft);
+    --tag-card: var(--dark-tag-card);
+    --tag-sub: var(--dark-tag-sub);
   }
 }
 
@@ -83,6 +92,8 @@
   --card-bg: var(--light-card-bg);
   --accent: var(--light-accent);
   --accent-soft: var(--light-accent-soft);
+  --tag-card: var(--light-tag-card);
+  --tag-sub: var(--light-tag-sub);
   color-scheme: light;
 }
 
@@ -94,6 +105,8 @@
   --card-bg: var(--dark-card-bg);
   --accent: var(--dark-accent);
   --accent-soft: var(--dark-accent-soft);
+  --tag-card: var(--dark-tag-card);
+  --tag-sub: var(--dark-tag-sub);
   color-scheme: dark;
 }
 
