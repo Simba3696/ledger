@@ -5,6 +5,7 @@ import { SignedAmountInput } from "./SignedAmountInput";
 import { rupee } from "../format";
 import { generateId } from "../id";
 import "./Finances.css";
+import { X } from "lucide-react";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -109,7 +110,7 @@ function SavingsEditor({ rows, onChange, disabled }: SavingsEditorProps) {
               disabled={disabled}
               aria-label={`Remove ${row.name || "this scheme"}`}
             >
-              ×
+              <X />
             </button>
           </div>
           <div className="savings-row-detail">

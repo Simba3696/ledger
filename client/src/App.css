@@ -108,8 +108,12 @@ button.brand {
   white-space: nowrap;
 }
 
+.tabs button:hover {
+  color: var(--accent);
+}
+
 .tabs button.selected {
-  color: var(--text-h);
+  color: var(--accent);
   border-bottom-color: var(--accent);
 }
 

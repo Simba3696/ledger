@@ -20,6 +20,7 @@
   gap: 6px;
   background: var(--card-bg);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: 12px;
   padding: 14px 16px;
 }
@@ -119,9 +120,9 @@
 }
 
 .upcoming-chevron {
-  display: inline-block;
-  font-size: var(--font-size-sm);
-  color: var(--text);
+  display: inline-flex;
+  font-size: 18px;
+  color: var(--accent);
   transition: transform 0.2s ease;
 }
 
@@ -189,8 +190,8 @@
   font-weight: 600;
   padding: 3px 8px;
   border-radius: 999px;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .upcoming-name {

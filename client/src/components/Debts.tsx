@@ -7,6 +7,7 @@ import { SignedAmountInput } from "./SignedAmountInput";
 import { confirmDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./Debts.css";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 type SortField = "name" | "amount" | "direction";
 type SortDir = "asc" | "desc";
@@ -196,7 +197,7 @@ export function Debts() {
               onClick={() => toggleSort(opt.field)}
             >
               {opt.label}
-              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? "▲" : "▼"}</span>}
+              {sortField === opt.field && <span className="sort-arrow">{sortDir === "asc" ? <ChevronUp /> : <ChevronDown />}</span>}
             </button>
           ))}
         </div>

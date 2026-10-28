@@ -19,7 +19,7 @@
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--text);
+  color: var(--accent);
   cursor: pointer;
 }
 
@@ -53,6 +53,7 @@
 
 .overflow-menu-item {
   display: flex;
+  white-space: nowrap;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -67,8 +68,13 @@
 }
 
 .overflow-menu-item-icon {
-  font-size: var(--font-size-xs);
-  line-height: 1;
+  display: inline-flex;
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.overflow-menu-item.destructive .overflow-menu-item-icon {
+  color: inherit;
 }
 
 .overflow-menu-item:hover:not(:disabled) {

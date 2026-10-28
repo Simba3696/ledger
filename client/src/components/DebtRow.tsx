@@ -1,4 +1,5 @@
 import type { DebtEntry } from "../api";
+import { Pencil, Trash2 } from "lucide-react";
 import { OverflowMenu } from "./OverflowMenu";
 import { rupee } from "../format";
 
@@ -22,8 +23,8 @@ export function DebtRow({ debt, busy, onEdit, onDelete }: Props) {
       <OverflowMenu
         disabled={busy}
         items={[
-          { label: "Edit", icon: "✏️", onClick: onEdit },
-          { label: "Delete", icon: "❌", onClick: onDelete, destructive: true },
+          { label: "Edit", icon: <Pencil />, onClick: onEdit },
+          { label: "Delete", icon: <Trash2 />, onClick: onDelete, destructive: true },
         ]}
       />
     </li>

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import "./ThemeToggle.css";
+import { Moon, Sun } from "lucide-react";
 
 type Theme = "light" | "dark";
 
@@ -40,7 +41,7 @@ export function ThemeToggle() {
       title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
     >
       <span className="theme-toggle-thumb" aria-hidden="true">
-        {theme === "dark" ? "🌙" : "☀️"}
+        {theme === "dark" ? <Moon /> : <Sun />}
       </span>
     </button>
   );

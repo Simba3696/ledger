@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { setMonthLock } from "../api";
 import "./MonthLockToggle.css";
+import { Lock, LockOpen } from "lucide-react";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -39,9 +40,10 @@ export function MonthLockToggle({ year, month, locked, onChanged }: Props) {
   return (
     <div className={`month-lock${locked ? " locked" : ""}`}>
       <span className="month-lock-status">
+        {locked ? <Lock /> : <LockOpen />}
         {locked
-          ? `🔒 ${MONTH_NAMES[month - 1]} ${year} is locked — adding, editing, and reordering entries is disabled.`
-          : `🔓 ${MONTH_NAMES[month - 1]} ${year} is unlocked.`}
+          ? `${MONTH_NAMES[month - 1]} ${year} is locked — adding, editing, and reordering entries is disabled.`
+          : `${MONTH_NAMES[month - 1]} ${year} is unlocked.`}
       </span>
       <button type="button" className="month-lock-toggle" onClick={toggle} disabled={busy}>
         {busy ? "…" : locked ? "Unlock" : "Lock this month"}

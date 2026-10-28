@@ -333,6 +333,10 @@ auto-advances to the next real cycle, never silently going stale:
 - Every tab shows a spinner over a faded backdrop while its data loads,
   keeping the previous content visible underneath instead of flashing to
   blank.
+- Icons are line-style SVGs (Lucide) in the app's blue accent, the same on
+  every phone and browser, rather than emoji. Blue also marks the active tab,
+  focused fields, stat cards and section titles; red and green are kept for
+  money (owed vs. saved).
 - Light/dark theme: a sun/moon slider in the header (top right). The choice
   is saved to `localStorage` and wins over the OS preference once set;
   before any explicit choice, it follows `prefers-color-scheme`.
