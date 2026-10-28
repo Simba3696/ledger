@@ -67,7 +67,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           step="0.01"
           value={emiAmount}
           onChange={(e) => setEmiAmount(e.target.value)}
-          placeholder="EMI Amount"
+          placeholder="EMI ₹/mo"
         />
         <input
           type="number"
@@ -84,7 +84,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           step="0.01"
           value={totalAmount}
           onChange={(e) => setTotalAmount(e.target.value)}
-          placeholder="Total Amount"
+          placeholder="Total"
         />
         <input
           type="number"
@@ -92,7 +92,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           step="0.01"
           value={remainingAsOf}
           onChange={(e) => setRemainingAsOf(e.target.value)}
-          placeholder="Current Balance"
+          placeholder="Balance"
         />
         <input
           type="number"
@@ -100,7 +100,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           min={1}
           value={durationMonths}
           onChange={(e) => setDurationMonths(e.target.value)}
-          placeholder="Duration (months, optional)"
+          placeholder="Months"
         />
         <input
           type="number"
@@ -110,7 +110,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           max={100}
           value={interestRate}
           onChange={(e) => setInterestRate(e.target.value)}
-          placeholder="Interest Rate (% p.a., optional)"
+          placeholder="Interest %"
         />
         <input
           type="number"
@@ -120,7 +120,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           max={100}
           value={foreclosureCharge}
           onChange={(e) => setForeclosureCharge(e.target.value)}
-          placeholder="Foreclosure Charge (%, optional)"
+          placeholder="Fee %"
         />
         <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" />
       </div>

@@ -315,7 +315,7 @@ export function EMI() {
               step="0.01"
               value={remainingAsOf}
               onChange={(e) => setRemainingAsOf(e.target.value)}
-              placeholder="Defaults to Total Amount"
+              placeholder="Same as Total"
               required
             />
           </label>
@@ -353,7 +353,7 @@ export function EMI() {
               max={100}
               value={foreclosureCharge}
               onChange={(e) => setForeclosureCharge(e.target.value)}
-              placeholder="Early-closure fee, if any"
+              placeholder="Early-closure fee"
             />
           </label>
           <label>

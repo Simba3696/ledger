@@ -63,7 +63,7 @@ export function EditSubscriptionRow({ subscription, onCancel, onSaved }: Props) 
           type="text"
           value={cardOrBank}
           onChange={(e) => setCardOrBank(e.target.value)}
-          placeholder="Card / Bank (or N/A)"
+          placeholder="Card / Bank or N/A"
         />
       </div>
 
