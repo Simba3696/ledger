@@ -477,6 +477,7 @@ client/   React + Vite frontend. Nav bar order: Dashboard, Credit Cards,
           Debts, EMI, Subscriptions, Finances — see src/components/. The
           Add Expense form + current month's entry list (Expenses) has no
           nav button; it's only reached via a Dashboard chart click.
+          Unit/component tests sit next to their source as *.test.ts(x).
 e2e/      Full-stack Playwright regression script (see Testing below).
 scripts/  kill-ports.js — frees the dev ports before/on demand; run-server.bat
           + run-server-hidden.vbs — the Scheduled Task launch chain (see
@@ -681,7 +682,8 @@ are just for managing/opening it conveniently once it's already running.
 
 Two suites, covering different layers:
 
-- **`npm test`** — vitest, nine files. `server/test/ledger.test.ts` covers
+- **`npm test`** — vitest in both workspaces, server then client. The server
+  suite (`server/test/`, ten files): `server/test/ledger.test.ts` covers
   `appendEntry`/`updateEntry`/`deleteEntry`/`moveEntry`/`yearSummary` against
   synthetic `.xlsx` fixtures built at run time by `server/test/fixtures.ts`
   (never real data — nothing sensitive is committed), including a couple of
@@ -760,6 +762,14 @@ Two suites, covering different layers:
   discard one save).
   Fast (a few seconds), no browser or dev server needed — this is the one to
   run after any change under `server/src/excel/`.
+  The client suite (`client/src/**/*.test.ts(x)`, jsdom + Testing Library,
+  API mocked — it never starts the app or touches port 4000) covers the pure
+  helpers (`movingAverage`, `id`, the EMI sort in `emiSort.ts` including
+  Months Left), `api.ts`'s request/error handling, and the EMI tab's
+  components: row figures and labels, the edit row's Payments left and
+  cleared fields, sorting, and the add form — including Current Balance
+  following Total Amount as it's typed digit by digit, but never overwriting
+  a balance you typed yourself.
 - **`npm run test:e2e`** — `e2e/regression.ts` (Playwright, plain script, not
   the `@playwright/test` runner). Builds a scratch data directory seeded with
   a full year (so switching months never legitimately 404s), starts the real
