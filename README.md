@@ -588,6 +588,14 @@ refuse any database or Supabase host other than `127.0.0.1`/`localhost`.
   a few seconds. It **truncates the local tables**, so run
   `npx supabase db reset` afterwards if you want the seeded categories back
   for `npm run dev`.
+- **`npm run test:client`**: the client's vitest suites, next to their
+  source as `client/src/**/*.test.ts(x)`, needing no database or server.
+  Most cover the storage backends and sync engine in Node. Component tests
+  (`*.test.tsx`) run in jsdom with Testing Library and `../api` mocked:
+  the EMI tab's row figures and labels, the edit row's Payments left and
+  cleared fields, sorting (including Months Left, in `emiSort.ts`), and the
+  add form, including Current Balance following Total Amount as it's typed
+  digit by digit but never overwriting a balance you typed yourself.
 - **`npm run test:e2e`**: two Playwright scripts (plain scripts, not the
   `@playwright/test` runner; they need the one-time
   `npx playwright install chromium` from

@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { addEmi, deleteEmi, getEmis, payEmi, type EmiEntryComputed } from "../api";
 import { EmiRow } from "./EmiRow";
 import { EditEmiRow } from "./EditEmiRow";
+import { sortEmis, type SortDir, type SortField } from "./emiSort";
 import { LoadingOverlay } from "./LoadingOverlay";
 import { confirmDialog, promptDialog } from "./dialogs";
 import { rupee } from "../format";
 import "./EMI.css";
 import { ChevronDown, ChevronUp } from "lucide-react";
-
-type SortField = "name" | "dueDay" | "emiAmount" | "totalAmount" | "remaining" | "monthsLeft" | "percentPaid";
-type SortDir = "asc" | "desc";
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "name", label: "Name" },
@@ -23,37 +21,6 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
 
 function formatDate(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
-}
-
-// Foreclosure hint: % of the loan already paid off — sorting by this (rather
-// than the raw remaining amount) surfaces the best "quick win" candidate,
-// since a loan that started small can have a low remaining balance without
-// being anywhere near paid off, and vice versa.
-function percentPaid(emi: EmiEntryComputed): number {
-  return emi.totalAmount > 0 ? (emi.totalAmount - emi.remaining) / emi.totalAmount : 0;
-}
-
-// Months Left sorts by the same payoff date the row's "Finishes ~" label
-// shows, so the order always agrees with what's on screen. YYYY-MM-DD sorts
-// lexicographically the same as chronologically; a paid-off loan (no payoff
-// date) has nothing left, so it sorts as the soonest.
-function payoffSortKey(emi: EmiEntryComputed): string {
-  return emi.estimatedPayoffDate ?? "";
-}
-
-function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): EmiEntryComputed[] {
-  const sorted = [...emis].sort((a, b) => {
-    let cmp = 0;
-    if (field === "name") cmp = a.cardOrBank.localeCompare(b.cardOrBank);
-    else if (field === "dueDay") cmp = a.dueDay - b.dueDay;
-    else if (field === "emiAmount") cmp = a.emiAmount - b.emiAmount;
-    else if (field === "totalAmount") cmp = a.totalAmount - b.totalAmount;
-    else if (field === "remaining") cmp = a.remaining - b.remaining;
-    else if (field === "monthsLeft") cmp = payoffSortKey(a).localeCompare(payoffSortKey(b));
-    else cmp = percentPaid(a) - percentPaid(b);
-    return dir === "asc" ? cmp : -cmp;
-  });
-  return sorted;
 }
 
 export function EMI() {
@@ -89,12 +56,13 @@ export function EMI() {
   const sortedEmis = useMemo(() => sortEmis(emis, sortField, sortDir), [emis, sortField, sortDir]);
 
   // A brand-new EMI hasn't had any payments yet, so Current Balance starts
-  // out equal to Total Amount — only auto-filled while Current Balance is
-  // still blank, so it never clobbers a value you've typed yourself (e.g.
-  // when backfilling a loan that's already partway through).
+  // out equal to Total Amount — it follows Total while it's blank or still
+  // matches it, so typing the total digit by digit keeps them in step, but a
+  // different value you've typed yourself (e.g. backfilling a loan that's
+  // already partway through) is never clobbered.
   function handleTotalAmountChange(value: string) {
     setTotalAmount(value);
-    if (remainingAsOf.trim() === "") setRemainingAsOf(value);
+    if (remainingAsOf.trim() === "" || remainingAsOf === totalAmount) setRemainingAsOf(value);
   }
 
   const refresh = useCallback(async () => {
