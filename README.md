@@ -289,12 +289,22 @@ auto-advances to the next real cycle, never silently going stale:
   **Foreclose EMI** action; the plain Edit/Delete menu is still there for
   correcting mistakes. Current Balance defaults to Total Amount when adding
   a fresh loan, so you only override it for one that's already partway
-  through. An optional Duration (months) field, the number of months the
-  bank stated at conversion time, is stored as a real payoff target
-  (`Until Target`, an exact date) rather than derived, since a bank's
-  final installment is often adjusted to land on the stated date. Once set,
-  the target survives ordinary balance corrections and payments, and only
-  changes if you enter a fresh Duration on a later edit. Each entry has
+  through. An optional Payments left field, how many payments you still
+  have to make after today (a payment due today counts as made), is stored
+  as a real payoff target (`Until Target`, the date of the last payment)
+  rather than derived, since a bank's final installment is often adjusted
+  to land on that date. For a credit-card EMI, count the card bills you'll
+  pay, including one already issued but not yet paid. Once set, the target
+  survives ordinary balance corrections and payments, and only changes if
+  you enter a fresh Payments left on a later edit. (A target saved before
+  Payments left existed holds an older "today + N months" date; it still
+  resolves to the first due date on or after it.) On the Dashboard's
+  Upcoming EMIs chart, each installment lands in the month its money
+  goes out: an EMI billed to a credit card (its Card/Bank matches a card in
+  Credit Cards) posts to this month's statement and is paid on next month's
+  bill, so it counts a month later; a month whose card bill is already
+  Settled drops out; and a few rupees left over at the end fold into the
+  last installment inside the Until month instead of adding one. Each entry has
   quick payment actions, **Paid this month** (subtracts one EMI Amount) and
   **Record payment** (a custom amount, for a partial or extra payment).
   Both anchor the new balance snapshot to *this month's due date* rather

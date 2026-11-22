@@ -32,9 +32,9 @@ export interface EmiEntry {
    * (see `computeRemaining`). */
   remainingAsOf: number;
   asOfDate: string; // YYYY-MM-DD
-  /** An exact payoff target, given by the bank at EMI-conversion time (as a
-   * duration in months — see `EmiEditsInput.durationMonths`) and stored here
-   * as the literal resulting date. When set, this — not a derived estimate —
+  /** An exact payoff target, from the number of payments left (see
+   * `resolveUntilTarget`), stored as the date of the last payment. When set,
+   * this — not a derived estimate —
    * is what `estimatedPayoffMonth` reports, since a real bank schedule's
    * final installment is often adjusted (larger *or* smaller) to hit this
    * exact date, which a plain `remaining ÷ emiAmount` estimate can't always
@@ -162,10 +162,11 @@ export function nextDueDateAfter(anchor: Date, dueDay: number): Date {
 
 /** Finds the first real due date (on `dueDay`) on or after `target`.
  *
- * `untilTarget` (a bank-stated tenure resolved to `addMonths(asOfDate,
- * durationMonths)`) is just a calendar-month milestone, not itself
- * necessarily a real payment date — it keeps whatever day-of-month the loan
- * happened to be added/edited on, which has nothing to do with `dueDay`.
+ * A target saved from "Payments left" is already a real due date and resolves
+ * to itself. One saved before that (`addMonths(asOfDate, durationMonths)`)
+ * is just a calendar-month milestone, not itself necessarily a real payment
+ * date — it keeps whatever day-of-month the loan happened to be added/edited
+ * on, which has nothing to do with `dueDay`.
  * If `dueDay` falls *earlier* in the target's month than the target's own
  * day, that month's due date has already passed relative to the target, so
  * the loan doesn't actually finish paying until the following month's due
@@ -219,10 +220,18 @@ export function withComputed(entry: EmiEntry, today: Date): EmiEntryComputed {
   return { ...entry, remaining, isPaidOff, estimatedPayoffMonth, estimatedPayoffDate, foreclosurePayoff };
 }
 
-/** The literal target date a bank-stated Duration resolves to, relative to
- * `today` (see `EmiEntry.untilTarget`). */
-export function resolveUntilTarget(durationMonths: number, today: Date): string {
-  return formatDate(addMonths(startOfDay(today), durationMonths));
+/** The date of the last payment when `paymentsLeft` payments remain after
+ * `today` (the "Payments left" field): the paymentsLeft-th due date strictly
+ * after today, so a payment due today counts as already made, the same as
+ * the balance decay. E.g. 3 on Nov 22 with dueDay 8 is Feb 8. Stored as
+ * `EmiEntry.untilTarget`. Entries saved before this rule hold an older
+ * "today + N months" date instead, whose day-of-month isn't the due day;
+ * `withComputed` resolves both through `dueDateOnOrAfter`, which leaves a date
+ * that's already a due date unchanged. */
+export function resolveUntilTarget(paymentsLeft: number, today: Date, dueDay: number): string {
+  const date = nthFutureDueDate(dueDay, paymentsLeft, startOfDay(today));
+  if (!date) throw new Error("resolveUntilTarget: no due date found within 100 years");
+  return formatDate(date);
 }
 
 export interface EmiPaymentSettlement {
@@ -276,6 +285,117 @@ export interface EmiMonthlyProjection {
   totalAmount: number;
 }
 
+/** One month of Credit Card Bills, as much of it as the projection needs: an
+ * EMI whose Card/Bank matches a card here is billed to that card, and a
+ * settled card's bill for a month has already paid its EMIs. */
+export interface ProjectionCardBills {
+  year: number;
+  month: number; // 1-12
+  cards: { name: string; settled: boolean }[];
+}
+
+interface Installment {
+  date: Date;
+  amount: number;
+}
+
+/** The latest due date (on `dueDay`) on or before `anchor`. */
+function dueDateOnOrBefore(anchor: Date, dueDay: number): Date {
+  const sameMonth = makeDate(anchor.getFullYear(), anchor.getMonth() + 1, dueDay);
+  return sameMonth <= anchor ? sameMonth : makeDate(anchor.getFullYear(), anchor.getMonth(), dueDay);
+}
+
+/** One EMI's future installments on its due dates, from the next due date
+ * until it's paid off or `horizonEnd`, whichever comes first: the full
+ * `emiAmount` each cycle, except possibly a smaller final one. */
+function scheduledInstallments(emi: EmiEntryComputed, horizonEnd: Date, day: Date): Installment[] {
+  if (emi.isPaidOff) return [];
+  // Anchored to whichever is later: the EMI's own stored asOfDate — so an
+  // early payment (which can advance that anchor *past* today, to the due
+  // date it settled) still correctly skips the cycle just paid, same
+  // reasoning as overview.ts's Upcoming list — or "today", so a *stale*
+  // asOfDate (no payment recorded in a while) can't walk this projection
+  // backward into an already-decayed past month. `remaining` is already
+  // decayed through today (see `withComputed`), so re-projecting a due date
+  // before today would double-count that installment; it can also fall
+  // outside the window's map entirely, which crashed here before this fix
+  // (real bug: a loan whose asOfDate hadn't been touched in a while threw
+  // "Cannot read properties of undefined (reading 'count')").
+  const asOf = parseDate(emi.asOfDate);
+  const anchor = asOf > day ? asOf : day;
+  const installments: Installment[] = [];
+  let balance = emi.remaining;
+  let due = nextDueDateAfter(anchor, emi.dueDay);
+  while (balance > 0 && due < horizonEnd) {
+    const amount = Math.min(emi.emiAmount, balance);
+    installments.push({ date: due, amount });
+    balance = round2(balance - amount);
+    due = nextDueDateAfter(due, emi.dueDay);
+  }
+  return installments;
+}
+
+/** For an EMI billed to a credit card: the installment that has already come
+ * off `remaining` but isn't paid yet. A card EMI posts to this month's
+ * statement (the card's own app drops its balance then, and so does
+ * `remaining` here, on the due day) and is paid on next month's bill, so the
+ * most recent cycle is still owed even though `scheduledInstallments`
+ * (which starts after it) no longer sees it. Null when nothing is owed. */
+function postedUnpaidInstallment(emi: EmiEntryComputed, day: Date): Installment | null {
+  const asOf = parseDate(emi.asOfDate);
+  const anchor = asOf > day ? asOf : day;
+  const posted = dueDateOnOrBefore(anchor, emi.dueDay);
+  let amount: number;
+  if (posted > asOf) {
+    // Decayed since the snapshot: whatever came off at that cycle.
+    const dayBefore = new Date(posted.getFullYear(), posted.getMonth(), posted.getDate() - 1);
+    amount = Math.min(emi.emiAmount, withComputed(emi, dayBefore).remaining);
+  } else {
+    // Posted before the snapshot, so the card's balance typed in already
+    // excluded it — still owed, unless nothing had ever posted yet.
+    amount = emi.remainingAsOf < emi.totalAmount ? emi.emiAmount : 0;
+  }
+  return amount > 0 ? { date: posted, amount: round2(amount) } : null;
+}
+
+/** When the money for each installment actually leaves the account, until
+ * `horizonEnd`. For a direct loan that's the due date itself. For an EMI
+ * billed to a credit card it's the *next* month's bill: an installment that
+ * posts in November is on the November statement and paid in early
+ * December, and the one that posted this month is still owed.
+ *
+ * When a bank-stated `untilTarget` is on record, nothing runs past its payoff
+ * month: a balance that doesn't divide evenly by `emiAmount` leaves a few
+ * rupees (or paise) over, which is the bank's adjusted final installment,
+ * not an extra month, so it's folded into the last installment instead. */
+function cashInstallments(emi: EmiEntryComputed, horizonEnd: Date, day: Date, billedToCard: boolean): Installment[] {
+  const payoff = emi.untilTarget && emi.estimatedPayoffDate ? parseDate(emi.estimatedPayoffDate) : null;
+  // The first day after the payoff month; simulate a month past it so a
+  // leftover tail is seen and can be folded back in.
+  const payoffEnd = payoff ? makeDate(payoff.getFullYear(), payoff.getMonth() + 2, 1) : null;
+  const simulateUntil = payoffEnd && addMonths(payoffEnd, 1) > horizonEnd ? addMonths(payoffEnd, 1) : horizonEnd;
+  let installments = scheduledInstallments(emi, simulateUntil, day);
+
+  if (billedToCard) {
+    const posted = postedUnpaidInstallment(emi, day);
+    installments = (posted ? [posted, ...installments] : installments).map((i) => ({
+      ...i,
+      date: nextDueDateAfter(i.date, emi.dueDay),
+    }));
+  }
+
+  if (payoffEnd) {
+    const within = installments.filter((i) => i.date < payoffEnd);
+    if (within.length > 0 && within.length < installments.length) {
+      const leftover = installments.slice(within.length).reduce((sum, i) => sum + i.amount, 0);
+      const last = within[within.length - 1];
+      within[within.length - 1] = { ...last, amount: round2(last.amount + leftover) };
+      installments = within;
+    }
+  }
+  return installments;
+}
+
 /** Projects every active EMI's future installments forward, bucketed by
  * calendar month, for the Dashboard's upcoming-EMIs chart. Each loan
  * contributes its full `emiAmount` every cycle until paid off, except
@@ -284,7 +404,12 @@ export interface EmiMonthlyProjection {
  * payoff" date, just simulated across every future cycle instead of only
  * the last one, and summed across every loan per month. Months with no EMI
  * due at all are still included (zeroed), so the chart's X-axis is a
- * continuous run of months rather than skipping gaps.
+ * continuous run of months rather than skipping gaps. Each installment lands
+ * in the month its money actually goes out: for an EMI billed to a credit
+ * card (its name matches a card in `cardBills`), that's the next month's
+ * bill, and a month whose card bill is already settled drops out (see
+ * `cashInstallments`). Pass last, this and next month's bills; an empty list
+ * (Credit Cards turned off) treats every EMI as a direct loan.
  *
  * `months: "auto"` extends the window instead of capping it — simulates the
  * generous `EMI_PROJECTION_MAX_MONTHS` ceiling (so even a long-tenure loan's
@@ -299,6 +424,7 @@ export function projectEmiMonthly(
   emis: EmiEntryComputed[],
   months: number | "auto" = EMI_PROJECTION_MONTHS,
   today: Date,
+  cardBills: readonly ProjectionCardBills[] = [],
 ): EmiMonthlyProjection[] {
   const day = startOfDay(today);
   const firstOfThisMonth = makeDate(day.getFullYear(), day.getMonth() + 1, 1);
@@ -313,34 +439,24 @@ export function projectEmiMonthly(
     windowMonths.map((m) => [m, { count: 0, totalAmount: 0 }]),
   );
 
+  const cardNames = new Set(cardBills.flatMap((b) => b.cards.map((c) => c.name)));
+  const settledBills = new Set(
+    cardBills.flatMap((b) =>
+      b.cards.filter((c) => c.settled).map((c) => `${c.name}|${b.year}-${String(b.month).padStart(2, "0")}`),
+    ),
+  );
+
   for (const emi of emis) {
-    if (emi.isPaidOff) continue;
-    let balance = emi.remaining;
-    const asOf = parseDate(emi.asOfDate);
-    // Anchored to whichever is later: the EMI's own stored asOfDate — so an
-    // early payment (which can advance that anchor *past* today, to the
-    // due date it settled) still correctly skips the cycle just paid, same
-    // reasoning as overview.ts's Upcoming list — or "today", so a *stale*
-    // asOfDate (no payment recorded in a while) can't walk this projection
-    // backward into an already-decayed past month. `remaining` is already
-    // decayed through today (see `withComputed`), so re-projecting a due
-    // date before today would double-count that installment; it can also
-    // fall outside this window's map entirely, which crashed here before
-    // this fix (real bug: a loan whose asOfDate hadn't been touched in a
-    // while threw "Cannot read properties of undefined (reading 'count')").
-    const anchor = asOf > day ? asOf : day;
-    let due = nextDueDateAfter(anchor, emi.dueDay);
-    while (balance > 0) {
-      if (due >= windowEnd) break;
-      const monthKey = toMonthOnly(due);
-      const payment = Math.min(emi.emiAmount, balance);
+    const billedToCard = cardNames.has(emi.cardOrBank);
+    for (const installment of cashInstallments(emi, windowEnd, day, billedToCard)) {
+      if (installment.date >= windowEnd) continue;
+      const monthKey = toMonthOnly(installment.date);
+      if (billedToCard && settledBills.has(`${emi.cardOrBank}|${monthKey}`)) continue;
       const bucket = buckets.get(monthKey);
       if (bucket) {
         bucket.count += 1;
-        bucket.totalAmount = round2(bucket.totalAmount + payment);
+        bucket.totalAmount = round2(bucket.totalAmount + installment.amount);
       }
-      balance = round2(balance - payment);
-      due = nextDueDateAfter(due, emi.dueDay);
     }
   }
 

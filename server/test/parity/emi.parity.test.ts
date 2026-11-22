@@ -200,10 +200,11 @@ describe("emi payments (recordEmiPayment)", () => {
 describe("emi until-target (bank-stated Duration)", () => {
   const durationInput = { cardOrBank: "Duration Test", emiAmount: 1000, dueDay: 15, totalAmount: 12000, remarks: "" };
 
-  parity("stores Duration as a real target date, overriding the derived estimate", {}, async (b, { at }) => {
+  parity("stores payments left as the date of the last payment, overriding the derived estimate", {}, async (b, { at }) => {
     at("2026-01-01");
     const added = await b.addEmi(emi({ ...durationInput, remainingAsOf: 12000, durationMonths: 10 }));
-    expect(added).toMatchObject({ estimatedPayoffMonth: "2026-11", untilTarget: "2026-11-01", estimatedPayoffDate: "2026-11-15" });
+    // 10 payments after Jan 1, on the 15th: Jan 15 through Oct 15.
+    expect(added).toMatchObject({ estimatedPayoffMonth: "2026-10", untilTarget: "2026-10-15", estimatedPayoffDate: "2026-10-15" });
   });
 
   parity("without a Duration, falls back to the derived remaining/emiAmount estimate as before", {}, async (b, { at }) => {
@@ -233,22 +234,26 @@ describe("emi until-target (bank-stated Duration)", () => {
     await b.updateEmi(added.row, emi({ ...durationInput, remainingAsOf: 9000, durationMonths: 6 }));
   });
 
-  parity(
-    "rolls the until-target forward to next month's due date when dueDay falls before the target's day-of-month",
-    {},
-    async (b, { at }) => {
-      at("2026-08-23");
-      await b.addEmi(
-        emi({ cardOrBank: "Moneyback+", emiAmount: 621, dueDay: 9, totalAmount: 20660, remarks: "", remainingAsOf: 27965, durationMonths: 45 }),
-      );
-    },
-  );
+  parity("counts payments left from next month when this month's due day has already passed", {}, async (b, { at }) => {
+    at("2026-08-23");
+    const added = await b.addEmi(
+      emi({ cardOrBank: "Moneyback+", emiAmount: 621, dueDay: 9, totalAmount: 20660, remarks: "", remainingAsOf: 27965, durationMonths: 45 }),
+    );
+    expect(added).toMatchObject({ untilTarget: "2030-05-09", estimatedPayoffDate: "2030-05-09" });
+  });
 
-  parity("keeps the until-target's own month when dueDay falls on or after the target's day-of-month", {}, async (b, { at }) => {
+  parity("counts this month's payment when its due day is still ahead", {}, async (b, { at }) => {
     at("2026-01-10");
-    await b.addEmi(
+    const added = await b.addEmi(
       emi({ cardOrBank: "Same Month", emiAmount: 500, dueDay: 25, totalAmount: 6000, remarks: "", remainingAsOf: 6000, durationMonths: 12 }),
     );
+    expect(added).toMatchObject({ untilTarget: "2026-12-25", estimatedPayoffDate: "2026-12-25" });
+  });
+
+  parity("treats a payment due today as already made, like the balance does", {}, async (b, { at }) => {
+    at("2026-01-15");
+    const added = await b.addEmi(emi({ ...durationInput, cardOrBank: "Due Today", remainingAsOf: 3000, durationMonths: 3 }));
+    expect(added).toMatchObject({ untilTarget: "2026-04-15" });
   });
 
   parity("until-target is ignored once the loan is actually paid off", {}, async (b, { at }) => {
@@ -396,6 +401,47 @@ describe("emiMonthlyProjection", () => {
     await b.addEmi(emi({ cardOrBank: "Proj Stale", emiAmount: 500, dueDay: 10, totalAmount: 5000, remarks: "", remainingAsOf: 5000 }));
     at("2026-06-15");
     await b.getEmiMonthlyProjection(months(3));
+  });
+
+  const unsettledBill = { due: 5000, paid: 0, dueDate: null, settled: false };
+
+  parity("puts a credit-card EMI in the month its bill is paid, including the one that just posted", {}, async (b, { at }) => {
+    at("2026-02-02");
+    await b.setMonthBills(2026, 2, [{ name: "Proj Card", ...unsettledBill }]);
+    await b.addEmi(emi({ cardOrBank: "Proj Card", emiAmount: 1000, dueDay: 8, totalAmount: 3000, remarks: "", remainingAsOf: 3000 }));
+    at("2026-02-20");
+    expect(await b.getEmiMonthlyProjection(months(4))).toEqual([
+      { month: "2026-02", count: 0, totalAmount: 0 },
+      { month: "2026-03", count: 1, totalAmount: 1000 },
+      { month: "2026-04", count: 1, totalAmount: 1000 },
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  parity("drops a card EMI from a month whose card bill is already marked settled", {}, async (b, { at }) => {
+    at("2026-02-02");
+    await b.setMonthBills(2026, 2, [{ name: "Proj Settled", ...unsettledBill }]);
+    await b.setMonthBills(2026, 3, [{ name: "Proj Settled", due: 1000, paid: 1000, dueDate: "2026-03-08", settled: true }]);
+    await b.addEmi(emi({ cardOrBank: "Proj Settled", emiAmount: 1000, dueDay: 8, totalAmount: 3000, remarks: "", remainingAsOf: 3000 }));
+    at("2026-02-20");
+    expect(await b.getEmiMonthlyProjection(months(3))).toEqual([
+      { month: "2026-02", count: 0, totalAmount: 0 },
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  parity("folds a leftover tail into the final installment instead of adding a month past the bank's target", {}, async (b, { at }) => {
+    at("2026-01-01");
+    await b.addEmi(
+      emi({ cardOrBank: "Proj Tail", emiAmount: 1000, dueDay: 15, totalAmount: 3000.5, remarks: "", remainingAsOf: 3000.5, durationMonths: 3 }),
+    );
+    expect(await b.getEmiMonthlyProjection(months(4))).toEqual([
+      { month: "2026-01", count: 1, totalAmount: 1000 },
+      { month: "2026-02", count: 1, totalAmount: 1000 },
+      { month: "2026-03", count: 1, totalAmount: 1000.5 },
+      { month: "2026-04", count: 0, totalAmount: 0 },
+    ]);
   });
 });
 

@@ -2,6 +2,7 @@ import { getSql } from "../db/client.js";
 import { withTransaction } from "../db/tx.js";
 import { LedgerError } from "@ledger/shared/errors";
 import { assertMoney, assertText, isRealDate } from "./validate.js";
+import { makeDate } from "@ledger/shared/dateMath";
 import { summarize, type CardBill, type MonthBills, type MonthBillsSummary } from "@ledger/shared/creditCardMath";
 
 export { type CardBill, type MonthBills, type MonthBillsSummary } from "@ledger/shared/creditCardMath";
@@ -61,6 +62,19 @@ function validateCards(cards: CardBill[]) {
     assertMoney(card.due, { positive: false });
     assertMoney(card.paid, { positive: false });
   }
+}
+
+/** Last, this and next month's cards: the Upcoming EMIs chart's view of which
+ * EMIs are billed to a card and which bills are already settled. A month
+ * outside the stored year range is left out. */
+export async function getBillsAround(today: Date): Promise<MonthBills[]> {
+  const months = [-1, 0, 1]
+    .map((offset) => {
+      const first = makeDate(today.getFullYear(), today.getMonth() + 1 + offset, 1);
+      return { year: first.getFullYear(), month: first.getMonth() + 1 };
+    })
+    .filter(({ year }) => year >= EARLIEST_YEAR && year <= LATEST_YEAR);
+  return Promise.all(months.map(({ year, month }) => getMonthBills(year, month)));
 }
 
 /** One month's cards, in the order they were saved (`position`). */

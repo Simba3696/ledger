@@ -534,8 +534,23 @@ export function listEmis(ctx: ReadContext): EmiEntryComputed[] {
   return ctx.doc.emis.map((r) => emiWithComputed(toEmi(r, ctx.handles), ctx.today));
 }
 
-export function emiMonthlyProjection(ctx: ReadContext, months: number | "auto"): EmiMonthlyProjection[] {
-  return projectEmiMonthly(listEmis(ctx), months, ctx.today);
+/** The store's emiMonthlyProjection: with Credit Cards on, an EMI billed to a
+ * card counts in the month its bill is paid, judged by last, this and next
+ * month's bills. */
+export function emiMonthlyProjection(
+  ctx: ReadContext,
+  months: number | "auto",
+  modules: readonly ModuleName[],
+): EmiMonthlyProjection[] {
+  const cardBills = modules.includes("credit-cards")
+    ? [-1, 0, 1].map((offset) => {
+        const first = makeDate(ctx.today.getFullYear(), ctx.today.getMonth() + 1 + offset, 1);
+        const year = first.getFullYear();
+        const month = first.getMonth() + 1;
+        return { year, month, cards: monthCards(ctx.doc, year, month) };
+      })
+    : [];
+  return projectEmiMonthly(listEmis(ctx), months, ctx.today, cardBills);
 }
 
 /** prepareInput: trims, validates, and returns the fields to store. */
@@ -561,7 +576,7 @@ function emiFieldsToStore(input: EmiFields, today: Date) {
 
 export function addEmi(ctx: WriteContext, input: EmiFields): EmiEntryComputed {
   const prepared = prepareEmi(input);
-  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today)) : null;
+  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today, prepared.dueDay)) : null;
   const record: EmiRecord = { ...newRecord(ctx), ...emiFieldsToStore(prepared, ctx.today), untilTarget };
   ctx.doc.emis.push(record);
   return emiWithComputed(toEmi(record, ctx.handles), ctx.today);
@@ -572,7 +587,7 @@ export function updateEmi(ctx: WriteContext, row: number, input: EmiFields): Emi
   if (!isPossibleId(row)) throw emiNotFound(row);
   // A fresh Duration replaces the target; without one the stored target is
   // kept, as the store's coalesce does.
-  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today)) : null;
+  const untilTarget = prepared.durationMonths ? storableDateText(resolveUntilTarget(prepared.durationMonths, ctx.today, prepared.dueDay)) : null;
   const record = byHandle(ctx.doc.emis, ctx.handles, row);
   if (!record) throw emiNotFound(row);
   applyChanges(record, { ...emiFieldsToStore(prepared, ctx.today), untilTarget: untilTarget ?? record.untilTarget }, ctx);

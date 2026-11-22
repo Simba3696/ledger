@@ -202,7 +202,7 @@ export function validateEmi(input: EmiFields): void {
 
   const { durationMonths, interestRate, foreclosureCharge } = input;
   if (durationMonths !== null && (!Number.isInteger(durationMonths) || durationMonths < 1 || durationMonths > 600)) {
-    throw new LedgerError("Duration must be a whole number of months (1-600)", 400);
+    throw new LedgerError("Payments left must be a whole number (1-600)", 400);
   }
   if (interestRate !== null && (!Number.isFinite(interestRate) || interestRate < 0 || interestRate > 100)) {
     throw new LedgerError("Interest Rate must be a number between 0 and 100", 400);

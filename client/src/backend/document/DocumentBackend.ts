@@ -372,7 +372,9 @@ export class DocumentBackend implements LedgerBackend {
 
   async getEmiMonthlyProjection(months: EmiProjectionScale): Promise<EmiMonthlyProjection[]> {
     const count = projectionMonths(months);
-    return this.#session.read("emi", (ctx) => ops.emiMonthlyProjection(ctx, count));
+    return this.#session.read("emi", (ctx) =>
+      ops.emiMonthlyProjection(ctx, count, canonicalModules(ctx.doc.settings.modules)),
+    );
   }
 
   async getSubscriptions(): Promise<SubscriptionEntryComputed[]> {

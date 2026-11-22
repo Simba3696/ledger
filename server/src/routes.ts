@@ -356,7 +356,7 @@ router.get("/emi-monthly-projection", async (req, res, next) => {
     // can't make the server try to simulate an absurd number of months.
     const months =
       raw === "auto" ? "auto" : raw === undefined ? undefined : Math.min(600, Math.max(1, Number(raw) || 1));
-    res.json(await emiMonthlyProjection(months));
+    res.json(await emiMonthlyProjection(months, undefined, enabledModules(req)));
   } catch (err) {
     next(err);
   }

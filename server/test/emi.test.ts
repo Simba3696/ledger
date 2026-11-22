@@ -3,13 +3,14 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 // and refuses non-local hosts).
 import { resetTables, closeSql, sql } from "./dbHelpers.js";
 import * as emi from "../src/store/emi.js";
+import * as cardBills from "../src/store/creditCardBills.js";
 
 // The cases below build on each other in order (add -> decay -> update ->
 // delete, and the projection blocks see every earlier block's loans), the
 // same way the Excel edition's shared scratch workbook did, so the table is
 // wiped once up front rather than before every case.
 beforeAll(async () => {
-  await resetTables("emis");
+  await resetTables("emis", "card_bills");
 });
 
 afterAll(async () => {
@@ -240,21 +241,17 @@ describe("emi payments (recordEmiPayment)", () => {
 describe("emi until-target (bank-stated Duration)", () => {
   const durationInput = { cardOrBank: "Duration Test", emiAmount: 1000, dueDay: 15, totalAmount: 12000, remarks: "" };
 
-  it("stores Duration as a real target date, overriding the derived estimate", async () => {
+  it("stores payments left as the date of the last payment, overriding the derived estimate", async () => {
     // 12 full-size installments (12000/1000) would derive an estimate of
-    // Dec 2026, but the bank says this one actually finishes in 10 months
-    // (Nov 2026) — its last installment must be adjusted to fit.
+    // Dec 2026, but there are only 10 payments left — Jan 15 through Oct 15
+    // — so its last installment must be adjusted to fit.
     const added = await emi.addEmi(
       { ...durationInput, remainingAsOf: 12000, durationMonths: 10 },
       new Date(2026, 0, 1), // Jan 1, 2026
     );
-    expect(added.estimatedPayoffMonth).toBe("2026-11");
-    expect(added.untilTarget).toBe("2026-11-01");
-    // untilTarget's day-of-month (1st) comes from *when the loan was added*
-    // (Jan 1 + 10 months) and has nothing to do with dueDay — the real final
-    // installment is the first actual due date (15th) on or after that
-    // target, i.e. Nov 15 here (15th >= 1st, so it lands the same month).
-    expect(added.estimatedPayoffDate).toBe("2026-11-15");
+    expect(added.untilTarget).toBe("2026-10-15");
+    expect(added.estimatedPayoffMonth).toBe("2026-10");
+    expect(added.estimatedPayoffDate).toBe("2026-10-15");
   });
 
   it("without a Duration, falls back to the derived remaining/emiAmount estimate as before", async () => {
@@ -274,9 +271,9 @@ describe("emi until-target (bank-stated Duration)", () => {
       { ...durationInput, remainingAsOf: 9000 }, // correcting the balance, no durationMonths supplied
       new Date(2026, 2, 1),
     );
-    expect(updated.untilTarget).toBe("2026-11-01"); // unchanged
-    expect(updated.estimatedPayoffMonth).toBe("2026-11");
-    expect(updated.estimatedPayoffDate).toBe("2026-11-15"); // resolved against dueDay, same as above
+    expect(updated.untilTarget).toBe("2026-10-15"); // unchanged
+    expect(updated.estimatedPayoffMonth).toBe("2026-10");
+    expect(updated.estimatedPayoffDate).toBe("2026-10-15");
   });
 
   it("preserves the stored until-target across recordEmiPayment (never touches it)", async () => {
@@ -285,7 +282,7 @@ describe("emi until-target (bank-stated Duration)", () => {
       new Date(2026, 0, 1),
     );
     const paid = await emi.recordEmiPayment(added.row, 1000, new Date(2026, 0, 10));
-    expect(paid.untilTarget).toBe("2026-11-01");
+    expect(paid.untilTarget).toBe("2026-10-15");
   });
 
   it("a fresh Duration on a later edit replaces the old target", async () => {
@@ -298,34 +295,48 @@ describe("emi until-target (bank-stated Duration)", () => {
       { ...durationInput, remainingAsOf: 9000, durationMonths: 6 },
       new Date(2026, 2, 1), // Mar 1, 2026
     );
-    expect(updated.untilTarget).toBe("2026-09-01"); // Mar 1 + 6 months
+    expect(updated.untilTarget).toBe("2026-08-15"); // 6 payments after Mar 1: Mar 15 … Aug 15
   });
 
-  it("rolls the until-target forward to next month's due date when dueDay falls before the target's day-of-month", async () => {
-    // Regression test for a real reported bug: a loan added/edited on the
-    // 23rd with dueDay 9 and a Duration landing on "the 23rd, N months out"
-    // — since the 9th of that target month already passed relative to the
-    // 23rd, the loan doesn't actually finish until the 9th of the *next*
-    // month, not that (already-passed) month's 9th.
+  it("counts payments left from next month when this month's due day has already passed", async () => {
+    // Entered on the 23rd with dueDay 9: this month's 9th is behind us, so
+    // the first of the 45 payments is Sep 9 and the last is May 9, 2030.
     const added = await emi.addEmi(
       { cardOrBank: "Moneyback+", emiAmount: 621, dueDay: 9, totalAmount: 20660, remarks: "", remainingAsOf: 27965, durationMonths: 45 },
       new Date(2026, 7, 23), // Aug 23, 2026
     );
-    expect(added.untilTarget).toBe("2030-05-23"); // Aug 23, 2026 + 45 months
-    expect(added.estimatedPayoffMonth).toBe("2030-06"); // rolled forward a month, not May
-    expect(added.estimatedPayoffDate).toBe("2030-06-09");
+    expect(added.untilTarget).toBe("2030-05-09");
+    expect(added.estimatedPayoffDate).toBe("2030-05-09");
   });
 
-  it("keeps the until-target's own month when dueDay falls on or after the target's day-of-month", async () => {
-    // Symmetric case: dueDay 25 with a target of the 10th — this month's
-    // 25th is still on/after the 10th, so no roll-forward is needed.
+  it("counts this month's payment when its due day is still ahead", async () => {
+    // Entered Jan 10 with dueDay 25: Jan 25 is the first of the 12 payments.
     const added = await emi.addEmi(
       { cardOrBank: "Same Month", emiAmount: 500, dueDay: 25, totalAmount: 6000, remarks: "", remainingAsOf: 6000, durationMonths: 12 },
       new Date(2026, 0, 10), // Jan 10, 2026
     );
-    expect(added.untilTarget).toBe("2027-01-10"); // Jan 10, 2026 + 12 months
-    expect(added.estimatedPayoffMonth).toBe("2027-01");
-    expect(added.estimatedPayoffDate).toBe("2027-01-25");
+    expect(added.untilTarget).toBe("2026-12-25");
+    expect(added.estimatedPayoffDate).toBe("2026-12-25");
+  });
+
+  it("treats a payment due today as already made, like the balance does", async () => {
+    // Entered on the due day itself: today's payment has come off the
+    // balance, so 3 payments left are Feb 15, Mar 15, Apr 15.
+    const added = await emi.addEmi(
+      { ...durationInput, cardOrBank: "Due Today", remainingAsOf: 3000, durationMonths: 3 },
+      new Date(2026, 0, 15), // Jan 15, 2026
+    );
+    expect(added.untilTarget).toBe("2026-04-15");
+  });
+
+  it("still resolves a target saved the old way (today + N months, any day) to a real due date", async () => {
+    // Entries saved before payments-left existed hold e.g. "2027-01-07" for
+    // a loan due on the 8th; that resolves to Jan 8, unchanged from before.
+    const added = await emi.addEmi({ ...durationInput, cardOrBank: "Legacy Target", dueDay: 8, remainingAsOf: 3000 }, new Date(2026, 10, 2));
+    await sql`update emis set until_target = '2027-01-07' where id = ${added.row}`;
+    const legacy = (await emi.listEmis(new Date(2026, 10, 22))).find((e) => e.row === added.row)!;
+    expect(legacy.estimatedPayoffDate).toBe("2027-01-08");
+    await emi.deleteEmi(added.row);
   });
 
   it("until-target is ignored once the loan is actually paid off", async () => {
@@ -573,6 +584,96 @@ describe("emiMonthlyProjection", () => {
       { month: "2026-06", count: 0, totalAmount: 0 }, // this month's own 10th already passed by the 15th
       { month: "2026-07", count: 1, totalAmount: 500 },
       { month: "2026-08", count: 1, totalAmount: 500 },
+    ]);
+  });
+
+  function deltaOf(before: { month: string; count: number; totalAmount: number }[], after: typeof before) {
+    return after.map((m, i) => ({
+      month: m.month,
+      count: m.count - before[i].count,
+      totalAmount: Math.round((m.totalAmount - before[i].totalAmount) * 100) / 100,
+    }));
+  }
+  const unsettledBill = { due: 5000, paid: 0, dueDate: null, settled: false };
+
+  it("puts a credit-card EMI in the month its bill is paid, including the one that just posted", async () => {
+    // Card bills come in the month it posts and are paid next month. Snapshot
+    // taken Feb 2 at ₹3,000; Feb 8's cycle has since come off the balance
+    // (₹2,000 left) but is only paid on March's bill — so Mar, Apr, May.
+    await cardBills.setMonthBills({ year: 2026, month: 2, cards: [{ name: "Proj Card", ...unsettledBill }] });
+    const today = new Date(2026, 1, 20); // Feb 20
+    const before = await emi.emiMonthlyProjection(4, today);
+    await emi.addEmi(
+      { cardOrBank: "Proj Card", emiAmount: 1000, dueDay: 8, totalAmount: 3000, remarks: "", remainingAsOf: 3000 },
+      new Date(2026, 1, 2),
+    );
+    const after = await emi.emiMonthlyProjection(4, today);
+    expect(deltaOf(before, after)).toEqual([
+      { month: "2026-02", count: 0, totalAmount: 0 },
+      { month: "2026-03", count: 1, totalAmount: 1000 },
+      { month: "2026-04", count: 1, totalAmount: 1000 },
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  it("treats every EMI as a direct loan when Credit Cards is turned off", async () => {
+    // Off, Proj Card's ₹2,000 lands on its own due dates (Mar 8, Apr 8) and
+    // the cycle that already posted on Feb 8 isn't owed again: one fewer
+    // installment, the one its May bill would have paid.
+    const today = new Date(2026, 1, 20);
+    const withCards = await emi.emiMonthlyProjection(4, today);
+    const withoutCards = await emi.emiMonthlyProjection(4, today, ["emi"]);
+    expect(deltaOf(withoutCards, withCards)).toEqual([
+      { month: "2026-02", count: 0, totalAmount: 0 },
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 0, totalAmount: 0 },
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  it("drops a card EMI from a month whose card bill is already marked settled", async () => {
+    await cardBills.setMonthBills({
+      year: 2026,
+      month: 2,
+      cards: [
+        { name: "Proj Card", ...unsettledBill },
+        { name: "Proj Settled", ...unsettledBill },
+      ],
+    });
+    await cardBills.setMonthBills({
+      year: 2026,
+      month: 3,
+      cards: [{ name: "Proj Settled", due: 1000, paid: 1000, dueDate: "2026-03-08", settled: true }],
+    });
+    const today = new Date(2026, 1, 20);
+    const before = await emi.emiMonthlyProjection(3, today);
+    await emi.addEmi(
+      { cardOrBank: "Proj Settled", emiAmount: 1000, dueDay: 8, totalAmount: 3000, remarks: "", remainingAsOf: 3000 },
+      new Date(2026, 1, 2),
+    );
+    const after = await emi.emiMonthlyProjection(3, today);
+    expect(deltaOf(before, after)).toEqual([
+      { month: "2026-02", count: 0, totalAmount: 0 },
+      { month: "2026-03", count: 0, totalAmount: 0 }, // March's bill is already paid
+      { month: "2026-04", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  it("folds a leftover tail into the final installment instead of adding a month past the bank's target", async () => {
+    // ₹3,000.50 at ₹1,000/mo would leave a ₹0.50 fourth installment in April,
+    // but there are only 3 payments left (Jan–Mar): an adjusted final EMI.
+    const today = new Date(2026, 0, 1);
+    const before = await emi.emiMonthlyProjection(4, today);
+    await emi.addEmi(
+      { cardOrBank: "Proj Tail", emiAmount: 1000, dueDay: 15, totalAmount: 3000.5, remarks: "", remainingAsOf: 3000.5, durationMonths: 3 },
+      today,
+    );
+    const after = await emi.emiMonthlyProjection(4, today);
+    expect(deltaOf(before, after)).toEqual([
+      { month: "2026-01", count: 1, totalAmount: 1000 },
+      { month: "2026-02", count: 1, totalAmount: 1000 },
+      { month: "2026-03", count: 1, totalAmount: 1000.5 },
+      { month: "2026-04", count: 0, totalAmount: 0 },
     ]);
   });
 });

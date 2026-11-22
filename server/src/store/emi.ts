@@ -4,6 +4,8 @@ import { LedgerError } from "@ledger/shared/errors";
 import { formatDate, startOfDay } from "@ledger/shared/dateMath";
 import { appToday } from "../today.js";
 import { assertMoney, assertText, isPossibleId } from "./validate.js";
+import { getBillsAround } from "./creditCardBills.js";
+import { MODULES, type ModuleName } from "../modules.js";
 import {
   EMI_PROJECTION_MONTHS,
   projectEmiMonthly,
@@ -99,7 +101,7 @@ function validateEntry(
 function validateDurationMonths(durationMonths: number | null | undefined) {
   if (durationMonths === null || durationMonths === undefined) return;
   if (!Number.isInteger(durationMonths) || durationMonths < 1 || durationMonths > 600) {
-    throw new LedgerError("Duration must be a whole number of months (1-600)", 400);
+    throw new LedgerError("Payments left must be a whole number (1-600)", 400);
   }
 }
 
@@ -148,18 +150,25 @@ export async function listEmis(today: Date = appToday()): Promise<EmiEntryComput
 }
 
 /** Loads every EMI and simulates its future installments month by month
- * (see `projectEmiMonthly` in @ledger/shared/emiMath). */
+ * (see `projectEmiMonthly` in @ledger/shared/emiMath). With Credit Cards on,
+ * an EMI billed to a card counts in the month its bill is paid; with it off,
+ * no bills are read and every EMI counts on its own due date. */
 export async function emiMonthlyProjection(
   months: number | "auto" = EMI_PROJECTION_MONTHS,
   today: Date = appToday(),
+  modules: readonly ModuleName[] = MODULES,
 ): Promise<EmiMonthlyProjection[]> {
-  return projectEmiMonthly(await listEmis(today), months, today);
+  const [emis, cardBills] = await Promise.all([
+    listEmis(today),
+    modules.includes("credit-cards") ? getBillsAround(today) : [],
+  ]);
+  return projectEmiMonthly(emis, months, today, cardBills);
 }
 
 export async function addEmi(input: EmiEditsInput, today: Date = appToday()): Promise<EmiEntryComputed> {
   const { cardOrBank, remarks, interestRate, foreclosureCharge } = prepareInput(input);
   const asOfDate = formatDate(startOfDay(today));
-  const untilTarget = input.durationMonths ? resolveUntilTarget(input.durationMonths, today) : null;
+  const untilTarget = input.durationMonths ? resolveUntilTarget(input.durationMonths, today, input.dueDay) : null;
 
   const sql = getSql();
   const [r] = await sql<EmiRow[]>`
@@ -182,7 +191,7 @@ export async function updateEmi(
   const asOfDate = formatDate(startOfDay(today));
   // A fresh Duration replaces the target; without one, the stored target is
   // kept (sticky), which coalesce does in the same statement.
-  const untilTarget = input.durationMonths ? resolveUntilTarget(input.durationMonths, today) : null;
+  const untilTarget = input.durationMonths ? resolveUntilTarget(input.durationMonths, today, input.dueDay) : null;
 
   const sql = getSql();
   const [r] = await sql<EmiRow[]>`
