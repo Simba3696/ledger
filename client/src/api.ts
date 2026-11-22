@@ -152,8 +152,8 @@ export interface EmiEdits {
   totalAmount: number;
   remarks: string;
   remainingAsOf: number;
-  /** Bank-stated months until payoff — optional; omitting it on an edit
-   * preserves whatever until-target is already on record. */
+  /** Number of payments still left to make after today — optional; omitting
+   * it on an edit preserves whatever until-target is already on record. */
   durationMonths?: number | null;
   /** Annual interest rate as a percentage, or null to leave/clear it — a
    * plain overwritable field (like emiAmount/totalAmount), not sticky like

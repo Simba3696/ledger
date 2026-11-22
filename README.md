@@ -365,15 +365,19 @@ auto-advances forward to the next real cycle, never silently going stale:
   United, Moneyback+); newer entries already used plain names (Jumbo Loan,
   CRED, Kreditbee, ICICI). Current Balance auto-defaults to Total Amount when
   adding a fresh loan (nothing's paid yet), so you only need to override it
-  when backfilling one that's already partway through. An optional Duration
-  (months) field — the number of months the bank told you at EMI-conversion
-  time — is stored as a real payoff target (`Until Target`, an exact date)
-  rather than being derived: a plain `remaining ÷ emiAmount` estimate can be
-  off by a month either way, since a real bank schedule's final installment
-  is often adjusted (larger *or* smaller) to land on the stated date exactly.
-  Once set, the target is sticky — it survives ordinary balance corrections
-  and payments, and only changes if you explicitly enter a fresh Duration on
-  a later edit. Each entry also has quick payment actions — **Paid this
+  when backfilling one that's already partway through. An optional Payments
+  left field — how many payments you still have to make after today (a
+  payment due today counts as made) — is stored as a real payoff target
+  (`Until Target`, the exact date of the last payment) rather than being
+  derived: a plain `remaining ÷ emiAmount` estimate can be off by a month
+  either way, since a real bank schedule's final installment is often
+  adjusted (larger *or* smaller) to land on the stated date exactly. For a
+  credit-card EMI, count the card bills you'll pay, including one already
+  issued but not yet paid. Once set, the target is sticky — it survives
+  ordinary balance corrections and payments, and only changes if you
+  explicitly enter a fresh Payments left on a later edit. (Entries saved
+  before 2026-11-22 hold an older "today + N months" date; it still resolves
+  to the first due date on or after it.) Each entry also has quick payment actions — **Paid this
   month** (subtracts one EMI Amount) and **Record payment** (a custom
   amount, for a partial or extra payment) — both of which anchor the new
   balance snapshot to *this month's due date* rather than to whatever day
@@ -701,9 +705,10 @@ Two suites, covering different layers:
   the shared month/day arithmetic (day-of-month clamping, year rollover, leap
   years). `server/test/emi.test.ts` covers the Remaining snapshot-decay math
   (including a due-day clamp and the paid-off floor at zero), the
-  estimated-payoff-month/date calculation and how a stored Duration overrides
-  it — including `dueDateOnOrAfter`'s rollover fix, since a bank-stated
-  target's day-of-month has nothing to do with `dueDay` — that a Duration
+  estimated-payoff-month/date calculation and how a stored Payments left
+  overrides it — counted from the next due date after today, with older
+  "today + N months" targets still resolving via `dueDateOnOrAfter` — that a
+  Payments left
   survives edits/payments that don't resupply it but gets
   replaced by a fresh one that does, `recordEmiPayment`'s due-date
   anchoring — specifically that an early payment isn't later double-decayed
@@ -770,7 +775,7 @@ Two suites, covering different layers:
   savings delta editor's live total), Debts add/edit/delete/sort (including
   the duplicate-name consolidate-or-new prompt), EMI add/edit/delete
   (including the
-  Current-Balance-defaults-to-Total-Amount behavior, Duration overriding the
+  Current-Balance-defaults-to-Total-Amount behavior, Payments left overriding the
   payoff estimate and surviving edits, the "Paid this month"/"Record
   payment" quick actions and the Balance-as-of anchor they advance, sorting
   by every column including % Paid, Interest Rate/Foreclosure Charge

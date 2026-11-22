@@ -27,7 +27,7 @@ beforeAll(async () => {
       totalAmount: 6000,
       remarks: "Phone, XX1234 a.person@example.com",
       remainingAsOf: 4000,
-      durationMonths: 3,
+      durationMonths: 4, // payments left after Oct 1: Oct, Nov, Dec, Jan
     },
     added,
   );
@@ -39,7 +39,7 @@ beforeAll(async () => {
       totalAmount: 30000,
       remarks: "Car Loan",
       remainingAsOf: 6000,
-      durationMonths: 3,
+      durationMonths: 4, // payments left after Oct 1: Oct, Nov, Dec, Jan
       interestRate: 12,
       foreclosureCharge: 2,
     },

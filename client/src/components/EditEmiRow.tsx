@@ -100,7 +100,7 @@ export function EditEmiRow({ emi, onCancel, onSaved }: Props) {
           min={1}
           value={durationMonths}
           onChange={(e) => setDurationMonths(e.target.value)}
-          placeholder="Months"
+          placeholder="Payments left"
         />
         <input
           type="number"

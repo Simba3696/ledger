@@ -15,11 +15,10 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { buildFixtureWorkbook } from "../server/test/fixtures.js";
-// Reused (not reimplemented) for the EMI Duration test below — computing
-// "10 months from today" independently here risks silently drifting from
-// addMonths' actual clamp-at-month-end behavior on an edge-case day.
-import { addMonths, startOfDay, formatDate } from "../server/src/excel/dateMath.js";
-import { dueDateOnOrAfter } from "../server/src/excel/emi.js";
+// Reused (not reimplemented) for the EMI Payments left test below, so its
+// expected finish date can't drift from the server's own date math.
+import { startOfDay, formatDate } from "../server/src/excel/dateMath.js";
+import { lastPaymentDate } from "../server/src/excel/emi.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -809,16 +808,11 @@ async function main() {
     await emiNumberInputs.nth(6).fill("0"); // Foreclosure Charge (%), optional
 
     // ceil(12000/1000) = 12 future due dates would be the *derived* estimate
-    // — but Duration says this one actually finishes in 10 months, so the
-    // saved entry should show that instead, not the derived 12-months-out one.
-    // Computed via the real addMonths + dueDateOnOrAfter (not a hand-rolled
-    // equivalent) so this can't silently drift from the server's own
-    // clamp-at-month-end / roll-to-next-month-due-date behavior — the target
-    // date's day-of-month (today's) has nothing to do with dueDay (15), so
-    // depending on what day today is, the real finish date may or may not
-    // land in the same month as a naive addMonths-only calculation would.
-    const untilTargetDate = addMonths(startOfDay(new Date()), 10);
-    const expectedFinishDateObj = dueDateOnOrAfter(untilTargetDate, 15); // dueDay set below
+    // — but Payments left says only 10 remain, so the saved entry should
+    // finish on the 10th due date (15th) after today instead. Computed via
+    // the server's own lastPaymentDate (not a hand-rolled equivalent) so this
+    // can't silently drift from it, whatever day of the month today is.
+    const expectedFinishDateObj = lastPaymentDate(startOfDay(new Date()), 15, 10); // dueDay set below
     const expectedFinishDate = formatDate(expectedFinishDateObj);
     const expectedFinishDateText = new Date(`${expectedFinishDate}T00:00:00`).toLocaleDateString("en-IN", {
       day: "numeric",
@@ -1040,6 +1034,21 @@ async function main() {
     check(
       "Sorting by Total Amount descending puts the ₹12,000 loan first",
       totalAmountDesc.indexOf("E2E Coral") < totalAmountDesc.indexOf("E2E Amber"),
+    );
+
+    // Months Left follows each row's "Finishes ~" date: Amber clears in ~4
+    // months, Coral holds its 10-month bank target.
+    await page.click('.emi-sort button:has-text("Months Left")'); // ascending: soonest finish first
+    const monthsLeftAsc = await emiNames();
+    check(
+      "Sorting by Months Left ascending puts the sooner-finishing loan first",
+      monthsLeftAsc.indexOf("E2E Amber") < monthsLeftAsc.indexOf("E2E Coral"),
+    );
+    await page.click('.emi-sort button:has-text("Months Left")'); // descending: latest finish first
+    const monthsLeftDesc = await emiNames();
+    check(
+      "Sorting by Months Left descending puts the later-finishing loan first",
+      monthsLeftDesc.indexOf("E2E Coral") < monthsLeftDesc.indexOf("E2E Amber"),
     );
 
     // % Paid (foreclosure hint): Coral is 83% paid, Amber is a fresh 0% —

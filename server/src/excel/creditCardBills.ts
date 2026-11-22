@@ -117,6 +117,18 @@ export async function getMonthBills(year: number, month: number): Promise<MonthB
   return { year, month, cards: row ? parseCardsCell(row.getCell(3).value) : [] };
 }
 
+/** Several months' bills from a single read of the workbook. Months with
+ * nothing entered come back with an empty card list, like getMonthBills. */
+export async function getBillsForMonths(months: { year: number; month: number }[]): Promise<MonthBills[]> {
+  for (const { year, month } of months) validateYearMonth(year, month);
+  const workbook = await loadOrCreateWorkbook();
+  const sheet = getBillsSheet(workbook);
+  return months.map(({ year, month }) => {
+    const row = findMonthRow(sheet, year, month);
+    return { year, month, cards: row ? parseCardsCell(row.getCell(3).value) : [] };
+  });
+}
+
 export interface SetMonthBillsInput {
   year: number;
   month: number;

@@ -8,7 +8,7 @@ import { rupee } from "../format";
 import "./EMI.css";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
-type SortField = "name" | "dueDay" | "emiAmount" | "totalAmount" | "remaining" | "percentPaid";
+type SortField = "name" | "dueDay" | "emiAmount" | "totalAmount" | "remaining" | "monthsLeft" | "percentPaid";
 type SortDir = "asc" | "desc";
 
 const SORT_OPTIONS: { field: SortField; label: string }[] = [
@@ -17,6 +17,7 @@ const SORT_OPTIONS: { field: SortField; label: string }[] = [
   { field: "emiAmount", label: "EMI Amount" },
   { field: "totalAmount", label: "Total Amount" },
   { field: "remaining", label: "Remaining" },
+  { field: "monthsLeft", label: "Months Left" },
   { field: "percentPaid", label: "% Paid" },
 ];
 
@@ -32,6 +33,14 @@ function percentPaid(emi: EmiEntryComputed): number {
   return emi.totalAmount > 0 ? (emi.totalAmount - emi.remaining) / emi.totalAmount : 0;
 }
 
+// Months Left sorts by the same payoff date the row's "Finishes ~" label
+// shows, so the order always agrees with what's on screen. YYYY-MM-DD sorts
+// lexicographically the same as chronologically; a paid-off loan (no payoff
+// date) has nothing left, so it sorts as the soonest.
+function payoffSortKey(emi: EmiEntryComputed): string {
+  return emi.estimatedPayoffDate ?? "";
+}
+
 function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): EmiEntryComputed[] {
   const sorted = [...emis].sort((a, b) => {
     let cmp = 0;
@@ -40,6 +49,7 @@ function sortEmis(emis: EmiEntryComputed[], field: SortField, dir: SortDir): Emi
     else if (field === "emiAmount") cmp = a.emiAmount - b.emiAmount;
     else if (field === "totalAmount") cmp = a.totalAmount - b.totalAmount;
     else if (field === "remaining") cmp = a.remaining - b.remaining;
+    else if (field === "monthsLeft") cmp = payoffSortKey(a).localeCompare(payoffSortKey(b));
     else cmp = percentPaid(a) - percentPaid(b);
     return dir === "asc" ? cmp : -cmp;
   });
@@ -341,14 +351,14 @@ export function EMI() {
             />
           </label>
           <label>
-            Duration (months) — optional
+            Payments left — optional
             <input
               type="number"
               inputMode="numeric"
               min={1}
               value={durationMonths}
               onChange={(e) => setDurationMonths(e.target.value)}
-              placeholder="If the bank told you"
+              placeholder="Still to pay after today"
             />
           </label>
           <label>
