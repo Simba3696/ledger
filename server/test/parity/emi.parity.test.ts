@@ -431,6 +431,30 @@ describe("emiMonthlyProjection", () => {
     ]);
   });
 
+  parity("counts an already-posted card installment even when the balance includes interest above the total", {}, async (b, { at }) => {
+    at("2026-03-20");
+    await b.setMonthBills(2026, 3, [{ name: "Proj Interest", ...unsettledBill }]);
+    await b.addEmi(
+      emi({ cardOrBank: "Proj Interest", emiAmount: 1000, dueDay: 7, totalAmount: 10000, remarks: "", remainingAsOf: 11000, durationMonths: 12 }),
+    );
+    expect(await b.getEmiMonthlyProjection(months(3))).toEqual([
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 1, totalAmount: 1000 },
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  parity("doesn't invent a posted installment for a brand-new card EMI whose balance covers every bill left", {}, async (b, { at }) => {
+    at("2026-03-20");
+    await b.setMonthBills(2026, 3, [{ name: "Proj New", ...unsettledBill }]);
+    await b.addEmi(emi({ cardOrBank: "Proj New", emiAmount: 1000, dueDay: 7, totalAmount: 10000, remarks: "", remainingAsOf: 12000, durationMonths: 12 }));
+    expect(await b.getEmiMonthlyProjection(months(3))).toEqual([
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 0, totalAmount: 0 },
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
   parity("folds a leftover tail into the final installment instead of adding a month past the bank's target", {}, async (b, { at }) => {
     at("2026-01-01");
     await b.addEmi(

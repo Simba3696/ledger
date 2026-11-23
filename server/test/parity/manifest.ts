@@ -196,6 +196,8 @@ export const MANIFEST: Record<StoreFile, Record<string, Classification>> = {
     },
     "emiMonthlyProjection > drops a card EMI from a month whose card bill is already marked settled": PORTED,
     "emiMonthlyProjection > folds a leftover tail into the final installment instead of adding a month past the bank's target": PORTED,
+    "emiMonthlyProjection > counts an already-posted card installment even when the balance includes interest above the total": PORTED,
+    "emiMonthlyProjection > doesn't invent a posted installment for a brand-new card EMI whose balance covers every bill left": PORTED,
     "emi foreclosurePayoff > matches a hand-computed present-value example (12% p.a., 5 installments left)": PORTED,
     "emi foreclosurePayoff > equals remaining exactly when no interestRate is on record (graceful r→0 degradation)": PORTED,
     "emi foreclosurePayoff > equals remaining exactly when interestRate is explicitly 0": PORTED,

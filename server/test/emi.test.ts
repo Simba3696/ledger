@@ -676,6 +676,50 @@ describe("emiMonthlyProjection", () => {
       { month: "2026-04", count: 0, totalAmount: 0 },
     ]);
   });
+
+  it("counts an already-posted card installment even when the balance includes interest above the total", async () => {
+    // Real case (Apple Care+): the total is the principal (₹10,000) but the
+    // balance the card shows includes interest (₹11,000, 11 installments).
+    // Entered Mar 20, after Mar 7's cycle posted: with 12 bills left until
+    // its end, Mar 7's installment is on April's bill, still to be paid.
+    await cardBills.setMonthBills({ year: 2026, month: 3, cards: [{ name: "Proj Interest", ...unsettledBill }] });
+    const today = new Date(2026, 2, 20); // Mar 20
+    const before = await emi.emiMonthlyProjection(3, today);
+    await emi.addEmi(
+      { cardOrBank: "Proj Interest", emiAmount: 1000, dueDay: 7, totalAmount: 10000, remarks: "", remainingAsOf: 11000, durationMonths: 12 },
+      today,
+    );
+    const after = await emi.emiMonthlyProjection(3, today);
+    expect(deltaOf(before, after)).toEqual([
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 1, totalAmount: 1000 }, // posted Mar 7, paid on April's bill
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
+
+  it("doesn't invent a posted installment for a brand-new card EMI whose balance covers every bill left", async () => {
+    // Same shape, but 12 installments for 12 bills: nothing has posted yet.
+    await cardBills.setMonthBills({
+      year: 2026,
+      month: 3,
+      cards: [
+        { name: "Proj Interest", ...unsettledBill },
+        { name: "Proj New", ...unsettledBill },
+      ],
+    });
+    const today = new Date(2026, 2, 20);
+    const before = await emi.emiMonthlyProjection(3, today);
+    await emi.addEmi(
+      { cardOrBank: "Proj New", emiAmount: 1000, dueDay: 7, totalAmount: 10000, remarks: "", remainingAsOf: 12000, durationMonths: 12 },
+      today,
+    );
+    const after = await emi.emiMonthlyProjection(3, today);
+    expect(deltaOf(before, after)).toEqual([
+      { month: "2026-03", count: 0, totalAmount: 0 },
+      { month: "2026-04", count: 0, totalAmount: 0 }, // first installment posts Apr 7, paid in May
+      { month: "2026-05", count: 1, totalAmount: 1000 },
+    ]);
+  });
 });
 
 describe("emi foreclosurePayoff", () => {

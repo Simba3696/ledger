@@ -350,9 +350,19 @@ function postedUnpaidInstallment(emi: EmiEntryComputed, day: Date): Installment 
     // Decayed since the snapshot: whatever came off at that cycle.
     const dayBefore = new Date(posted.getFullYear(), posted.getMonth(), posted.getDate() - 1);
     amount = Math.min(emi.emiAmount, withComputed(emi, dayBefore).remaining);
-  } else {
+  } else if (emi.untilTarget && emi.estimatedPayoffDate) {
     // Posted before the snapshot, so the card's balance typed in already
-    // excluded it — still owed, unless nothing had ever posted yet.
+    // excluded it. Whether a cycle had posted yet shows in the stated end:
+    // one more bill left before it than the balance covers means the latest
+    // installment is on a bill still to be paid. A tail under 5% of an
+    // installment is rounding (a bank's final EMI), not one more payment.
+    const billsLeft = countDueDatesPassed(anchor, emi.dueDay, parseDate(emi.estimatedPayoffDate));
+    const installmentsLeft = Math.ceil(emi.remaining / emi.emiAmount - 0.05);
+    amount = billsLeft > installmentsLeft ? emi.emiAmount : 0;
+  } else {
+    // No stated end to count from: still owed unless nothing had posted yet,
+    // judged by the balance being below the loan's total. (A total entered
+    // without interest can fail this; an Until date avoids the guess.)
     amount = emi.remainingAsOf < emi.totalAmount ? emi.emiAmount : 0;
   }
   return amount > 0 ? { date: posted, amount: round2(amount) } : null;
